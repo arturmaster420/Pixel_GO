@@ -1,0 +1,418 @@
+import { createBasicMob } from "../enemies/mobBasic.js";
+import { createEliteMob } from "../enemies/mobElite.js";
+import { createRoamingBoss } from "../enemies/roamingBoss.js";
+
+function clamp(n, a, b) {
+  return n < a ? a : (n > b ? b : n);
+}
+
+function getPlayers(state) {
+  const arr = (state.players && state.players.length) ? state.players : (state.player ? [state.player] : []);
+  return arr.filter((p) => p && p.hp > 0);
+}
+
+function distance2(ax, ay, bx, by) {
+  const dx = ax - bx;
+  const dy = ay - by;
+  return dx * dx + dy * dy;
+}
+
+function randomInRoom(bounds) {
+  const x = bounds.minX + Math.random() * (bounds.maxX - bounds.minX);
+  const y = bounds.minY + Math.random() * (bounds.maxY - bounds.minY);
+  return { x, y };
+}
+
+function pickSpawnPos(bounds, players, minDist = 260, tries = 12) {
+  const minD2 = minDist * minDist;
+  let pos = randomInRoom(bounds);
+  for (let i = 0; i < tries; i++) {
+    pos = randomInRoom(bounds);
+    let ok = true;
+    for (const p of players) {
+      if (!p) continue;
+      if (distance2(pos.x, pos.y, p.x, p.y) < minD2) { ok = false; break; }
+    }
+    if (ok) return pos;
+  }
+  return pos;
+}
+
+function wrapClampUpdate(enemy, bounds, pad = 10) {
+  if (!enemy || typeof enemy.update !== "function") return;
+  const orig = enemy.update;
+  enemy.update = (self, dt, state) => {
+    orig(self, dt, state);
+
+    // Gate spawn behavior:
+    // - enemies can start OUTSIDE the platform (in space)
+    // - we only start clamping them after they actually enter the room bounds
+    const ge = self && self._gateEnter;
+    if (ge && !ge.entered) {
+      const b0 = bounds;
+      const r0 = (self.radius || 20) + pad;
+      const inside = (self.x >= b0.minX + r0 && self.x <= b0.maxX - r0 && self.y >= b0.minY + r0 && self.y <= b0.maxY - r0);
+      if (!inside) return;
+      ge.entered = true;
+    }
+
+    const b = bounds;
+    const r = (self.radius || 20) + pad;
+    if (self.x < b.minX + r) self.x = b.minX + r;
+    if (self.x > b.maxX - r) self.x = b.maxX - r;
+    if (self.y < b.minY + r) self.y = b.minY + r;
+    if (self.y > b.maxY - r) self.y = b.maxY - r;
+  };
+}
+
+function pickBreachSpawn(room, rd, players, minDist = 260) {
+  if (!room || !rd) return null;
+  const brs = Array.isArray(room.breaches) ? room.breaches : [];
+  if (!brs.length) return null;
+
+  const minD2 = minDist * minDist;
+  // Prefer breaches far enough from players, but fall back to any open breach.
+  const cands = [];
+  const open = [];
+  for (const b of brs) {
+    if (!b) continue;
+    if ((b.patchedLeft || 0) > 0) continue;
+    const ip = rd.getBreachInnerPoint(room, b, 30);
+    open.push({ b, ip });
+    let ok = true;
+    for (const p of players) {
+      if (!p) continue;
+      if (distance2(ip.x, ip.y, p.x, p.y) < minD2) { ok = false; break; }
+    }
+    if (!ok) continue;
+    cands.push({ b, ip });
+  }
+  const pool = cands.length ? cands : open;
+  if (!pool.length) return null;
+
+  const pick = pool[(Math.random() * pool.length) | 0];
+  // Spawn outside far enough so they are "behind" the platform.
+  const op = rd.getBreachOuterPoint(room, pick.b, 220);
+  return {
+    breachId: pick.b.id,
+    side: pick.b.side,
+    inside: pick.ip,
+    outside: op,
+  };
+}
+
+export class RoomSpawnSystem {
+  constructor(state) {
+    this.state = state;
+
+    this.roomIndex = 0;
+    this.roomId = "room_0";
+
+    this.killed = 0;
+    this.spawned = 0;
+    this.quotaTotal = 0;
+    this.aliveCap = 0;
+
+    // Waves (SAS-like): room is cleared after finishing all waves.
+    this.wavesTotal = 0;
+    this.waveIndex = 0; // 0-based
+    this.waveSpawned = 0; // spawned in current wave
+    this.waveTarget = 0; // how many to spawn this wave
+    this._waveSizes = null;
+
+    this.isMiniBossRoom = false;
+    this.isBossRoom = false;
+
+    this._miniBossId = null;
+    this._bossId = null;
+    this._bossSpawned = false;
+
+    this._spawnTimer = 0;
+    this._lastRoomChangeAt = 0;
+
+    // Init from director if present
+    const rd = state.roomDirector;
+    if (rd && rd.current) this.onRoomChanged(rd.current);
+  }
+
+  // Compatibility with old loop
+  onZoneChanged() {}
+
+  onRoomChanged(room) {
+    if (!room) return;
+
+    this.roomIndex = room.index | 0;
+    this.roomId = room.id || `room_${this.roomIndex}`;
+
+    // Reset per-room counters
+    this.killed = 0;
+    this.spawned = 0;
+    this._spawnTimer = 0;
+
+    this.wavesTotal = 0;
+    this.waveIndex = 0;
+    this.waveSpawned = 0;
+    this.waveTarget = 0;
+    this._waveSizes = null;
+    this._bossSpawned = false;
+    this._miniBossId = null;
+    this._bossId = null;
+
+    this.isBossRoom = this.roomIndex > 0 && (this.roomIndex % 10 === 0);
+    this.isMiniBossRoom = this.roomIndex > 0 && (this.roomIndex % 5 === 0) && !this.isBossRoom;
+
+    // quota/aliveCap (kept) + waves distribution
+    if (this.roomIndex <= 0) {
+      this.quotaTotal = 0;
+      this.aliveCap = 0;
+      this.wavesTotal = 0;
+      this._waveSizes = [];
+    } else {
+      this.quotaTotal = 12 + Math.floor(this.roomIndex * 3.0);
+      this.aliveCap = Math.min(32, 8 + Math.floor(this.roomIndex * 0.6));
+      // Boss rooms: slightly lower quota (boss fight already long)
+      if (this.isBossRoom) this.quotaTotal = Math.max(25, Math.floor(this.quotaTotal * 0.75));
+      if (this.isMiniBossRoom) this.quotaTotal = Math.max(18, Math.floor(this.quotaTotal * 0.85));
+
+      // Waves per room: 1->3, 2->5, 3->7 ... capped
+      let waves = clamp(2 * this.roomIndex + 1, 3, 21);
+      if (this.isBossRoom) waves = Math.min(waves, 11);
+      if (this.isMiniBossRoom) waves = Math.min(waves, 9);
+      this.wavesTotal = waves;
+
+      // Distribute the quota across waves so total kills stays consistent.
+      const base = Math.floor(this.quotaTotal / this.wavesTotal);
+      const rem = this.quotaTotal - base * this.wavesTotal;
+      this._waveSizes = Array.from({ length: this.wavesTotal }, (_, i) => base + (i < rem ? 1 : 0));
+      this.waveIndex = 0;
+      this.waveTarget = this._waveSizes[0] || 0;
+      this.waveSpawned = 0;
+    }
+
+    // For HUD
+    if (this.state) {
+      this.state._roomQuota = this.quotaTotal | 0;
+      this.state._roomKilled = 0;
+      this.state._roomAliveCap = this.aliveCap | 0;
+      this.state._roomIsBoss = !!this.isBossRoom;
+      this.state._roomIsMiniBoss = !!this.isMiniBossRoom;
+      this.state._roomBossAlive = false;
+
+      this.state._roomWavesTotal = this.wavesTotal | 0;
+      this.state._roomWaveIndex = 0;
+    }
+  }
+
+  update(dt) {
+    const state = this.state;
+    const rd = state.roomDirector;
+    const room = rd && rd.current;
+    if (!room) return;
+
+    // Hub: no spawns
+    if ((room.index | 0) <= 0) {
+      // Ensure hub is always "cleared" (so room1 exists)
+      if (!room.cleared) room.cleared = true;
+      return;
+    }
+
+    // Ensure counters are synced if room changed without calling onRoomChanged
+    if ((room.index | 0) !== (this.roomIndex | 0)) this.onRoomChanged(room);
+
+    const bounds = room.bounds;
+    const players = getPlayers(state);
+
+    const hubSide = (state && (state._hubSide | 0) > 0) ? (state._hubSide | 0) : 600;
+    const side = room.side || hubSide;
+    // Smaller early rooms need smaller minimum spawn distance.
+    const spawnMinDist = clamp(180 + (side - hubSide) * 0.02, 150, 320);
+
+    // Count alive enemies in this room
+    let aliveInRoom = 0;
+    for (const e of (state.enemies || [])) {
+      if (!e || e.dead) continue;
+      if ((e._roomIndex | 0) !== (this.roomIndex | 0)) continue;
+      aliveInRoom++;
+    }
+
+    // Boss/mini-boss spawn (once)
+    const zone = this._virtualZoneFromRoom(this.roomIndex);
+
+    if (this.isBossRoom && !this._bossSpawned) {
+      const pos = { x: room.centerX, y: room.centerY };
+      const boss = createRoamingBoss(zone, pos);
+      boss._roomIndex = this.roomIndex;
+      boss._roomId = this.roomId;
+      boss._isBoss = true;
+      boss._isRoomBoss = true;
+      boss.id = boss.id || `boss_${this.roomIndex}_${Math.floor(Math.random() * 1e9)}`;
+      this._bossId = boss.id;
+      this._bossSpawned = true;
+      wrapClampUpdate(boss, bounds, 14);
+      state.enemies.push(boss);
+      if (state) state._roomBossAlive = true;
+    }
+
+    if (this.isMiniBossRoom && !this._bossSpawned) {
+      const pos = { x: room.centerX, y: room.centerY };
+      const mb = createEliteMob(zone, pos);
+      // Turn it into a mini-boss
+      mb.isBoss = true;
+      mb._isMiniBoss = true;
+      mb.radius = Math.max(mb.radius || 26, 36);
+      mb.hp *= 6;
+      mb.maxHp *= 6;
+      mb.damage *= 1.6;
+      mb.speed *= 0.95;
+      mb.scoreValue = (mb.scoreValue || 0) + 120 * zone;
+
+      mb._roomIndex = this.roomIndex;
+      mb._roomId = this.roomId;
+      mb.id = mb.id || `miniboss_${this.roomIndex}_${Math.floor(Math.random() * 1e9)}`;
+      this._miniBossId = mb.id;
+      this._bossSpawned = true;
+      wrapClampUpdate(mb, bounds, 14);
+      state.enemies.push(mb);
+      if (state) state._roomBossAlive = true;
+    }
+
+    // If current room is already cleared, stop spawning.
+    if (room.cleared) return;
+
+    // Wave progression: if we spawned the full wave and all enemies are dead, advance.
+    if (this.wavesTotal > 0 && this.waveIndex < this.wavesTotal) {
+      if (this.waveSpawned >= this.waveTarget && aliveInRoom === 0) {
+        this.waveIndex++;
+        this.waveSpawned = 0;
+        this.waveTarget = (this._waveSizes && this._waveSizes[this.waveIndex]) ? this._waveSizes[this.waveIndex] : 0;
+        if (state) state._roomWaveIndex = this.waveIndex | 0;
+      }
+    }
+
+    // If all waves finished, wait for clear check (kills + boss + alive==0)
+    if (this.wavesTotal > 0 && this.waveIndex >= this.wavesTotal) {
+      this._checkClearCondition();
+      return;
+    }
+
+    // Spawn cadence
+    const spawnInterval = clamp(0.9 - this.roomIndex * 0.005, 0.25, 0.9);
+    this._spawnTimer += dt;
+    if (this._spawnTimer < spawnInterval) return;
+    this._spawnTimer = 0;
+
+    // Don't exceed caps / wave target
+    const remainingInWave = (this.waveTarget | 0) - (this.waveSpawned | 0);
+    if (remainingInWave <= 0) return;
+
+    const freeSlots = this.aliveCap - aliveInRoom;
+    if (freeSlots <= 0) return;
+
+    const maxBatch = clamp(3 + Math.floor(this.roomIndex / 18), 3, 8);
+    const batch = Math.min(remainingInWave, freeSlots, maxBatch);
+
+    for (let i = 0; i < batch; i++) {
+      const brPick = pickBreachSpawn(room, rd, players, spawnMinDist);
+      // If all gates are patched (closed), do not spawn "from nowhere".
+      if (!brPick) return;
+
+      // Spawn OUTSIDE the platform so enemies walk in "from behind".
+      // Add a small tangential jitter so they don't stack.
+      let pos = { x: brPick.outside.x, y: brPick.outside.y };
+      const jitter = 26;
+      if (brPick.side === 'W' || brPick.side === 'E') {
+        pos.y += (Math.random() - 0.5) * jitter * 2;
+      } else {
+        pos.x += (Math.random() - 0.5) * jitter * 2;
+      }
+
+      // Type selection
+      const eliteChance = clamp(0.02 + this.roomIndex * 0.0015, 0.02, 0.18);
+      const useElite = Math.random() < eliteChance;
+
+      const enemy = useElite ? createEliteMob(zone, pos) : createBasicMob(zone, pos);
+      enemy._roomIndex = this.roomIndex;
+      enemy._roomId = this.roomId;
+      enemy.id = enemy.id || `e_${this.roomIndex}_${this.spawned}_${Math.floor(Math.random() * 1e6)}`;
+
+      // Gate-spawned enemies: start outside and keep moving until they enter.
+      enemy._spawnBreachId = brPick.breachId;
+      enemy._gateEnter = { entered: false };
+      // Make sure they actually move from outside (even if far).
+      enemy.aggroRange = 5000;
+      enemy.aggroed = true;
+
+      wrapClampUpdate(enemy, bounds, 10);
+      state.enemies.push(enemy);
+      this.spawned++;
+      this.waveSpawned++;
+    }
+
+    // HUD mirrors
+    if (state) {
+      state._roomKilled = this.killed | 0;
+      state._roomQuota = this.quotaTotal | 0;
+      state._roomWavesTotal = this.wavesTotal | 0;
+      state._roomWaveIndex = this.waveIndex | 0;
+    }
+  }
+
+  onEnemyRemoved(enemy) {
+    if (!enemy) return;
+    if (enemy._roomCleanup) return;
+
+    const idx = enemy._roomIndex | 0;
+    if (idx !== (this.roomIndex | 0)) return;
+
+    // Only count actual kills (hp <= 0) and not forced removals.
+    if ((enemy.hp || 0) <= 0) {
+      this.killed++;
+      if (this.state) this.state._roomKilled = this.killed | 0;
+    }
+
+    // Boss/mini-boss death tracking
+    if (this.isBossRoom && enemy._isRoomBoss) {
+      if (this.state) this.state._roomBossAlive = false;
+    }
+    if (this.isMiniBossRoom && enemy._isMiniBoss) {
+      if (this.state) this.state._roomBossAlive = false;
+    }
+
+    this._checkClearCondition();
+  }
+
+  _checkClearCondition() {
+    const state = this.state;
+    const rd = state.roomDirector;
+    const room = rd && rd.current;
+    if (!room) return;
+    if (room.index !== this.roomIndex) return;
+    if (room.cleared) return;
+
+    // Must meet kill quota.
+    if (this.killed < this.quotaTotal) return;
+
+    // Boss rooms must have boss dead.
+    if (this.isBossRoom) {
+      const bossAlive = (state.enemies || []).some((e) => e && !e.dead && (e._roomIndex | 0) === this.roomIndex && e._isRoomBoss && e.hp > 0);
+      if (bossAlive) return;
+    }
+
+    if (this.isMiniBossRoom) {
+      const mbAlive = (state.enemies || []).some((e) => e && !e.dead && (e._roomIndex | 0) === this.roomIndex && e._isMiniBoss && e.hp > 0);
+      if (mbAlive) return;
+    }
+
+    // Also ensure no other enemies in the room remain.
+    const anyAlive = (state.enemies || []).some((e) => e && !e.dead && (e._roomIndex | 0) === this.roomIndex && e.hp > 0);
+    if (anyAlive) return;
+
+    // Clear!
+    try { rd.markCurrentCleared(); } catch {}
+  }
+
+  _virtualZoneFromRoom(roomIndex) {
+    if ((roomIndex | 0) <= 0) return 0;
+    return 1 + Math.floor(((roomIndex | 0) - 1) / 10);
+  }
+}
