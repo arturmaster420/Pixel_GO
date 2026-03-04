@@ -17,9 +17,21 @@ const ctx = canvas.getContext("2d");
 // Improve mobile responsiveness (avoid double-tap zoom / gesture delays).
 canvas.style.touchAction = "none";
 
+function clientToCanvasXY(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / (rect.width || 1);
+  const scaleY = canvas.height / (rect.height || 1);
+  return {
+    x: (clientX - rect.left) * scaleX,
+    y: (clientY - rect.top) * scaleY,
+  };
+}
+
 function resize() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  // Use the actual CSS size of the canvas (100vw/100vh) to avoid mobile viewport quirks.
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.round(rect.width);
+  canvas.height = Math.round(rect.height);
 }
 
 window.addEventListener("resize", resize);
@@ -56,9 +68,9 @@ requestAnimationFrame(loop);
 
 // Desktop mouse
 canvas.addEventListener("mousemove", (e) => {
-  const rect = canvas.getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  const y = e.clientY - rect.top;
+  const pos = clientToCanvasXY(e.clientX, e.clientY);
+  const x = pos.x;
+  const y = pos.y;
   // Only update aim/move helpers during gameplay.
   if (game.state?.mode === "playing") {
     handleMouseMove(x, y);
@@ -69,9 +81,9 @@ canvas.addEventListener("mousemove", (e) => {
 });
 
 canvas.addEventListener("mousedown", (e) => {
-  const rect = canvas.getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  const y = e.clientY - rect.top;
+  const pos = clientToCanvasXY(e.clientX, e.clientY);
+  const x = pos.x;
+  const y = pos.y;
   // Let game UI consume clicks first (e.g., gate buttons).
   const consumed = game.handlePointerDown ? (game.handlePointerDown(x, y) === true) : false;
   if (!consumed && e.button === 0) {
@@ -87,9 +99,9 @@ window.addEventListener("mouseup", (e) => {
       handleMouseUp(0);
     }
     if (game.handlePointerUp) {
-      const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      const pos = clientToCanvasXY(e.clientX, e.clientY);
+      const x = pos.x;
+      const y = pos.y;
       game.handlePointerUp(x, y);
     }
   }
@@ -103,8 +115,9 @@ canvas.addEventListener(
     const w = canvas.width;
     for (let i = 0; i < e.changedTouches.length; i++) {
       const t = e.changedTouches[i];
-      const x = t.clientX - rect.left;
-      const y = t.clientY - rect.top;
+      const pos = clientToCanvasXY(t.clientX, t.clientY);
+      const x = pos.x;
+      const y = pos.y;
       // Let game UI consume taps first (e.g., gate buttons), so joysticks don't steal them.
       const consumed = game.handlePointerDown ? (game.handlePointerDown(x, y) === true) : false;
       if (!consumed && game.state?.mode === "playing") {
@@ -122,8 +135,9 @@ canvas.addEventListener(
     const rect = canvas.getBoundingClientRect();
     for (let i = 0; i < e.changedTouches.length; i++) {
       const t = e.changedTouches[i];
-      const x = t.clientX - rect.left;
-      const y = t.clientY - rect.top;
+      const pos = clientToCanvasXY(t.clientX, t.clientY);
+      const x = pos.x;
+      const y = pos.y;
       if (game.state?.mode === "playing") {
         handleTouchMove(t.identifier, x, y);
       }
@@ -146,8 +160,9 @@ canvas.addEventListener(
         handleTouchEnd(t.identifier);
       }
       if (game.handlePointerUp) {
-        const x = t.clientX - rect.left;
-        const y = t.clientY - rect.top;
+        const pos = clientToCanvasXY(t.clientX, t.clientY);
+      const x = pos.x;
+      const y = pos.y;
         game.handlePointerUp(x, y);
       }
     }
@@ -166,8 +181,9 @@ canvas.addEventListener(
         handleTouchEnd(t.identifier);
       }
       if (game.handlePointerUp) {
-        const x = t.clientX - rect.left;
-        const y = t.clientY - rect.top;
+        const pos = clientToCanvasXY(t.clientX, t.clientY);
+      const x = pos.x;
+      const y = pos.y;
         game.handlePointerUp(x, y);
       }
     }

@@ -274,7 +274,7 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
     const sealMax = (typeof g.sealMax === 'number' && g.sealMax > 0) ? g.sealMax : 1;
     const hpRatio = clamp(sealHp / sealMax, 0, 1);
     const rewardLeft = (typeof g.rewardSealLeft === 'number') ? g.rewardSealLeft : 0;
-    const reward = rewardLeft > 0.02;
+    const reward = !!g.rewardSealed || (rewardLeft > 0.02);
     const sealed = reward || sealHp > 0.02;
     const pressure = clamp((typeof g.pressure === 'number') ? g.pressure : 0, 0, 1);
 
@@ -344,22 +344,31 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
       ctx.closePath();
       ctx.fill();
 
-      // Red spill slightly onto the platform when OPEN/broken.
-      if (!sealedVisual) {
-        const Li = clamp(L * 0.20, 60, 120);
+      // Light spill slightly onto the platform (inward cone).
+      {
+        const Li = clamp(L * 0.22, 80, 160);
         const ix = ax - nx * 6;
         const iy = ay - ny * 6;
         const ixf = ix - nx * Li;
         const iyf = iy - ny * Li;
+
+        // Wide at the gate, narrow inward (flashlight spill).
+        const gateW = len * 0.95;
+        const innerW = len * 0.22;
+
+        // Spill intensity by state
+        const spillHue = baseHue;
+        const spillA = reward ? 0.16 : (sealedVisual ? 0.10 : 0.22);
+
         const gi = ctx.createLinearGradient(ix, iy, ixf, iyf);
-        gi.addColorStop(0, hsla(H_RED, 95, 60, 0.22));
+        gi.addColorStop(0, hsla(spillHue, 95, 60, spillA));
         gi.addColorStop(1, 'rgba(0,0,0,0)');
         ctx.fillStyle = gi;
         ctx.beginPath();
-        ctx.moveTo(ix + tx * len * 0.55, iy + ty * len * 0.55);
-        ctx.lineTo(ix - tx * len * 0.55, iy - ty * len * 0.55);
-        ctx.lineTo(ixf - tx * len * 0.15, iyf - ty * len * 0.15);
-        ctx.lineTo(ixf + tx * len * 0.15, iyf + ty * len * 0.15);
+        ctx.moveTo(ix + tx * gateW * 0.5, iy + ty * gateW * 0.5);
+        ctx.lineTo(ix - tx * gateW * 0.5, iy - ty * gateW * 0.5);
+        ctx.lineTo(ixf - tx * innerW * 0.5, iyf - ty * innerW * 0.5);
+        ctx.lineTo(ixf + tx * innerW * 0.5, iyf + ty * innerW * 0.5);
         ctx.closePath();
         ctx.fill();
       }
@@ -659,8 +668,10 @@ function drawPerimeterBarrier(ctx, state, room, { hue = 210, time = 0, fall = 0 
 
   const strokeA = 0.20 + 0.10 * (0.5 + 0.5 * Math.sin(time * 1.1));
   const glowA = 0.10 + 0.08 * (0.5 + 0.5 * Math.sin(time * 0.9 + 1.4));
-  const col = hsla((hue + 140) % 360, 90, 70, strokeA);
-  const glow = hsla((hue + 140) % 360, 95, 70, glowA);
+  // Barrier is a green force-field (monsters cannot pass).
+  const H_GREEN = 120;
+  const col = hsla(H_GREEN, 92, 66, strokeA + 0.08);
+  const glow = hsla(H_GREEN, 95, 68, glowA + 0.10);
 
   ctx.save();
   ctx.lineCap = 'round';
@@ -707,6 +718,73 @@ function drawPerimeterBarrier(ctx, state, room, { hue = 210, time = 0, fall = 0 
   drawEdgeWithGapsY(x1, y0, y1, mE);
   drawEdgeWithGapsX(y1, x0, x1, mS);
   drawEdgeWithGapsX(y0, x0, x1, mN);
+
+  // Inner spill of the green barrier onto the platform (makes the field feel 'active').
+  const strip = clamp(room.side * 0.03, 18, 44);
+  const spillA = 0.10 + 0.06 * (0.5 + 0.5 * Math.sin(time * 1.6 + 0.7));
+
+  const fillEdgeY = (x, fromY, toY, gaps, inward) => {
+    let cur = fromY;
+    for (const [g0, g1] of gaps) {
+      if (g0 > cur) {
+        const yA = cur;
+        const yB = Math.min(g0, toY);
+        const gx = ctx.createLinearGradient(x, 0, x + inward * strip, 0);
+        gx.addColorStop(0, hsla(120, 95, 62, spillA));
+        gx.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = gx;
+        const xA = inward > 0 ? x : x - strip;
+        ctx.fillRect(xA, yA, strip, yB - yA);
+      }
+      cur = Math.max(cur, g1);
+      if (cur >= toY) break;
+    }
+    if (cur < toY) {
+      const yA = cur;
+      const yB = toY;
+      const gx = ctx.createLinearGradient(x, 0, x + inward * strip, 0);
+      gx.addColorStop(0, hsla(120, 95, 62, spillA));
+      gx.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = gx;
+      const xA = inward > 0 ? x : x - strip;
+      ctx.fillRect(xA, yA, strip, yB - yA);
+    }
+  };
+
+  const fillEdgeX = (y, fromX, toX, gaps, inward) => {
+    let cur = fromX;
+    for (const [g0, g1] of gaps) {
+      if (g0 > cur) {
+        const xA = cur;
+        const xB = Math.min(g0, toX);
+        const gy = ctx.createLinearGradient(0, y, 0, y + inward * strip);
+        gy.addColorStop(0, hsla(120, 95, 62, spillA));
+        gy.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = gy;
+        const yA = inward > 0 ? y : y - strip;
+        ctx.fillRect(xA, yA, xB - xA, strip);
+      }
+      cur = Math.max(cur, g1);
+      if (cur >= toX) break;
+    }
+    if (cur < toX) {
+      const xA = cur;
+      const xB = toX;
+      const gy = ctx.createLinearGradient(0, y, 0, y + inward * strip);
+      gy.addColorStop(0, hsla(120, 95, 62, spillA));
+      gy.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = gy;
+      const yA = inward > 0 ? y : y - strip;
+      ctx.fillRect(xA, yA, xB - xA, strip);
+    }
+  };
+
+  // West/East spill inward (+x for W, -x for E)
+  fillEdgeY(x0, y0, y1, mW, +1);
+  fillEdgeY(x1, y0, y1, mE, -1);
+  // South/North spill inward (-y for S is upward, +y for N is downward)
+  fillEdgeX(y1, x0, x1, mS, -1);
+  fillEdgeX(y0, x0, x1, mN, +1);
 
   ctx.restore();
 }

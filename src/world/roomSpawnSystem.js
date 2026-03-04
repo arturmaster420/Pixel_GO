@@ -81,7 +81,9 @@ function wrapGateApproachUpdate(enemy, roomIndex, gateId, pad = 10) {
     if (!ge.entered) {
       // Outside-phase: approach/attack gate
       const r = (self.radius || 20);
-      const speed = (self.speed || 80);
+      const baseSpeed = (self.speed || 80);
+      // Approach speed boost so enemies are visible quickly (especially in small rooms).
+      const speed = Math.max(baseSpeed * 1.15, 120);
 
       const target = sealed
         ? rd.getGateContactPoint(room, gate, r, 3)
@@ -171,7 +173,9 @@ function pickGateSpawn(room, rd, players, minDist = 260) {
 
   // Spawn far outside the platform ("from beyond the map bounds").
   // Keep it noticeably beyond any dynamic bounds so enemies visibly travel in.
-  const out = Math.max(950, (room.side || 600) * 0.95);
+  const side = (room.side || 600);
+  // Spawn outside the platform but not too far (so room1 isn't empty for 10+ seconds).
+  const out = clamp(side * 0.28, 260, 850);
   const op = rd.getGateOuterPoint ? rd.getGateOuterPoint(room, pick.g, out) : rd.getBreachOuterPoint(room, pick.g, out);
 
   return {

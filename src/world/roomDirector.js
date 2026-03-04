@@ -192,7 +192,8 @@ function makeGates(index, bounds, side) {
       repairMode: "",
 
       // Reward seal after clear
-      rewardSealLeft: 0,
+      rewardSealed: false,
+      rewardSealLeft: 0, // legacy; kept for compatibility
       rewardUsed: false,
     });
   }
@@ -230,7 +231,10 @@ function findPlayerById(state, pid) {
 }
 
 function gateIsRewardSealed(g) {
-  return (g && (g.rewardSealLeft || 0) > 0.02);
+  if (!g) return false;
+  if (g.rewardSealed) return true;
+  // legacy timed variant
+  return (g.rewardSealLeft || 0) > 0.02;
 }
 
 function gateIsSealed(g) {
@@ -297,9 +301,9 @@ export class RoomDirector {
       const now = (st && typeof st.time === 'number') ? st.time : 0;
       for (const g of room.breaches) {
         if (!g) continue;
-
-        // Reward seal timer
-        if ((g.rewardSealLeft || 0) > 0) {
+        // Reward-sealed gates stay green until the room collapses (no timer).
+        // (Legacy: if rewardSealLeft is used, keep it from going negative.)
+        if (!g.rewardSealed && (g.rewardSealLeft || 0) > 0) {
           g.rewardSealLeft -= dt;
           if (g.rewardSealLeft < 0) g.rewardSealLeft = 0;
         }
@@ -343,7 +347,8 @@ export class RoomDirector {
                 // Only now: turn green and drop XP.
                 if (!g.rewardUsed) {
                   g.rewardUsed = true;
-                  g.rewardSealLeft = GATE_REWARD_SEAL_DUR;
+                  g.rewardSealed = true;
+                  g.rewardSealLeft = 0;
                   this._spawnGateRewardOrbs(room, g);
                 }
               }
@@ -598,7 +603,11 @@ export class RoomDirector {
       if (!g) continue;
       if (hpArr && typeof hpArr[i] === 'number') g.sealHp = Math.max(0, hpArr[i]);
       if (maxArr && typeof maxArr[i] === 'number') g.sealMax = Math.max(1, maxArr[i]);
-      if (rewardArr && typeof rewardArr[i] === 'number') g.rewardSealLeft = Math.max(0, rewardArr[i]);
+      if (rewardArr && typeof rewardArr[i] === 'number') {
+        const rv = rewardArr[i];
+        g.rewardSealed = rv > 0.5;
+        g.rewardSealLeft = 0;
+      }
       if (repairArr && typeof repairArr[i] === 'number') {
         const v = Math.max(0, repairArr[i]);
         g.repairActive = v > 0.001;
@@ -775,7 +784,7 @@ export class RoomDirector {
       const gs = this.current && Array.isArray(this.current.breaches) ? this.current.breaches : [];
       this.state._gateHp = gs.map((g) => (g && typeof g.sealHp === 'number') ? g.sealHp : 0);
       this.state._gateMax = gs.map((g) => (g && typeof g.sealMax === 'number') ? g.sealMax : 0);
-      this.state._gateReward = gs.map((g) => (g && typeof g.rewardSealLeft === 'number') ? g.rewardSealLeft : 0);
+      this.state._gateReward = gs.map((g) => (g && (g.rewardSealed || ((g.rewardSealLeft || 0) > 0.02))) ? 1 : 0);
       this.state._gateRepair = gs.map((g) => (g && g.repairActive) ? (g.repairT || 0) : 0);
       this.state._gateRepairMode = gs.map((g) => (g && g.repairActive && String(g.repairMode || '').toLowerCase() === 'reward') ? 1 : 0);
       this.state._gatePressure = gs.map((g) => (g && typeof g.pressure === 'number') ? g.pressure : 0);
