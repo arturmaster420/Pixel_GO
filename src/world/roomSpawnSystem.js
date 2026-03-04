@@ -170,7 +170,8 @@ function pickGateSpawn(room, rd, players, minDist = 260) {
   const pick = pool[(Math.random() * pool.length) | 0];
 
   // Spawn far outside the platform ("from beyond the map bounds").
-  const out = Math.max(520, (room.side || 600) * 0.55);
+  // Keep it noticeably beyond any dynamic bounds so enemies visibly travel in.
+  const out = Math.max(950, (room.side || 600) * 0.95);
   const op = rd.getGateOuterPoint ? rd.getGateOuterPoint(room, pick.g, out) : rd.getBreachOuterPoint(room, pick.g, out);
 
   return {

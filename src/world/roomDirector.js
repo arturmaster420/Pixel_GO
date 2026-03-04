@@ -16,6 +16,9 @@ const BRIDGE_BUILD_DUR = 1.15; // seconds
 const GATE_INTERACT_R = 170;
 const GATE_REPAIR_SAFE_SEC = 2.0;
 const GATE_REPAIR_TIME_SEC = 2.0;
+// After clearing waves (bridge built) player can do a longer "reward fix".
+// It takes 10s to complete, then becomes green for a short time and drops XP.
+const GATE_REWARD_REPAIR_TIME_SEC = 10.0;
 const GATE_REWARD_SEAL_DUR = 10.0;
 
 function clamp(n, a, b) {
@@ -186,6 +189,7 @@ function makeGates(index, bounds, side) {
       repairActive: false,
       repairBy: "",
       repairT: 0,
+      repairMode: "",
 
       // Reward seal after clear
       rewardSealLeft: 0,
@@ -306,28 +310,43 @@ export class RoomDirector {
           g.pressure = Math.max(0, g.pressure - dt * 2.6);
         }
 
-        // Repair channel
+        // Repair channel (normal or reward)
         if (g.repairActive) {
           const p = findPlayerById(st, g.repairBy);
           if (!p || p.hp <= 0 || !this.canPlayerInteractGate(p, g)) {
             g.repairActive = false;
             g.repairBy = "";
             g.repairT = 0;
+            g.repairMode = "";
             continue;
           }
 
           const safePlayer = (now - (typeof p._lastDamagedAt === 'number' ? p._lastDamagedAt : -Infinity)) >= GATE_REPAIR_SAFE_SEC;
           const safeGate = (now - (typeof g.lastHitAt === 'number' ? g.lastHitAt : -Infinity)) >= GATE_REPAIR_SAFE_SEC;
 
+          const mode = String(g.repairMode || "normal").toLowerCase();
+          const need = (mode === "reward") ? GATE_REWARD_REPAIR_TIME_SEC : GATE_REPAIR_TIME_SEC;
+
           if (safePlayer && safeGate) {
             g.repairT += dt;
-            if (g.repairT >= GATE_REPAIR_TIME_SEC) {
+            if (g.repairT >= need) {
+              // Completed
               g.repairT = 0;
               g.repairActive = false;
               g.repairBy = "";
+              g.repairMode = "";
               g.sealHp = g.sealMax;
               g.pressure = 0;
               g.lastHitAt = -Infinity;
+
+              if (mode === "reward") {
+                // Only now: turn green and drop XP.
+                if (!g.rewardUsed) {
+                  g.rewardUsed = true;
+                  g.rewardSealLeft = GATE_REWARD_SEAL_DUR;
+                  this._spawnGateRewardOrbs(room, g);
+                }
+              }
             }
           } else {
             // Must be 2 seconds of no pressure.
@@ -335,6 +354,7 @@ export class RoomDirector {
           }
         } else {
           g.repairT = 0;
+          g.repairMode = g.repairMode || "";
         }
 
         // Keep seal hp sane
@@ -447,6 +467,7 @@ export class RoomDirector {
       g.repairActive = false;
       g.repairBy = "";
       g.repairT = 0;
+      g.repairMode = "";
     }
 
     return true;
@@ -458,6 +479,8 @@ export class RoomDirector {
     if (!g) return false;
     if (!player || !this.canPlayerInteractGate(player, g)) return false;
 
+    if (g.repairActive) return false;
+
     // Can't repair if already reward-sealed.
     if (gateIsRewardSealed(g)) return false;
 
@@ -467,11 +490,12 @@ export class RoomDirector {
     g.repairActive = true;
     g.repairBy = String(player.id || "local");
     g.repairT = 0;
+    g.repairMode = "normal";
     return true;
   }
 
-  // Reward seal (green) after clear when bridge is open.
-  rewardSealGateById(gateId, player) {
+  // Start a reward fix channel (10s). Only on completion it becomes green and spawns XP.
+  startRewardFixGateById(gateId, player) {
     const room = this.current;
     const g = this.getGateById(gateId);
     if (!room || !g) return false;
@@ -481,17 +505,12 @@ export class RoomDirector {
     if (!(room.cleared && this.bridge && this.bridge.built)) return false;
 
     if (g.rewardUsed) return false;
+    if (g.repairActive) return false;
 
-    g.rewardUsed = true;
-    g.rewardSealLeft = GATE_REWARD_SEAL_DUR;
-    g.sealHp = g.sealMax;
-    g.repairActive = false;
-    g.repairBy = "";
+    g.repairActive = true;
+    g.repairBy = String(player.id || "local");
     g.repairT = 0;
-
-    // Spawn XP orbs reward.
-    this._spawnGateRewardOrbs(room, g);
-
+    g.repairMode = "reward";
     return true;
   }
 
@@ -499,7 +518,7 @@ export class RoomDirector {
   performGateAction(gateId, action, player) {
     const a = String(action || "").toLowerCase();
     if (a === "reward" || a === "rewardseal" || a === "seal") {
-      return this.rewardSealGateById(gateId, player);
+      return this.startRewardFixGateById(gateId, player);
     }
     // default: repair
     return this.startRepairGateById(gateId, player);
@@ -570,6 +589,7 @@ export class RoomDirector {
     const maxArr = Array.isArray(o.gateMax) ? o.gateMax : null;
     const rewardArr = Array.isArray(o.gateReward) ? o.gateReward : null;
     const repairArr = Array.isArray(o.gateRepair) ? o.gateRepair : null;
+    const repairModeArr = Array.isArray(o.gateRepairMode) ? o.gateRepairMode : null;
     const pressArr = Array.isArray(o.gatePressure) ? o.gatePressure : null;
     const usedArr = Array.isArray(o.gateUsed) ? o.gateUsed : null;
 
@@ -583,6 +603,12 @@ export class RoomDirector {
         const v = Math.max(0, repairArr[i]);
         g.repairActive = v > 0.001;
         g.repairT = v;
+      }
+      if (repairModeArr && typeof repairModeArr[i] === 'number') {
+        const m = (repairModeArr[i] | 0);
+        if (g.repairActive) g.repairMode = (m === 1) ? 'reward' : 'normal';
+      } else {
+        if (g.repairActive) g.repairMode = 'normal';
       }
       if (pressArr && typeof pressArr[i] === 'number') g.pressure = clamp(pressArr[i], 0, 1);
       if (usedArr && typeof usedArr[i] === 'number') g.rewardUsed = usedArr[i] > 0;
@@ -751,6 +777,7 @@ export class RoomDirector {
       this.state._gateMax = gs.map((g) => (g && typeof g.sealMax === 'number') ? g.sealMax : 0);
       this.state._gateReward = gs.map((g) => (g && typeof g.rewardSealLeft === 'number') ? g.rewardSealLeft : 0);
       this.state._gateRepair = gs.map((g) => (g && g.repairActive) ? (g.repairT || 0) : 0);
+      this.state._gateRepairMode = gs.map((g) => (g && g.repairActive && String(g.repairMode || '').toLowerCase() === 'reward') ? 1 : 0);
       this.state._gatePressure = gs.map((g) => (g && typeof g.pressure === 'number') ? g.pressure : 0);
       this.state._gateUsed = gs.map((g) => (g && g.rewardUsed) ? 1 : 0);
     }

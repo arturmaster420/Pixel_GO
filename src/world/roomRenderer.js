@@ -242,20 +242,30 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
   if (!gates || !gates.length) return;
 
   const fall = geo.fall || 0;
-  const baseGlowHue = (hue + 115) % 360;
   const pulse = 0.5 + 0.5 * Math.sin(time * 2.4);
 
-  // Gate geometry (tight; sits OUTSIDE the platform edge)
-  const len = clamp(room.side * 0.10, 72, 112);
-  const depth = clamp(room.side * 0.030, 18, 34);
-  const frame = clamp(room.side * 0.010, 6, 10);
-  const outGap = 8;
+  // Gate geometry (narrow; fits into the barrier hole)
+  const len = clamp(room.side * 0.085, 58, 96);
+  const inD = clamp(room.side * 0.012, 8, 14);
+  const outD = clamp(room.side * 0.020, 12, 20);
+  const frame = clamp(room.side * 0.009, 5, 9);
 
   const isCurrent = !!(state && (state.currentRoomIndex | 0) === (room.index | 0));
   const player = isCurrent && state ? state.player : null;
   const rd = state && state.roomDirector;
-
   const bridgeOpen = !!(state && state._bridgeBuilt);
+
+  const coneLen = clamp(room.side * 0.34, 220, 560);
+
+  const hash01 = (s) => {
+    let h = 2166136261 >>> 0;
+    const str = String(s || "");
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return ((h >>> 0) % 1000) / 1000;
+  };
 
   for (const g of gates) {
     if (!g) continue;
@@ -267,10 +277,12 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
     const reward = rewardLeft > 0.02;
     const sealed = reward || sealHp > 0.02;
     const pressure = clamp((typeof g.pressure === 'number') ? g.pressure : 0, 0, 1);
+
     const repairing = !!g.repairActive;
     const repairT = (typeof g.repairT === 'number') ? g.repairT : 0;
+    const repairMode = String(g.repairMode || (g._repairMode || "")).toLowerCase();
 
-    // Anchor point on edge
+    // Anchor point on edge (world coords)
     const ax = g.x;
     const ay = (g.y + fall);
 
@@ -280,43 +292,109 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
     else if (g.side === 'E') { nx = 1; ny = 0; tx = 0; ty = 1; }
     else { nx = 0; ny = 1; tx = 1; ty = 0; } // 'S'
 
-    // Center of portal sits outside the tile.
-    let cx = ax + nx * (depth * 0.5 + outGap);
-    let cy = ay + ny * (depth * 0.5 + outGap);
+    // Color states
+    const H_RED = 6;
+    const H_BLUE = 205;
+    const H_GREEN = 120;
+    // Reward-fix in progress should read as "being sealed" (blue-ish), not open red.
+    const sealedVisual = sealed || (repairing && repairMode === 'reward');
+    let baseHue = reward ? H_GREEN : (sealedVisual ? H_BLUE : H_RED);
 
-    // "Holding pressure" shake
-    if (sealed && pressure > 0.12 && !reward) {
-      const j = 1.2 + pressure * 2.6;
-      cx += Math.sin(time * 22 + (g.id ? g.id.length : 0)) * j;
-      cy += Math.cos(time * 19 + (g.id ? g.id.length : 0) * 0.7) * j;
+    // "Holding pressure" = shake + flicker red when close to breaking.
+    const seed = hash01(g.id);
+    const flick = 0.5 + 0.5 * Math.sin(time * 28 + seed * 20);
+    const danger = clamp(pressure * 0.85 + (1 - hpRatio) * 0.85, 0, 1);
+    const redPulse = (!reward && sealedVisual) ? (danger * (flick > 0.55 ? 1 : 0)) : 0;
+
+    // Portal center sits ON the barrier line, slightly outside.
+    let cx = ax + nx * (outD * 0.55);
+    let cy = ay + ny * (outD * 0.55);
+
+    if (sealedVisual && pressure > 0.08 && !reward) {
+      const j = 0.8 + pressure * 3.2;
+      cx += Math.sin(time * 22 + seed * 30) * j;
+      cy += Math.cos(time * 19 + seed * 27) * j;
     }
 
-    const glowHue = reward ? 120 : baseGlowHue;
+    // Light cone (like a flashlight) pointing OUT into space
+    {
+      const L = coneLen;
+      const nearW = len * 0.65;
+      const farW = len * 2.15;
+      const ox = ax + nx * 6;
+      const oy = ay + ny * 6;
+      const fx = ox + nx * L;
+      const fy = oy + ny * L;
 
-    // Build an oriented rectangle (portal frame)
+      const a0 = reward ? 0.20 : (sealedVisual ? 0.16 : 0.26);
+      const aBoost = (sealedVisual && pressure > 0.08) ? (0.10 * pressure) : 0;
+      const h = baseHue;
+
+      // Main cone (outward)
+      const g0 = ctx.createLinearGradient(ox, oy, fx, fy);
+      g0.addColorStop(0, hsla(h, 95, 62, a0 + aBoost));
+      g0.addColorStop(0.55, hsla(h, 95, 58, 0.06 + aBoost * 0.4));
+      g0.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g0;
+      ctx.beginPath();
+      ctx.moveTo(ox + tx * nearW * 0.5, oy + ty * nearW * 0.5);
+      ctx.lineTo(ox - tx * nearW * 0.5, oy - ty * nearW * 0.5);
+      ctx.lineTo(fx - tx * farW * 0.5, fy - ty * farW * 0.5);
+      ctx.lineTo(fx + tx * farW * 0.5, fy + ty * farW * 0.5);
+      ctx.closePath();
+      ctx.fill();
+
+      // Red spill slightly onto the platform when OPEN/broken.
+      if (!sealedVisual) {
+        const Li = clamp(L * 0.20, 60, 120);
+        const ix = ax - nx * 6;
+        const iy = ay - ny * 6;
+        const ixf = ix - nx * Li;
+        const iyf = iy - ny * Li;
+        const gi = ctx.createLinearGradient(ix, iy, ixf, iyf);
+        gi.addColorStop(0, hsla(H_RED, 95, 60, 0.22));
+        gi.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = gi;
+        ctx.beginPath();
+        ctx.moveTo(ix + tx * len * 0.55, iy + ty * len * 0.55);
+        ctx.lineTo(ix - tx * len * 0.55, iy - ty * len * 0.55);
+        ctx.lineTo(ixf - tx * len * 0.15, iyf - ty * len * 0.15);
+        ctx.lineTo(ixf + tx * len * 0.15, iyf + ty * len * 0.15);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Flicker red pulses under pressure
+      if (redPulse > 0.01) {
+        const gr = ctx.createLinearGradient(ox, oy, fx, fy);
+        gr.addColorStop(0, hsla(H_RED, 95, 60, 0.10 + 0.22 * redPulse));
+        gr.addColorStop(0.55, hsla(H_RED, 95, 58, 0.04 + 0.10 * redPulse));
+        gr.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = gr;
+        ctx.beginPath();
+        ctx.moveTo(ox + tx * nearW * 0.5, oy + ty * nearW * 0.5);
+        ctx.lineTo(ox - tx * nearW * 0.5, oy - ty * nearW * 0.5);
+        ctx.lineTo(fx - tx * farW * 0.5, fy - ty * farW * 0.5);
+        ctx.lineTo(fx + tx * farW * 0.5, fy + ty * farW * 0.5);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    // Build an oriented rectangle across the wall line (breach/shield)
     const hx = tx * (len * 0.5);
     const hy = ty * (len * 0.5);
-    const dx = nx * (depth * 0.5);
-    const dy = ny * (depth * 0.5);
+    const inx = -nx * inD;
+    const iny = -ny * inD;
+    const outx = nx * outD;
+    const outy = ny * outD;
 
-    const p0 = { x: cx - hx - dx, y: cy - hy - dy };
-    const p1 = { x: cx + hx - dx, y: cy + hy - dy };
-    const p2 = { x: cx + hx + dx, y: cy + hy + dy };
-    const p3 = { x: cx - hx + dx, y: cy - hy + dy };
+    const p0 = { x: ax - hx + inx, y: ay - hy + iny };
+    const p1 = { x: ax + hx + inx, y: ay + hy + iny };
+    const p2 = { x: ax + hx + outx, y: ay + hy + outy };
+    const p3 = { x: ax - hx + outx, y: ay - hy + outy };
 
-    // Soft outer glow
-    {
-      const gg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(len, depth) * 1.35);
-      const a0 = reward ? (0.20 + 0.10 * pulse) : (sealed ? 0.08 : (0.16 + 0.10 * pulse));
-      gg.addColorStop(0, hsla(glowHue, 95, 62, a0));
-      gg.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = gg;
-      ctx.beginPath();
-      ctx.arc(cx, cy, Math.max(len, depth) * 1.35, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Frame (3D-ish metal)
+    // Frame (space-metal)
     {
       ctx.beginPath();
       ctx.moveTo(p0.x, p0.y);
@@ -325,23 +403,23 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
       ctx.lineTo(p3.x, p3.y);
       ctx.closePath();
       const fg = ctx.createLinearGradient(p0.x, p0.y, p2.x, p2.y);
-      fg.addColorStop(0, 'rgba(10,12,16,0.95)');
-      fg.addColorStop(1, 'rgba(28,34,44,0.92)');
+      fg.addColorStop(0, 'rgba(8,10,14,0.96)');
+      fg.addColorStop(1, 'rgba(26,32,42,0.94)');
       ctx.fillStyle = fg;
       ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
     }
 
-    // Inner portal area (slightly inset)
-    const iLen = Math.max(12, len - frame * 2);
-    const iDepth = Math.max(10, depth - frame * 2);
+    // Inner area (inset)
+    const iLen = Math.max(16, len - frame * 2);
     const ihx = tx * (iLen * 0.5);
     const ihy = ty * (iLen * 0.5);
-    const idx = nx * (iDepth * 0.5);
-    const idy = ny * (iDepth * 0.5);
-    const q0 = { x: cx - ihx - idx, y: cy - ihy - idy };
-    const q1 = { x: cx + ihx - idx, y: cy + ihy - idy };
-    const q2 = { x: cx + ihx + idx, y: cy + ihy + idy };
-    const q3 = { x: cx - ihx + idx, y: cy - ihy + idy };
+    const q0 = { x: ax - ihx + inx, y: ay - ihy + iny };
+    const q1 = { x: ax + ihx + inx, y: ay + ihy + iny };
+    const q2 = { x: ax + ihx + outx, y: ay + ihy + outy };
+    const q3 = { x: ax - ihx + outx, y: ay - ihy + outy };
 
     ctx.save();
     ctx.beginPath();
@@ -352,87 +430,92 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
     ctx.closePath();
     ctx.clip();
 
-    if (sealed) {
-      // SEALED: energy shield
-      ctx.fillStyle = reward ? 'rgba(6,18,10,0.95)' : 'rgba(10,12,18,0.95)';
-      ctx.fillRect(cx - len, cy - len, len * 2, len * 2);
+    // OPEN = red breach, SEALED = blue shield, REWARD = green shield.
+    if (!sealedVisual) {
+      // Red breach: dark void + swirl
+      ctx.fillStyle = 'rgba(0,0,0,0.92)';
+      ctx.fillRect(ax - len, ay - len, len * 2, len * 2);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = hsla(H_RED, 95, 62, 0.32 + 0.10 * pulse);
+      ctx.lineWidth = 2.8;
+      const rr = iLen * 0.62;
+      const k = time * 1.8 + seed * 9;
+      for (let s = -2; s <= 3; s++) {
+        const ang = k + s * 0.75;
+        ctx.beginPath();
+        ctx.arc(ax, ay, rr * (0.55 + 0.08 * (s + 2)), ang, ang + Math.PI * 0.9);
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation = 'source-over';
+    } else {
+      const h0 = reward ? H_GREEN : H_BLUE;
+      // Shield fill
+      ctx.fillStyle = reward ? 'rgba(4,14,8,0.94)' : 'rgba(6,10,16,0.94)';
+      ctx.fillRect(ax - len, ay - len, len * 2, len * 2);
 
-      // Grid
-      ctx.strokeStyle = hsla(glowHue, 95, 62, reward ? 0.22 : 0.16);
+      // Moving scan lines
+      const shift = (!reward && pressure > 0.08) ? (time * (22 + 34 * pressure)) : (time * 10);
+      ctx.strokeStyle = hsla(h0, 95, 62, reward ? 0.22 : 0.16);
       ctx.lineWidth = 1.5;
       const step = 10;
       for (let t = -len; t <= len; t += step) {
+        const yy = ay + t + Math.sin((t * 0.08) + shift) * (pressure * 2.2);
         ctx.beginPath();
-        ctx.moveTo(cx - len, cy + t);
-        ctx.lineTo(cx + len, cy + t);
+        ctx.moveTo(ax - len, yy);
+        ctx.lineTo(ax + len, yy);
         ctx.stroke();
       }
 
-      // Cracks + flashes when holding pressure
+      // Pressure flashes and cracks; also red flicker when close to breaking.
       if (!reward && pressure > 0.10) {
-        const crackA = clamp(pressure * 0.65 + (1 - hpRatio) * 0.55, 0, 0.85);
+        const crackA = clamp(pressure * 0.70 + (1 - hpRatio) * 0.65, 0, 0.92);
         ctx.strokeStyle = `rgba(255,255,255,${crackA})`;
         ctx.lineWidth = 1.8;
-        const c = 7;
-        for (let i = 0; i < c; i++) {
-          const a = time * (1.6 + i * 0.05) + i * 1.7;
-          const x0 = cx + Math.cos(a) * (iLen * 0.05);
-          const y0 = cy + Math.sin(a) * (iLen * 0.05);
-          const x1 = cx + Math.cos(a + 0.8) * (iLen * (0.35 + i * 0.03));
-          const y1 = cy + Math.sin(a + 0.8) * (iLen * (0.35 + i * 0.03));
+        for (let i = 0; i < 7; i++) {
+          const a = time * (1.7 + i * 0.06) + seed * 6 + i * 1.4;
+          const x0 = ax + Math.cos(a) * (iLen * 0.06);
+          const y0 = ay + Math.sin(a) * (iLen * 0.06);
+          const x1 = ax + Math.cos(a + 0.8) * (iLen * (0.36 + i * 0.03));
+          const y1 = ay + Math.sin(a + 0.8) * (iLen * (0.36 + i * 0.03));
           ctx.beginPath();
           ctx.moveTo(x0, y0);
           ctx.lineTo(x1, y1);
           ctx.stroke();
         }
-        // Impact flash
+
         ctx.globalCompositeOperation = 'lighter';
-        ctx.fillStyle = hsla(glowHue, 95, 62, 0.18 + 0.18 * pressure);
+        ctx.fillStyle = hsla(h0, 95, 62, 0.12 + 0.24 * pressure);
         ctx.beginPath();
-        ctx.arc(cx, cy, iLen * (0.22 + 0.10 * pressure), 0, Math.PI * 2);
+        ctx.arc(ax, ay, iLen * (0.22 + 0.10 * pressure), 0, Math.PI * 2);
         ctx.fill();
+
+        if (redPulse > 0.01) {
+          ctx.fillStyle = hsla(H_RED, 95, 60, 0.10 + 0.28 * redPulse);
+          ctx.beginPath();
+          ctx.arc(ax, ay, iLen * (0.18 + 0.18 * redPulse), 0, Math.PI * 2);
+          ctx.fill();
+        }
         ctx.globalCompositeOperation = 'source-over';
       }
 
-      // Seal HP bar
+      // HP bar (always visible when sealed)
       {
         const barW = iLen * 0.82;
         const barH = 5;
-        const bx = cx - barW * 0.5;
-        const by = cy + iLen * 0.30;
+        const bx = ax - barW * 0.5;
+        const by = ay + iLen * 0.30;
         ctx.fillStyle = 'rgba(0,0,0,0.55)';
         ctx.fillRect(bx, by, barW, barH);
-        ctx.fillStyle = hsla(glowHue, 95, 60, reward ? 0.85 : 0.75);
+        ctx.fillStyle = hsla(h0, 95, 60, reward ? 0.88 : 0.78);
         ctx.fillRect(bx, by, barW * hpRatio, barH);
       }
-    } else {
-      // OPEN: swirling portal
-      const rr = Math.max(iLen, iDepth) * 0.9;
-      const pg = ctx.createRadialGradient(cx, cy, 0, cx, cy, rr);
-      pg.addColorStop(0, hsla(glowHue, 95, 60, 0.28 + 0.10 * pulse));
-      pg.addColorStop(0.4, hsla((glowHue + 40) % 360, 95, 55, 0.18));
-      pg.addColorStop(0.75, 'rgba(0,0,0,0.92)');
-      pg.addColorStop(1, 'rgba(0,0,0,1)');
-      ctx.fillStyle = pg;
-      ctx.fillRect(cx - len, cy - len, len * 2, len * 2);
-
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.strokeStyle = hsla(glowHue, 95, 62, 0.28);
-      ctx.lineWidth = 2.5;
-      const k = time * 1.7 + (g.id ? g.id.length : 0);
-      for (let s = -3; s <= 3; s++) {
-        const ang = k + s * 0.55;
-        ctx.beginPath();
-        ctx.arc(cx, cy, rr * (0.22 + 0.09 * (s + 3)), ang, ang + Math.PI * 0.85);
-        ctx.stroke();
-      }
-      ctx.globalCompositeOperation = 'source-over';
     }
 
     ctx.restore();
 
-    // Rim highlight
-    ctx.strokeStyle = hsla(glowHue, 95, 65, sealed ? 0.28 : (0.35 + 0.18 * pulse));
+    // Rim highlight (state color)
+    const rimHue = reward ? H_GREEN : (sealedVisual ? H_BLUE : H_RED);
+    ctx.strokeStyle = hsla(rimHue, 95, 65, 0.34 + 0.10 * pulse);
     ctx.lineWidth = 3.5;
     ctx.beginPath();
     ctx.moveTo(q0.x, q0.y);
@@ -442,39 +525,48 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
     ctx.closePath();
     ctx.stroke();
 
-    // Interaction button (click/tap) on the gate.
+    // Interaction button (click/tap) directly on the gate (inside side)
     if (player && rd && room.index > 0) {
-      const ip = rd.getGateInnerPoint ? rd.getGateInnerPoint(room, g, 36) : rd.getBreachInnerPoint(room, g, 36);
+      const ip = rd.getGateInnerPoint ? rd.getGateInnerPoint(room, g, 46) : rd.getBreachInnerPoint(room, g, 46);
       const dxp = player.x - ip.x;
       const dyp = player.y - ip.y;
       const near = (dxp * dxp + dyp * dyp) <= (170 * 170);
 
       if (near) {
-        const bx = cx - nx * (depth * 0.22);
-        const by = cy - ny * (depth * 0.22);
-        const bw = 124;
-        const bh = 36;
+        const bx = ip.x;
+        const by = ip.y - 18;
+        const bw = 132;
+        const bh = 38;
 
         let action = null;
         let clickable = false;
         let txt = '';
+        let btnHue = rimHue;
 
         if (reward) {
           clickable = false;
           txt = `SEALED ${Math.ceil(rewardLeft)}s`;
+          btnHue = H_GREEN;
         } else if (room.cleared && bridgeOpen && !g.rewardUsed) {
           action = 'reward';
-          clickable = true;
-          txt = 'SEAL +XP';
+          clickable = !(repairing && repairMode === 'reward');
+          const need = 10;
+          const t = repairing && repairMode === 'reward' ? repairT : 0;
+          txt = repairing && repairMode === 'reward' ? `FIX ${(t).toFixed(1)}/${need}` : 'FIX +XP';
+          btnHue = 150;
         } else if (!room.cleared) {
-          // Repair gate if not fully sealed.
+          // Repair during combat if not fully sealed.
           if (sealHp < sealMax * 0.999) {
             action = 'repair';
-            clickable = true;
-            txt = repairing ? `REPAIR ${(repairT).toFixed(1)}/2` : 'REPAIR';
+            clickable = !(repairing && repairMode !== 'reward');
+            const need = 2;
+            const t = repairing && repairMode !== 'reward' ? repairT : 0;
+            txt = repairing && repairMode !== 'reward' ? `FIX ${(t).toFixed(1)}/${need}` : 'FIX';
+            btnHue = sealed ? H_BLUE : H_RED;
           } else {
             clickable = false;
             txt = `SEALED ${Math.round(hpRatio * 100)}%`;
+            btnHue = H_BLUE;
           }
         } else {
           clickable = false;
@@ -488,8 +580,8 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
         drawRoundedRect(ctx, panelX, panelY, bw, bh, 10);
         ctx.fillStyle = clickable ? 'rgba(10,14,20,0.72)' : 'rgba(10,10,10,0.55)';
         ctx.fill();
-        ctx.strokeStyle = clickable ? hsla(glowHue, 95, 62, 0.38) : 'rgba(255,255,255,0.12)';
-        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = clickable ? hsla(btnHue, 95, 62, 0.44) : 'rgba(255,255,255,0.12)';
+        ctx.lineWidth = 2.6;
         ctx.stroke();
 
         ctx.fillStyle = 'rgba(255,255,255,0.92)';

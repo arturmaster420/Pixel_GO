@@ -1973,6 +1973,7 @@ function serializeSnapshot(state) {
       gateMax: Array.isArray(state._gateMax) ? state._gateMax.map((v) => (typeof v === 'number' ? Math.round(v) : 0)) : [],
       gateReward: Array.isArray(state._gateReward) ? state._gateReward.map((v) => (typeof v === 'number' ? Math.round(v * 10) / 10 : 0)) : [],
       gateRepair: Array.isArray(state._gateRepair) ? state._gateRepair.map((v) => (typeof v === 'number' ? Math.round(v * 10) / 10 : 0)) : [],
+      gateRepairMode: Array.isArray(state._gateRepairMode) ? state._gateRepairMode.map((v) => (typeof v === 'number' ? (v ? 1 : 0) : 0)) : [],
       gatePressure: Array.isArray(state._gatePressure) ? state._gatePressure.map((v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : 0)) : [],
       gateUsed: Array.isArray(state._gateUsed) ? state._gateUsed.map((v) => (typeof v === 'number' ? (v ? 1 : 0) : 0)) : [],
       killed: (state._roomKilled | 0) || 0,
@@ -2381,6 +2382,7 @@ function applySnapshotToClient(state, snap) {
     state._gateMax = Array.isArray(r.gateMax) ? r.gateMax : (state._gateMax || []);
     state._gateReward = Array.isArray(r.gateReward) ? r.gateReward : (state._gateReward || []);
     state._gateRepair = Array.isArray(r.gateRepair) ? r.gateRepair : (state._gateRepair || []);
+    state._gateRepairMode = Array.isArray(r.gateRepairMode) ? r.gateRepairMode : (state._gateRepairMode || []);
     state._gatePressure = Array.isArray(r.gatePressure) ? r.gatePressure : (state._gatePressure || []);
     state._gateUsed = Array.isArray(r.gateUsed) ? r.gateUsed : (state._gateUsed || []);
     state._roomKilled = (r.killed | 0) || 0;
@@ -2400,6 +2402,7 @@ function applySnapshotToClient(state, snap) {
           gateMax: state._gateMax,
           gateReward: state._gateReward,
           gateRepair: state._gateRepair,
+          gateRepairMode: state._gateRepairMode,
           gatePressure: state._gatePressure,
           gateUsed: state._gateUsed,
         });
