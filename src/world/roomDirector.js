@@ -8,12 +8,30 @@ const GAP = 160; // gap between rooms (world units)
 const COLLAPSE_DUR = 1.35; // seconds
 const BRIDGE_BUILD_DUR = 1.15; // seconds
 
-// Gates (SAS-like "breaches" in the platform edge).
-// Player can temporarily patch (close) a gate.
-const BREACH_PATCH_DUR = 10.0; // seconds
-const BREACH_INTERACT_R = 160; // world units
+// Gates (SAS-like): portals on the platform edge.
+// - Gates start OPEN (broken). Mobs come from outside.
+// - Player can REPAIR a gate to seal it (needs 2s safe: no hits to player and gate).
+// - Mobs attack sealed gates and break them.
+// - After clearing waves and the bridge opens, player can do a reward seal (green, 10s) to get XP orbs.
+const GATE_INTERACT_R = 170;
+const GATE_REPAIR_SAFE_SEC = 2.0;
+const GATE_REPAIR_TIME_SEC = 2.0;
+const GATE_REWARD_SEAL_DUR = 10.0;
 
-// Room side length (v0.1 plan)
+function clamp(n, a, b) {
+  return n < a ? a : (n > b ? b : n);
+}
+
+// Gate opening length along edge (must match renderer + collision)
+export function getGateLenForRoomSide(roomSide) {
+  return clamp(roomSide * 0.10, 72, 112);
+}
+
+export function getGateHalfLenForRoomSide(roomSide) {
+  return getGateLenForRoomSide(roomSide) * 0.5;
+}
+
+// Room side length
 export function getRoomSide(roomIndex) {
   const hubSide = HUB_HALF * 2;
   const idx = (roomIndex | 0);
@@ -25,7 +43,7 @@ export function getRoomSide(roomIndex) {
   if (idx <= 1) return hubSide;
 
   const n = idx;
-  const GROWTH = 180; // smaller growth than before (was 350)
+  const GROWTH = 180; // smaller growth than before
   const L = hubSide + GROWTH * Math.sqrt(Math.max(0, n - 1));
   return Math.round(L);
 }
@@ -40,11 +58,10 @@ function makeRoom(index, centerX, centerY) {
     maxY: centerY + half,
   };
 
-  const breaches = makeBreaches(index, bounds);
+  const gates = makeGates(index, bounds, side);
   return {
     id: `room_${index}`,
     index,
-    // Cosmetic theme (biomes every 10 rooms, with slight per-room variation)
     hue: (() => {
       if ((index | 0) <= 0) return 210;
       const biome = Math.floor(((index | 0) - 1) / 10);
@@ -54,8 +71,8 @@ function makeRoom(index, centerX, centerY) {
     centerX,
     centerY,
     bounds,
-    breaches,
-    cleared: index === 0, // hub is always "cleared"
+    breaches: gates, // keep legacy field name used elsewhere
+    cleared: index === 0,
     collapsing: false,
     collapseT: 0,
     removed: false,
@@ -73,7 +90,7 @@ function makeRng(seed) {
   };
 }
 
-function makeBreaches(index, bounds) {
+function makeGates(index, bounds, side) {
   const idx = index | 0;
   if (idx <= 0) return [];
 
@@ -81,11 +98,11 @@ function makeBreaches(index, bounds) {
   // Rules:
   // - Do NOT spawn on the forward edge (north / minY) because the room->next bridge builds there.
   // - Do NOT spawn on the entry segment where the bridge brought us into this room (south / maxY, centered).
-  const sides = ["S", "W", "E"]; // south/front, west/left, east/right
+  const sides = ["S", "W", "E"]; // south/back, west/left, east/right
   const rnd = makeRng((0xBEE7CA0 ^ Math.imul(idx, 2654435761)) >>> 0);
 
-  // Gate count progression (matches early rooms):
-  // room1->1, room2->1, room3->2, room4->2, ... capped.
+  // Gate count progression:
+  // room1->1, room2->1, room3->2 ... capped.
   const count = Math.max(1, Math.min(6, 1 + Math.floor(Math.max(0, idx - 1) / 2)));
 
   const sideLen = (bounds.maxX - bounds.minX);
@@ -96,14 +113,13 @@ function makeBreaches(index, bounds) {
   const entryX0 = (bounds.minX + bounds.maxX) * 0.5 - entryForbidden * 0.5;
   const entryX1 = (bounds.minX + bounds.maxX) * 0.5 + entryForbidden * 0.5;
 
-  const arr = [];
   const used = [];
   const minSep = Math.max(120, Math.min(260, sideLen * 0.22));
 
-  const tryPick = (side) => {
+  const tryPick = (sideChar) => {
     let x = 0;
     let y = 0;
-    if (side === "S") {
+    if (sideChar === "S") {
       // Avoid the entry bridge segment.
       let tries = 16;
       while (tries-- > 0) {
@@ -114,12 +130,11 @@ function makeBreaches(index, bounds) {
         break;
       }
       if (x === 0 && y === 0) {
-        // Fallback: pick left/right away from entry.
         const left = rnd() < 0.5;
         x = left ? (bounds.minX + margin) : (bounds.maxX - margin);
         y = bounds.maxY;
       }
-    } else if (side === "W") {
+    } else if (sideChar === "W") {
       x = bounds.minX;
       y = bounds.minY + margin + rnd() * ((bounds.maxY - bounds.minY) - margin * 2);
     } else {
@@ -129,9 +144,10 @@ function makeBreaches(index, bounds) {
     return { x, y };
   };
 
+  const gates = [];
   for (let i = 0; i < count; i++) {
-    let side = sides[Math.floor(rnd() * sides.length)];
-    let pos = tryPick(side);
+    let sideChar = sides[Math.floor(rnd() * sides.length)];
+    let pos = tryPick(sideChar);
 
     // De-cluster: try a few times to keep gates separated.
     let ok = false;
@@ -143,21 +159,41 @@ function makeBreaches(index, bounds) {
         if (dx * dx + dy * dy < minSep * minSep) { ok = false; break; }
       }
       if (!ok) {
-        side = sides[Math.floor(rnd() * sides.length)];
-        pos = tryPick(side);
+        sideChar = sides[Math.floor(rnd() * sides.length)];
+        pos = tryPick(sideChar);
       }
     }
 
     used.push(pos);
-    arr.push({
+
+    const sealMax = Math.round(160 + idx * 18);
+
+    gates.push({
       id: `g_${idx}_${i}`,
-      side,
+      side: sideChar,
       x: pos.x,
       y: pos.y,
-      patchedLeft: 0,
+
+      // Seal HP: 0 means OPEN.
+      sealHp: 0,
+      sealMax,
+
+      // Combat pressure/FX
+      lastHitAt: -Infinity,
+      pressure: 0,
+
+      // Repair channel
+      repairActive: false,
+      repairBy: "",
+      repairT: 0,
+
+      // Reward seal after clear
+      rewardSealLeft: 0,
+      rewardUsed: false,
     });
   }
-  return arr;
+
+  return gates;
 }
 
 function unionAabb(a, b, pad = 0) {
@@ -179,6 +215,26 @@ function pointInAabb(x, y, b, pad = 0) {
   );
 }
 
+function findPlayerById(state, pid) {
+  if (!state || !pid) return null;
+  const ps = (state.players && state.players.length) ? state.players : (state.player ? [state.player] : []);
+  const sid = String(pid);
+  for (const p of ps) {
+    if (p && String(p.id || "") === sid) return p;
+  }
+  return null;
+}
+
+function gateIsRewardSealed(g) {
+  return (g && (g.rewardSealLeft || 0) > 0.02);
+}
+
+function gateIsSealed(g) {
+  if (!g) return false;
+  if (gateIsRewardSealed(g)) return true;
+  return (g.sealHp || 0) > 0.02;
+}
+
 export class RoomDirector {
   constructor(state) {
     this.state = state;
@@ -188,7 +244,6 @@ export class RoomDirector {
     this.next = null;
 
     // Bridge connects current -> next after clear.
-    // { fromIndex, toIndex, width, bounds, t, progress, built }
     this.bridge = null;
 
     this._ensureNextSpawned();
@@ -197,11 +252,6 @@ export class RoomDirector {
 
   get roomIndex() {
     return this.current ? (this.current.index | 0) : 0;
-  }
-
-  get portalRect() {
-    // Deprecated in Pixel_GO v0.2+: transitions use a building bridge.
-    return null;
   }
 
   markCurrentCleared() {
@@ -214,6 +264,8 @@ export class RoomDirector {
   }
 
   update(dt) {
+    const st = this.state;
+
     // Update collapse animation and remove collapsed rooms.
     if (this.prev && this.prev.collapsing) {
       this.prev.collapseT += dt / COLLAPSE_DUR;
@@ -235,33 +287,70 @@ export class RoomDirector {
       }
     }
 
+    // Gate timers + repair channels
+    const room = this.current;
+    if (room && Array.isArray(room.breaches)) {
+      const now = (st && typeof st.time === 'number') ? st.time : 0;
+      for (const g of room.breaches) {
+        if (!g) continue;
+
+        // Reward seal timer
+        if ((g.rewardSealLeft || 0) > 0) {
+          g.rewardSealLeft -= dt;
+          if (g.rewardSealLeft < 0) g.rewardSealLeft = 0;
+        }
+
+        // Pressure decay
+        if ((g.pressure || 0) > 0) {
+          // fast decay; gets refreshed by hits
+          g.pressure = Math.max(0, g.pressure - dt * 2.6);
+        }
+
+        // Repair channel
+        if (g.repairActive) {
+          const p = findPlayerById(st, g.repairBy);
+          if (!p || p.hp <= 0 || !this.canPlayerInteractGate(p, g)) {
+            g.repairActive = false;
+            g.repairBy = "";
+            g.repairT = 0;
+            continue;
+          }
+
+          const safePlayer = (now - (typeof p._lastDamagedAt === 'number' ? p._lastDamagedAt : -Infinity)) >= GATE_REPAIR_SAFE_SEC;
+          const safeGate = (now - (typeof g.lastHitAt === 'number' ? g.lastHitAt : -Infinity)) >= GATE_REPAIR_SAFE_SEC;
+
+          if (safePlayer && safeGate) {
+            g.repairT += dt;
+            if (g.repairT >= GATE_REPAIR_TIME_SEC) {
+              g.repairT = 0;
+              g.repairActive = false;
+              g.repairBy = "";
+              g.sealHp = g.sealMax;
+              g.pressure = 0;
+              g.lastHitAt = -Infinity;
+            }
+          } else {
+            // Must be 2 seconds of no pressure.
+            g.repairT = 0;
+          }
+        } else {
+          g.repairT = 0;
+        }
+
+        // Keep seal hp sane
+        if (!Number.isFinite(g.sealHp)) g.sealHp = 0;
+        if (!Number.isFinite(g.sealMax) || g.sealMax <= 1) g.sealMax = 200;
+        if (g.sealHp < 0) g.sealHp = 0;
+        if (g.sealHp > g.sealMax) g.sealHp = g.sealMax;
+      }
+    }
+
     // Ensure dynamic bounds are correct (union during transitions).
     this._applyDynamicBounds();
 
-    // Update breach patch timers.
-    try {
-      const brs = this.current && Array.isArray(this.current.breaches) ? this.current.breaches : null;
-      if (brs) {
-        for (const b of brs) {
-          if (!b) continue;
-          if ((b.patchedLeft || 0) > 0) {
-            b.patchedLeft -= dt;
-            if (b.patchedLeft < 0) b.patchedLeft = 0;
-          }
-        }
-      }
-    } catch {}
-
     // Auto-enter next when player steps into next room.
-    const st = this.state;
     const p = st && st.player;
     if (!p) return;
-
-    // HUD hint: nearest breach patch interaction.
-    try {
-      const info = this.getNearestBreachInfo(p);
-      if (st) st._breachHint = info;
-    } catch {}
 
     if (this.current && this.current.cleared && this.next && !this.next.removed) {
       // Allow entering only after bridge is built.
@@ -273,37 +362,7 @@ export class RoomDirector {
     }
   }
 
-  getNearestBreachInfo(player) {
-    const room = this.current;
-    if (!room || (room.index | 0) <= 0) return null;
-    const brs = Array.isArray(room.breaches) ? room.breaches : [];
-    let best = null;
-    let bestD2 = Infinity;
-    for (const b of brs) {
-      if (!b) continue;
-      const ip = this.getBreachInnerPoint(room, b, 28);
-      const dx = player.x - ip.x;
-      const dy = player.y - ip.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < bestD2) {
-        bestD2 = d2;
-        best = b;
-      }
-    }
-    if (!best) return null;
-    if (bestD2 > BREACH_INTERACT_R * BREACH_INTERACT_R) return null;
-    return {
-      gateId: best.id,
-      canPatch: true,
-      patchedLeft: best.patchedLeft || 0,
-    };
-  }
-
-  tryPatchNearestBreach(player) {
-    const info = this.getNearestBreachInfo(player);
-    if (!info || !info.gateId) return false;
-    return this.tryPatchGateById(info.gateId, player);
-  }
+  // ---- Gate helpers -------------------------------------------------------
 
   getGateById(gateId) {
     const room = this.current;
@@ -311,48 +370,180 @@ export class RoomDirector {
     return room.breaches.find((g) => g && g.id === gateId) || null;
   }
 
-  canPlayerInteractGate(player, gate) {
-    if (!player || !gate || !this.current) return false;
-    const ip = this.getBreachInnerPoint(this.current, gate, 28);
-    const dx = player.x - ip.x;
-    const dy = player.y - ip.y;
-    return (dx * dx + dy * dy) <= (BREACH_INTERACT_R * BREACH_INTERACT_R);
+  isGateSealed(gate) {
+    return gateIsSealed(gate);
   }
 
-  // Host-authoritative: patch (close) a gate for a while.
-  tryPatchGateById(gateId, player = null) {
-    const gate = this.getGateById(gateId);
-    if (!gate) return false;
-    if (player && !this.canPlayerInteractGate(player, gate)) return false;
-    // If already patched, don't refresh (prevents spam).
-    if ((gate.patchedLeft || 0) > 0.05) return false;
-    gate.patchedLeft = BREACH_PATCH_DUR;
+  canPlayerInteractGate(player, gate) {
+    if (!player || !gate || !this.current) return false;
+    const ip = this.getGateInnerPoint(this.current, gate, 34);
+    const dx = player.x - ip.x;
+    const dy = player.y - ip.y;
+    return (dx * dx + dy * dy) <= (GATE_INTERACT_R * GATE_INTERACT_R);
+  }
+
+  getGateInnerPoint(room, gate, inset = 24) {
+    const b = room.bounds;
+    const side = gate.side;
+    if (side === "W") return { x: b.minX + inset, y: gate.y };
+    if (side === "E") return { x: b.maxX - inset, y: gate.y };
+    if (side === "S") return { x: gate.x, y: b.maxY - inset };
+    return { x: gate.x, y: b.minY + inset };
+  }
+
+  // Backwards-compatible aliases (older code used "breach" naming).
+  getBreachInnerPoint(room, gate, inset = 24) {
+    return this.getGateInnerPoint(room, gate, inset);
+  }
+
+  // Point just OUTSIDE the edge (used for spawning/approach)
+  getGateOuterPoint(room, gate, out = 220) {
+    const b = room.bounds;
+    const side = gate.side;
+    if (side === "W") return { x: b.minX - out, y: gate.y };
+    if (side === "E") return { x: b.maxX + out, y: gate.y };
+    if (side === "S") return { x: gate.x, y: b.maxY + out };
+    return { x: gate.x, y: b.minY - out };
+  }
+
+  getBreachOuterPoint(room, gate, out = 220) {
+    return this.getGateOuterPoint(room, gate, out);
+  }
+
+  // Point right at the gate face OUTSIDE (used so mobs "push" the closed gate)
+  getGateContactPoint(room, gate, enemyRadius = 20, pad = 2) {
+    const b = room.bounds;
+    const r = (enemyRadius || 20) + pad;
+    const side = gate.side;
+    if (side === "W") return { x: b.minX - r, y: gate.y };
+    if (side === "E") return { x: b.maxX + r, y: gate.y };
+    if (side === "S") return { x: gate.x, y: b.maxY + r };
+    return { x: gate.x, y: b.minY - r };
+  }
+
+  // Apply damage to a sealed gate (host-authoritative).
+  applyGateDamage(gateId, amount, sourceEnemy = null) {
+    const g = this.getGateById(gateId);
+    if (!g) return false;
+
+    // Reward-sealed gates are invulnerable.
+    if (gateIsRewardSealed(g)) return false;
+
+    if (!Number.isFinite(amount) || amount <= 0) return false;
+    if ((g.sealHp || 0) <= 0) {
+      // Already open.
+      return false;
+    }
+
+    const now = (this.state && typeof this.state.time === 'number') ? this.state.time : 0;
+    g.lastHitAt = now;
+    g.pressure = Math.min(1, (g.pressure || 0) + 0.55);
+
+    g.sealHp -= amount;
+    if (g.sealHp < 0) g.sealHp = 0;
+    // If gate breaks, cancel any repair channel.
+    if (g.sealHp <= 0.01) {
+      g.sealHp = 0;
+      g.repairActive = false;
+      g.repairBy = "";
+      g.repairT = 0;
+    }
+
     return true;
   }
 
-  getBreachInnerPoint(room, breach, inset = 24) {
-    const b = room.bounds;
-    const side = breach.side;
-    if (side === "W") return { x: b.minX + inset, y: breach.y };
-    if (side === "E") return { x: b.maxX - inset, y: breach.y };
-    if (side === "S") return { x: breach.x, y: b.maxY - inset };
-    return { x: breach.x, y: b.minY + inset };
+  // Start a repair channel on a gate.
+  startRepairGateById(gateId, player) {
+    const g = this.getGateById(gateId);
+    if (!g) return false;
+    if (!player || !this.canPlayerInteractGate(player, g)) return false;
+
+    // Can't repair if already reward-sealed.
+    if (gateIsRewardSealed(g)) return false;
+
+    // Only allow if the gate is open/broken or damaged.
+    if ((g.sealHp || 0) >= (g.sealMax || 1) * 0.999) return false;
+
+    g.repairActive = true;
+    g.repairBy = String(player.id || "local");
+    g.repairT = 0;
+    return true;
   }
 
-  getBreachOuterPoint(room, breach, out = 80) {
-    const b = room.bounds;
-    const side = breach.side;
-    if (side === "W") return { x: b.minX - out, y: breach.y };
-    if (side === "E") return { x: b.maxX + out, y: breach.y };
-    if (side === "S") return { x: breach.x, y: b.maxY + out };
-    return { x: breach.x, y: b.minY - out };
+  // Reward seal (green) after clear when bridge is open.
+  rewardSealGateById(gateId, player) {
+    const room = this.current;
+    const g = this.getGateById(gateId);
+    if (!room || !g) return false;
+    if (!player || !this.canPlayerInteractGate(player, g)) return false;
+
+    // Require bridge open (matches "opened bridge" request).
+    if (!(room.cleared && this.bridge && this.bridge.built)) return false;
+
+    if (g.rewardUsed) return false;
+
+    g.rewardUsed = true;
+    g.rewardSealLeft = GATE_REWARD_SEAL_DUR;
+    g.sealHp = g.sealMax;
+    g.repairActive = false;
+    g.repairBy = "";
+    g.repairT = 0;
+
+    // Spawn XP orbs reward.
+    this._spawnGateRewardOrbs(room, g);
+
+    return true;
   }
 
+  // Unified gate action entry point (used by click/tap + net inputs).
+  performGateAction(gateId, action, player) {
+    const a = String(action || "").toLowerCase();
+    if (a === "reward" || a === "rewardseal" || a === "seal") {
+      return this.rewardSealGateById(gateId, player);
+    }
+    // default: repair
+    return this.startRepairGateById(gateId, player);
+  }
 
-  /**
-   * Joiners: force sync room state from host snapshot.
-   * Rebuilds deterministic room positions for the requested roomIndex.
-   */
+  _spawnGateRewardOrbs(room, gate) {
+    const st = this.state;
+    if (!st || !Array.isArray(st.xpOrbs)) return;
+
+    const n = room.index | 0;
+    const bracket = Math.floor(Math.max(0, n - 1) / 10);
+    const maxOrbs = 2 + bracket; // 1-10 => 2, 11-20 => 3, etc.
+    const count = 1 + Math.floor(Math.random() * maxOrbs);
+
+    const zone = this._virtualZoneFromRoom(n);
+    const baseXp = 10 * Math.max(1, zone);
+
+    const ip = this.getGateInnerPoint(room, gate, 44);
+    for (let i = 0; i < count; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const rad = 10 + Math.random() * 22;
+      st.xpOrbs.push({
+        x: ip.x + Math.cos(ang) * rad,
+        y: ip.y + Math.sin(ang) * rad,
+        radius: 8,
+        kind: "xp",
+        xp: baseXp,
+        age: 0,
+      });
+    }
+
+    // Small floating text feedback
+    if (Array.isArray(st.floatingTexts)) {
+      st.floatingTexts.push({
+        x: ip.x,
+        y: ip.y - 24,
+        text: `+XP x${count}`,
+        time: 1.2,
+      });
+    }
+  }
+
+  // ---- Joiner sync --------------------------------------------------------
+
   forceSetCurrent(roomIndex, opts = null) {
     const o = opts || {};
     const idx = roomIndex | 0;
@@ -373,15 +564,30 @@ export class RoomDirector {
     this.current = makeRoom(idx, cx, cy);
     this.current.cleared = idx === 0 ? true : !!o.cleared;
 
-    // Apply breach patches from host snapshot (joiners).
-    if (Array.isArray(o.breachPatches) && Array.isArray(this.current.breaches)) {
-      for (let i = 0; i < this.current.breaches.length; i++) {
-        const v = o.breachPatches[i];
-        if (typeof v === 'number' && this.current.breaches[i]) {
-          this.current.breaches[i].patchedLeft = Math.max(0, v);
-        }
+    // Apply gate states from host snapshot.
+    const gates = Array.isArray(this.current.breaches) ? this.current.breaches : [];
+    const hpArr = Array.isArray(o.gateHp) ? o.gateHp : null;
+    const maxArr = Array.isArray(o.gateMax) ? o.gateMax : null;
+    const rewardArr = Array.isArray(o.gateReward) ? o.gateReward : null;
+    const repairArr = Array.isArray(o.gateRepair) ? o.gateRepair : null;
+    const pressArr = Array.isArray(o.gatePressure) ? o.gatePressure : null;
+    const usedArr = Array.isArray(o.gateUsed) ? o.gateUsed : null;
+
+    for (let i = 0; i < gates.length; i++) {
+      const g = gates[i];
+      if (!g) continue;
+      if (hpArr && typeof hpArr[i] === 'number') g.sealHp = Math.max(0, hpArr[i]);
+      if (maxArr && typeof maxArr[i] === 'number') g.sealMax = Math.max(1, maxArr[i]);
+      if (rewardArr && typeof rewardArr[i] === 'number') g.rewardSealLeft = Math.max(0, rewardArr[i]);
+      if (repairArr && typeof repairArr[i] === 'number') {
+        const v = Math.max(0, repairArr[i]);
+        g.repairActive = v > 0.001;
+        g.repairT = v;
       }
+      if (pressArr && typeof pressArr[i] === 'number') g.pressure = clamp(pressArr[i], 0, 1);
+      if (usedArr && typeof usedArr[i] === 'number') g.rewardUsed = usedArr[i] > 0;
     }
+
     this.next = null;
 
     const wantNext = idx === 0 ? true : !!o.hasNext;
@@ -394,7 +600,6 @@ export class RoomDirector {
         this.bridge.progress = p;
         this.bridge.built = p >= 0.999;
       } else if (this.bridge) {
-        // Default for joiners: show bridge as built if host says "hasNext".
         this.bridge.t = 1;
         this.bridge.progress = 1;
         this.bridge.built = true;
@@ -403,6 +608,8 @@ export class RoomDirector {
 
     this._applyDynamicBounds();
   }
+
+  // ---- Room chain ---------------------------------------------------------
 
   _ensureNextSpawned() {
     if (!this.current) return;
@@ -427,14 +634,12 @@ export class RoomDirector {
     const from = this.current;
     const to = this.next;
 
-    // If already built for this pair — keep.
     if (this.bridge && (this.bridge.fromIndex | 0) === (from.index | 0) && (this.bridge.toIndex | 0) === (to.index | 0)) {
       return;
     }
 
     const width = Math.max(140, Math.min(240, Math.round(Math.min(from.side, to.side) * 0.16)));
 
-    // Connect from current top edge (minY) to next bottom edge (maxY).
     const startY = from.bounds.minY;
     const endY = to.bounds.maxY;
     const minY = Math.min(startY, endY);
@@ -496,22 +701,15 @@ export class RoomDirector {
     try {
       if (this.state) {
         this.state.currentRoomIndex = this.current.index | 0;
-        // Host/joiner: keep zone-like number for legacy systems (optional)
         this.state.currentZone = this._virtualZoneFromRoom(this.current.index | 0);
       }
     } catch {}
 
-    // Spawn system can reset per-room counters.
     try {
       const ss = this.state && this.state.spawnSystem;
       if (ss && typeof ss.onRoomChanged === "function") ss.onRoomChanged(this.current);
     } catch {}
 
-
-    // If we just left Hub, we want the next rooms to be locked behind us (no return).
-    // We don't keep older rooms beyond `prev`.
-
-    // Bounds after enter: only current (until cleared, then union with next).
     this._applyDynamicBounds();
   }
 
@@ -521,17 +719,14 @@ export class RoomDirector {
     const base = this.current.bounds;
 
     // During transition phase: allow moving onto the built bridge and into next.
-    // While bridge is building, keep bounds locked to current only.
     let union = base;
     const hasNext = !!(this.current.cleared && this.next && !this.next.removed);
     if (hasNext) {
       this._ensureBridge();
 
-      // Allow stepping onto the already-built part of the bridge while it constructs.
       const builtPart = this._getBridgeBuiltBounds();
       if (builtPart) union = unionAabb(union, builtPart, 16);
 
-      // When fully built: include the whole bridge + next room.
       if (this.bridge && this.bridge.built) {
         union = unionAabb(union, this.bridge.bounds, 20);
         union = unionAabb(union, this.next.bounds, 20);
@@ -540,7 +735,7 @@ export class RoomDirector {
 
     setDynamicWorldBounds(union);
 
-    // Keep state helper fields.
+    // Keep state helper fields for HUD/snapshots.
     if (this.state) {
       this.state.currentRoomIndex = this.current.index | 0;
       this.state._roomSide = this.current.side | 0;
@@ -548,13 +743,16 @@ export class RoomDirector {
       this.state._roomCleared = !!this.current.cleared;
       this.state._roomHasNext = !!(this.next && !this.next.removed);
 
-      // Bridge sync helpers
       this.state._bridgeP = this.bridge ? (this.bridge.progress || 0) : 0;
       this.state._bridgeBuilt = !!(this.bridge && this.bridge.built);
 
-      // Breach patch sync helper
-      const brs = this.current && Array.isArray(this.current.breaches) ? this.current.breaches : [];
-      this.state._breachPatches = brs.map((b) => (b && typeof b.patchedLeft === 'number') ? b.patchedLeft : 0);
+      const gs = this.current && Array.isArray(this.current.breaches) ? this.current.breaches : [];
+      this.state._gateHp = gs.map((g) => (g && typeof g.sealHp === 'number') ? g.sealHp : 0);
+      this.state._gateMax = gs.map((g) => (g && typeof g.sealMax === 'number') ? g.sealMax : 0);
+      this.state._gateReward = gs.map((g) => (g && typeof g.rewardSealLeft === 'number') ? g.rewardSealLeft : 0);
+      this.state._gateRepair = gs.map((g) => (g && g.repairActive) ? (g.repairT || 0) : 0);
+      this.state._gatePressure = gs.map((g) => (g && typeof g.pressure === 'number') ? g.pressure : 0);
+      this.state._gateUsed = gs.map((g) => (g && g.rewardUsed) ? 1 : 0);
     }
   }
 
@@ -575,7 +773,6 @@ export class RoomDirector {
       e._remove = true;
     }
 
-    // Visual objects: clear anything still inside the collapsed room bounds.
     const inRoom = (o) => o && typeof o.x === 'number' && typeof o.y === 'number' && (o.x >= b.minX && o.x <= b.maxX && o.y >= b.minY && o.y <= b.maxY);
 
     const clearArr = (arrName) => {
@@ -590,10 +787,8 @@ export class RoomDirector {
     clearArr('projectiles');
     clearArr('rockets');
     clearArr('xpOrbs');
-    // summons are persistent by design, but we remove them if left behind.
     clearArr('summons');
   }
-
 
   _virtualZoneFromRoom(roomIndex) {
     const n = roomIndex | 0;

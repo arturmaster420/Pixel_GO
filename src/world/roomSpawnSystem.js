@@ -1,6 +1,7 @@
 import { createBasicMob } from "../enemies/mobBasic.js";
 import { createEliteMob } from "../enemies/mobElite.js";
 import { createRoamingBoss } from "../enemies/roamingBoss.js";
+import { getGateHalfLenForRoomSide } from "./roomDirector.js";
 
 function clamp(n, a, b) {
   return n < a ? a : (n > b ? b : n);
@@ -38,65 +39,143 @@ function pickSpawnPos(bounds, players, minDist = 260, tries = 12) {
   return pos;
 }
 
-function wrapClampUpdate(enemy, bounds, pad = 10) {
+function clampInside(self, bounds, pad = 10) {
+  const b = bounds;
+  const r = (self.radius || 20) + pad;
+  if (self.x < b.minX + r) self.x = b.minX + r;
+  if (self.x > b.maxX - r) self.x = b.maxX - r;
+  if (self.y < b.minY + r) self.y = b.minY + r;
+  if (self.y > b.maxY - r) self.y = b.maxY - r;
+}
+
+// Gate-aware enemy update:
+// - while outside (not "entered"), enemies move toward their assigned gate
+// - if gate is sealed, they press against it and damage it
+// - if gate is open, they pass through the opening and then switch to normal AI
+function wrapGateApproachUpdate(enemy, roomIndex, gateId, pad = 10) {
   if (!enemy || typeof enemy.update !== "function") return;
   const orig = enemy.update;
-  enemy.update = (self, dt, state) => {
-    orig(self, dt, state);
 
-    // Gate spawn behavior:
-    // - enemies can start OUTSIDE the platform (in space)
-    // - we only start clamping them after they actually enter the room bounds
-    const ge = self && self._gateEnter;
-    if (ge && !ge.entered) {
-      const b0 = bounds;
-      const r0 = (self.radius || 20) + pad;
-      const inside = (self.x >= b0.minX + r0 && self.x <= b0.maxX - r0 && self.y >= b0.minY + r0 && self.y <= b0.maxY - r0);
-      if (!inside) return;
-      ge.entered = true;
+  enemy.update = (self, dt, state) => {
+    const rd = state && state.roomDirector;
+    const room = rd && rd.current;
+    if (!room || (room.index | 0) !== (roomIndex | 0) || !gateId || !rd.getGateById) {
+      orig(self, dt, state);
+      if (room) clampInside(self, room.bounds, pad);
+      return;
     }
 
-    const b = bounds;
-    const r = (self.radius || 20) + pad;
-    if (self.x < b.minX + r) self.x = b.minX + r;
-    if (self.x > b.maxX - r) self.x = b.maxX - r;
-    if (self.y < b.minY + r) self.y = b.minY + r;
-    if (self.y > b.maxY - r) self.y = b.maxY - r;
+    const gate = rd.getGateById(String(gateId));
+    if (!gate) {
+      orig(self, dt, state);
+      clampInside(self, room.bounds, pad);
+      return;
+    }
+
+    // Track whether this enemy already entered the room.
+    const ge = (self._gateEnter ||= { entered: false });
+    const b = room.bounds;
+    const halfLen = getGateHalfLenForRoomSide(room.side || 600) * 0.95;
+    const sealed = (typeof rd.isGateSealed === 'function') ? rd.isGateSealed(gate) : ((gate.sealHp || 0) > 0.02 || (gate.rewardSealLeft || 0) > 0.02);
+
+    if (!ge.entered) {
+      // Outside-phase: approach/attack gate
+      const r = (self.radius || 20);
+      const speed = (self.speed || 80);
+
+      const target = sealed
+        ? rd.getGateContactPoint(room, gate, r, 3)
+        : rd.getGateInnerPoint(room, gate, 54);
+
+      const dx = target.x - self.x;
+      const dy = target.y - self.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      self.x += (dx / dist) * speed * dt;
+      self.y += (dy / dist) * speed * dt;
+
+      // Barrier: only allow entry through the gate opening when NOT sealed.
+      if (gate.side === 'W') {
+        const within = Math.abs(self.y - gate.y) <= halfLen;
+        const limitOutsideX = b.minX - (r + pad);
+        const limitInsideX = b.minX + (r + pad);
+        if (sealed || !within) {
+          if (self.x > limitOutsideX) self.x = limitOutsideX;
+        } else {
+          // Open & aligned: allow passing through.
+          if (self.x >= limitInsideX) ge.entered = true;
+          // Don't allow sneaking in outside the opening.
+          if (!within && self.x > limitOutsideX) self.x = limitOutsideX;
+        }
+      } else if (gate.side === 'E') {
+        const within = Math.abs(self.y - gate.y) <= halfLen;
+        const limitOutsideX = b.maxX + (r + pad);
+        const limitInsideX = b.maxX - (r + pad);
+        if (sealed || !within) {
+          if (self.x < limitOutsideX) self.x = limitOutsideX;
+        } else {
+          if (self.x <= limitInsideX) ge.entered = true;
+        }
+      } else if (gate.side === 'S') {
+        const within = Math.abs(self.x - gate.x) <= halfLen;
+        const limitOutsideY = b.maxY + (r + pad);
+        const limitInsideY = b.maxY - (r + pad);
+        if (sealed || !within) {
+          if (self.y < limitOutsideY) self.y = limitOutsideY;
+        } else {
+          if (self.y <= limitInsideY) ge.entered = true;
+        }
+      }
+
+      // Attack the gate if sealed and we are in contact.
+      if (sealed && typeof rd.applyGateDamage === 'function') {
+        const cp = rd.getGateContactPoint(room, gate, r, 2);
+        const cd2 = distance2(self.x, self.y, cp.x, cp.y);
+        const contactR = Math.max(16, r * 0.75);
+        const aligned = (gate.side === 'S') ? (Math.abs(self.x - gate.x) <= halfLen) : (Math.abs(self.y - gate.y) <= halfLen);
+        if (aligned && cd2 <= contactR * contactR) {
+          rd.applyGateDamage(String(gateId), (self.damage || 5) * dt * 0.9, self);
+        }
+      }
+
+      return;
+    }
+
+    // Inside-phase: normal AI + clamp to room.
+    orig(self, dt, state);
+    clampInside(self, b, pad);
   };
 }
 
-function pickBreachSpawn(room, rd, players, minDist = 260) {
+function pickGateSpawn(room, rd, players, minDist = 260) {
   if (!room || !rd) return null;
-  const brs = Array.isArray(room.breaches) ? room.breaches : [];
-  if (!brs.length) return null;
+  const gates = Array.isArray(room.breaches) ? room.breaches : [];
+  if (!gates.length) return null;
 
   const minD2 = minDist * minDist;
-  // Prefer breaches far enough from players, but fall back to any open breach.
   const cands = [];
-  const open = [];
-  for (const b of brs) {
-    if (!b) continue;
-    if ((b.patchedLeft || 0) > 0) continue;
-    const ip = rd.getBreachInnerPoint(room, b, 30);
-    open.push({ b, ip });
+  const all = [];
+  for (const g of gates) {
+    if (!g) continue;
+    const ip = rd.getGateInnerPoint ? rd.getGateInnerPoint(room, g, 34) : rd.getBreachInnerPoint(room, g, 34);
+    all.push({ g, ip });
     let ok = true;
     for (const p of players) {
       if (!p) continue;
       if (distance2(ip.x, ip.y, p.x, p.y) < minD2) { ok = false; break; }
     }
-    if (!ok) continue;
-    cands.push({ b, ip });
+    if (ok) cands.push({ g, ip });
   }
-  const pool = cands.length ? cands : open;
-  if (!pool.length) return null;
 
+  const pool = cands.length ? cands : all;
   const pick = pool[(Math.random() * pool.length) | 0];
-  // Spawn outside far enough so they are "behind" the platform.
-  const op = rd.getBreachOuterPoint(room, pick.b, 220);
+
+  // Spawn far outside the platform ("from beyond the map bounds").
+  const out = Math.max(520, (room.side || 600) * 0.55);
+  const op = rd.getGateOuterPoint ? rd.getGateOuterPoint(room, pick.g, out) : rd.getBreachOuterPoint(room, pick.g, out);
+
   return {
-    breachId: pick.b.id,
-    side: pick.b.side,
-    inside: pick.ip,
+    gateId: pick.g.id,
+    side: pick.g.side,
     outside: op,
   };
 }
@@ -248,7 +327,7 @@ export class RoomSpawnSystem {
       boss.id = boss.id || `boss_${this.roomIndex}_${Math.floor(Math.random() * 1e9)}`;
       this._bossId = boss.id;
       this._bossSpawned = true;
-      wrapClampUpdate(boss, bounds, 14);
+      wrapGateApproachUpdate(boss, this.roomIndex, null, 14);
       state.enemies.push(boss);
       if (state) state._roomBossAlive = true;
     }
@@ -271,7 +350,7 @@ export class RoomSpawnSystem {
       mb.id = mb.id || `miniboss_${this.roomIndex}_${Math.floor(Math.random() * 1e9)}`;
       this._miniBossId = mb.id;
       this._bossSpawned = true;
-      wrapClampUpdate(mb, bounds, 14);
+      wrapGateApproachUpdate(mb, this.roomIndex, null, 14);
       state.enemies.push(mb);
       if (state) state._roomBossAlive = true;
     }
@@ -312,15 +391,14 @@ export class RoomSpawnSystem {
     const batch = Math.min(remainingInWave, freeSlots, maxBatch);
 
     for (let i = 0; i < batch; i++) {
-      const brPick = pickBreachSpawn(room, rd, players, spawnMinDist);
-      // If all gates are patched (closed), do not spawn "from nowhere".
-      if (!brPick) return;
+      const gPick = pickGateSpawn(room, rd, players, spawnMinDist);
+      if (!gPick) return;
 
       // Spawn OUTSIDE the platform so enemies walk in "from behind".
       // Add a small tangential jitter so they don't stack.
-      let pos = { x: brPick.outside.x, y: brPick.outside.y };
+      let pos = { x: gPick.outside.x, y: gPick.outside.y };
       const jitter = 26;
-      if (brPick.side === 'W' || brPick.side === 'E') {
+      if (gPick.side === 'W' || gPick.side === 'E') {
         pos.y += (Math.random() - 0.5) * jitter * 2;
       } else {
         pos.x += (Math.random() - 0.5) * jitter * 2;
@@ -336,13 +414,13 @@ export class RoomSpawnSystem {
       enemy.id = enemy.id || `e_${this.roomIndex}_${this.spawned}_${Math.floor(Math.random() * 1e6)}`;
 
       // Gate-spawned enemies: start outside and keep moving until they enter.
-      enemy._spawnBreachId = brPick.breachId;
+      enemy._spawnGateId = gPick.gateId;
       enemy._gateEnter = { entered: false };
       // Make sure they actually move from outside (even if far).
       enemy.aggroRange = 5000;
       enemy.aggroed = true;
 
-      wrapClampUpdate(enemy, bounds, 10);
+      wrapGateApproachUpdate(enemy, this.roomIndex, gPick.gateId, 10);
       state.enemies.push(enemy);
       this.spawned++;
       this.waveSpawned++;

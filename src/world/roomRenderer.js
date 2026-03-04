@@ -241,26 +241,36 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
   const gates = room && Array.isArray(room.breaches) ? room.breaches : null;
   if (!gates || !gates.length) return;
 
-  const b = room.bounds;
   const fall = geo.fall || 0;
-  const glowHue = (hue + 115) % 360;
+  const baseGlowHue = (hue + 115) % 360;
   const pulse = 0.5 + 0.5 * Math.sin(time * 2.4);
 
-  // Gate geometry (kept tight; sits OUTSIDE the platform edge so it doesn't "paint" onto the tile)
+  // Gate geometry (tight; sits OUTSIDE the platform edge)
   const len = clamp(room.side * 0.10, 72, 112);
   const depth = clamp(room.side * 0.030, 18, 34);
   const frame = clamp(room.side * 0.010, 6, 10);
-  const outGap = 8; // separation from tile edge
+  const outGap = 8;
 
   const isCurrent = !!(state && (state.currentRoomIndex | 0) === (room.index | 0));
   const player = isCurrent && state ? state.player : null;
   const rd = state && state.roomDirector;
 
+  const bridgeOpen = !!(state && state._bridgeBuilt);
+
   for (const g of gates) {
     if (!g) continue;
-    const patchedLeft = (g.patchedLeft || 0);
 
-    // Anchor point on the edge
+    const sealHp = (typeof g.sealHp === 'number') ? g.sealHp : 0;
+    const sealMax = (typeof g.sealMax === 'number' && g.sealMax > 0) ? g.sealMax : 1;
+    const hpRatio = clamp(sealHp / sealMax, 0, 1);
+    const rewardLeft = (typeof g.rewardSealLeft === 'number') ? g.rewardSealLeft : 0;
+    const reward = rewardLeft > 0.02;
+    const sealed = reward || sealHp > 0.02;
+    const pressure = clamp((typeof g.pressure === 'number') ? g.pressure : 0, 0, 1);
+    const repairing = !!g.repairActive;
+    const repairT = (typeof g.repairT === 'number') ? g.repairT : 0;
+
+    // Anchor point on edge
     const ax = g.x;
     const ay = (g.y + fall);
 
@@ -271,8 +281,17 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
     else { nx = 0; ny = 1; tx = 1; ty = 0; } // 'S'
 
     // Center of portal sits outside the tile.
-    const cx = ax + nx * (depth * 0.5 + outGap);
-    const cy = ay + ny * (depth * 0.5 + outGap);
+    let cx = ax + nx * (depth * 0.5 + outGap);
+    let cy = ay + ny * (depth * 0.5 + outGap);
+
+    // "Holding pressure" shake
+    if (sealed && pressure > 0.12 && !reward) {
+      const j = 1.2 + pressure * 2.6;
+      cx += Math.sin(time * 22 + (g.id ? g.id.length : 0)) * j;
+      cy += Math.cos(time * 19 + (g.id ? g.id.length : 0) * 0.7) * j;
+    }
+
+    const glowHue = reward ? 120 : baseGlowHue;
 
     // Build an oriented rectangle (portal frame)
     const hx = tx * (len * 0.5);
@@ -288,7 +307,8 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
     // Soft outer glow
     {
       const gg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(len, depth) * 1.35);
-      gg.addColorStop(0, hsla(glowHue, 95, 62, patchedLeft > 0 ? 0.06 : (0.16 + 0.10 * pulse)));
+      const a0 = reward ? (0.20 + 0.10 * pulse) : (sealed ? 0.08 : (0.16 + 0.10 * pulse));
+      gg.addColorStop(0, hsla(glowHue, 95, 62, a0));
       gg.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = gg;
       ctx.beginPath();
@@ -324,7 +344,6 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
     const q3 = { x: cx - ihx + idx, y: cy - ihy + idy };
 
     ctx.save();
-    // Clip to inner portal
     ctx.beginPath();
     ctx.moveTo(q0.x, q0.y);
     ctx.lineTo(q1.x, q1.y);
@@ -333,13 +352,13 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
     ctx.closePath();
     ctx.clip();
 
-    if (patchedLeft > 0.02) {
-      // CLOSED: energy shield (clearly closed)
-      ctx.fillStyle = 'rgba(10,12,18,0.95)';
+    if (sealed) {
+      // SEALED: energy shield
+      ctx.fillStyle = reward ? 'rgba(6,18,10,0.95)' : 'rgba(10,12,18,0.95)';
       ctx.fillRect(cx - len, cy - len, len * 2, len * 2);
 
-      // Hex-ish grid
-      ctx.strokeStyle = hsla(glowHue, 95, 62, 0.18);
+      // Grid
+      ctx.strokeStyle = hsla(glowHue, 95, 62, reward ? 0.22 : 0.16);
       ctx.lineWidth = 1.5;
       const step = 10;
       for (let t = -len; t <= len; t += step) {
@@ -348,15 +367,44 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
         ctx.lineTo(cx + len, cy + t);
         ctx.stroke();
       }
-      // Big lock X
-      ctx.strokeStyle = hsla(0, 95, 60, 0.55);
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(cx - iLen * 0.35, cy - iLen * 0.35);
-      ctx.lineTo(cx + iLen * 0.35, cy + iLen * 0.35);
-      ctx.moveTo(cx + iLen * 0.35, cy - iLen * 0.35);
-      ctx.lineTo(cx - iLen * 0.35, cy + iLen * 0.35);
-      ctx.stroke();
+
+      // Cracks + flashes when holding pressure
+      if (!reward && pressure > 0.10) {
+        const crackA = clamp(pressure * 0.65 + (1 - hpRatio) * 0.55, 0, 0.85);
+        ctx.strokeStyle = `rgba(255,255,255,${crackA})`;
+        ctx.lineWidth = 1.8;
+        const c = 7;
+        for (let i = 0; i < c; i++) {
+          const a = time * (1.6 + i * 0.05) + i * 1.7;
+          const x0 = cx + Math.cos(a) * (iLen * 0.05);
+          const y0 = cy + Math.sin(a) * (iLen * 0.05);
+          const x1 = cx + Math.cos(a + 0.8) * (iLen * (0.35 + i * 0.03));
+          const y1 = cy + Math.sin(a + 0.8) * (iLen * (0.35 + i * 0.03));
+          ctx.beginPath();
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x1, y1);
+          ctx.stroke();
+        }
+        // Impact flash
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = hsla(glowHue, 95, 62, 0.18 + 0.18 * pressure);
+        ctx.beginPath();
+        ctx.arc(cx, cy, iLen * (0.22 + 0.10 * pressure), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+      }
+
+      // Seal HP bar
+      {
+        const barW = iLen * 0.82;
+        const barH = 5;
+        const bx = cx - barW * 0.5;
+        const by = cy + iLen * 0.30;
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(bx, by, barW, barH);
+        ctx.fillStyle = hsla(glowHue, 95, 60, reward ? 0.85 : 0.75);
+        ctx.fillRect(bx, by, barW * hpRatio, barH);
+      }
     } else {
       // OPEN: swirling portal
       const rr = Math.max(iLen, iDepth) * 0.9;
@@ -368,7 +416,6 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
       ctx.fillStyle = pg;
       ctx.fillRect(cx - len, cy - len, len * 2, len * 2);
 
-      // Swirl stripes
       ctx.globalCompositeOperation = 'lighter';
       ctx.strokeStyle = hsla(glowHue, 95, 62, 0.28);
       ctx.lineWidth = 2.5;
@@ -385,7 +432,7 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
     ctx.restore();
 
     // Rim highlight
-    ctx.strokeStyle = hsla(glowHue, 95, 65, patchedLeft > 0.02 ? 0.22 : (0.35 + 0.18 * pulse));
+    ctx.strokeStyle = hsla(glowHue, 95, 65, sealed ? 0.28 : (0.35 + 0.18 * pulse));
     ctx.lineWidth = 3.5;
     ctx.beginPath();
     ctx.moveTo(q0.x, q0.y);
@@ -395,25 +442,45 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
     ctx.closePath();
     ctx.stroke();
 
-    // World-space button (on top of the gate) when player is near
+    // Interaction button (click/tap) on the gate.
     if (player && rd && room.index > 0) {
-      const ip = rd.getBreachInnerPoint(room, g, 36);
+      const ip = rd.getGateInnerPoint ? rd.getGateInnerPoint(room, g, 36) : rd.getBreachInnerPoint(room, g, 36);
       const dxp = player.x - ip.x;
       const dyp = player.y - ip.y;
-      const d2 = dxp * dxp + dyp * dyp;
-      const near = d2 <= (160 * 160);
+      const near = (dxp * dxp + dyp * dyp) <= (170 * 170);
 
       if (near) {
-        // Place button ON the gate (slightly toward the platform so it's readable).
         const bx = cx - nx * (depth * 0.22);
         const by = cy - ny * (depth * 0.22);
-        const bw = 110;
-        const bh = 34;
+        const bw = 124;
+        const bh = 36;
 
-        // Only clickable when OPEN (patch action)
-        const clickable = patchedLeft <= 0.02;
+        let action = null;
+        let clickable = false;
+        let txt = '';
 
-        // Draw panel
+        if (reward) {
+          clickable = false;
+          txt = `SEALED ${Math.ceil(rewardLeft)}s`;
+        } else if (room.cleared && bridgeOpen && !g.rewardUsed) {
+          action = 'reward';
+          clickable = true;
+          txt = 'SEAL +XP';
+        } else if (!room.cleared) {
+          // Repair gate if not fully sealed.
+          if (sealHp < sealMax * 0.999) {
+            action = 'repair';
+            clickable = true;
+            txt = repairing ? `REPAIR ${(repairT).toFixed(1)}/2` : 'REPAIR';
+          } else {
+            clickable = false;
+            txt = `SEALED ${Math.round(hpRatio * 100)}%`;
+          }
+        } else {
+          clickable = false;
+          txt = g.rewardUsed ? 'DONE' : 'OK';
+        }
+
         ctx.save();
         ctx.globalAlpha = 0.95;
         const panelX = bx - bw * 0.5;
@@ -421,32 +488,135 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
         drawRoundedRect(ctx, panelX, panelY, bw, bh, 10);
         ctx.fillStyle = clickable ? 'rgba(10,14,20,0.72)' : 'rgba(10,10,10,0.55)';
         ctx.fill();
-        ctx.strokeStyle = clickable ? hsla(glowHue, 95, 62, 0.35) : 'rgba(255,255,255,0.12)';
+        ctx.strokeStyle = clickable ? hsla(glowHue, 95, 62, 0.38) : 'rgba(255,255,255,0.12)';
         ctx.lineWidth = 2.5;
         ctx.stroke();
 
-        // Text
         ctx.fillStyle = 'rgba(255,255,255,0.92)';
         ctx.font = '12px sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        const txt = clickable ? 'PATCH' : `SEALED ${patchedLeft.toFixed(1)}s`;
         ctx.fillText(txt, bx, by);
         ctx.restore();
 
-        // Save clickable rect in SCREEN space for pointer/tap.
-        if (state && clickable) {
+        if (state && clickable && action) {
           const s0 = worldToScreenPitch(panelX, panelY, state);
           const s1 = worldToScreenPitch(panelX + bw, panelY + bh, state);
           const rx = Math.min(s0.x, s1.x);
           const ry = Math.min(s0.y, s1.y);
           const rw = Math.abs(s1.x - s0.x);
           const rh = Math.abs(s1.y - s0.y);
-          state._gateButtons.push({ gateId: g.id, x: rx, y: ry, w: rw, h: rh });
+          state._gateButtons.push({ gateId: g.id, action, x: rx, y: ry, w: rw, h: rh });
         }
       }
     }
   }
+}
+
+// Visible force-field barrier around the platform perimeter.
+// Leaves holes where gates are, so it's clear "where the wall is" and "where the portal is".
+function drawPerimeterBarrier(ctx, state, room, { hue = 210, time = 0, fall = 0 } = {}) {
+  if (!room || !room.bounds) return;
+  const b = room.bounds;
+  const x0 = b.minX;
+  const x1 = b.maxX;
+  const y0 = b.minY + fall;
+  const y1 = b.maxY + fall;
+
+  const gates = Array.isArray(room.breaches) ? room.breaches : [];
+  const half = clamp(room.side * 0.10, 72, 112) * 0.5;
+  const gapPad = 16;
+
+  const gapsW = [];
+  const gapsE = [];
+  const gapsS = [];
+
+  for (const g of gates) {
+    if (!g) continue;
+    if (g.side === 'W') gapsW.push([g.y - half - gapPad, g.y + half + gapPad]);
+    if (g.side === 'E') gapsE.push([g.y - half - gapPad, g.y + half + gapPad]);
+    if (g.side === 'S') gapsS.push([g.x - half - gapPad, g.x + half + gapPad]);
+  }
+
+  // Optional: leave a gap for the bridge on the north edge (purely visual).
+  const gapsN = [];
+  const rd = state && state.roomDirector;
+  const br = rd && rd.bridge;
+  if (br && (br.fromIndex | 0) === (room.index | 0)) {
+    const w = (br.width || 160) * 0.62;
+    gapsN.push([room.centerX - w * 0.5, room.centerX + w * 0.5]);
+  }
+
+  const merge = (arr) => {
+    if (!arr.length) return [];
+    arr.sort((a, b) => a[0] - b[0]);
+    const out = [arr[0].slice()];
+    for (let i = 1; i < arr.length; i++) {
+      const cur = arr[i];
+      const last = out[out.length - 1];
+      if (cur[0] <= last[1]) last[1] = Math.max(last[1], cur[1]);
+      else out.push(cur.slice());
+    }
+    return out;
+  };
+
+  const mW = merge(gapsW);
+  const mE = merge(gapsE);
+  const mS = merge(gapsS);
+  const mN = merge(gapsN);
+
+  const strokeA = 0.20 + 0.10 * (0.5 + 0.5 * Math.sin(time * 1.1));
+  const glowA = 0.10 + 0.08 * (0.5 + 0.5 * Math.sin(time * 0.9 + 1.4));
+  const col = hsla((hue + 140) % 360, 90, 70, strokeA);
+  const glow = hsla((hue + 140) % 360, 95, 70, glowA);
+
+  ctx.save();
+  ctx.lineCap = 'round';
+
+  // Glow pass
+  ctx.strokeStyle = glow;
+  ctx.lineWidth = 10;
+  const drawSeg = (xA, yA, xB, yB) => {
+    ctx.beginPath();
+    ctx.moveTo(xA, yA);
+    ctx.lineTo(xB, yB);
+    ctx.stroke();
+  };
+
+  const drawEdgeWithGapsY = (x, fromY, toY, gaps) => {
+    let cur = fromY;
+    for (const [g0, g1] of gaps) {
+      if (g0 > cur) drawSeg(x, cur, x, Math.min(g0, toY));
+      cur = Math.max(cur, g1);
+      if (cur >= toY) break;
+    }
+    if (cur < toY) drawSeg(x, cur, x, toY);
+  };
+
+  const drawEdgeWithGapsX = (y, fromX, toX, gaps) => {
+    let cur = fromX;
+    for (const [g0, g1] of gaps) {
+      if (g0 > cur) drawSeg(cur, y, Math.min(g0, toX), y);
+      cur = Math.max(cur, g1);
+      if (cur >= toX) break;
+    }
+    if (cur < toX) drawSeg(cur, y, toX, y);
+  };
+
+  drawEdgeWithGapsY(x0, y0, y1, mW);
+  drawEdgeWithGapsY(x1, y0, y1, mE);
+  drawEdgeWithGapsX(y1, x0, x1, mS);
+  drawEdgeWithGapsX(y0, x0, x1, mN);
+
+  // Core line pass
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 4.5;
+  drawEdgeWithGapsY(x0, y0, y1, mW);
+  drawEdgeWithGapsY(x1, y0, y1, mE);
+  drawEdgeWithGapsX(y1, x0, x1, mS);
+  drawEdgeWithGapsX(y0, x0, x1, mN);
+
+  ctx.restore();
 }
 
 function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, state = null } = {}) {
@@ -587,6 +757,9 @@ function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, s
     ctx.strokeStyle = hsla(hue, 95, 60, 0.18);
     ctx.lineWidth = 6;
     ctx.strokeRect(x0 + 18, y0 + 18, w - 36, h - 36);
+
+    // Perimeter barrier (force field) — leaves holes where gates are.
+    drawPerimeterBarrier(ctx, state, room, { hue, time, fall });
 
     // Gates: cosmic portals on the edge (SAS-like spawns)
     drawGates(ctx, state, room, { x0, x1, y0, y1, w, h, fall }, { hue, time });

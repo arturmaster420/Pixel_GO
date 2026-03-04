@@ -61,6 +61,11 @@ export function applyDamageToTarget(target, amount, state, sourceEnemy = null) {
   // Energy Barrier shield: absorb damage while barrier is up.
   // Only applies to real players (summons should take damage normally).
   const isSummon = !!target.isSummon;
+  // Track recent damage time for "safe" interactions (e.g., repairing gates).
+  // Only hostile enemy sources should count here.
+  if (!isSummon && sourceEnemy) {
+    target._lastDamagedAt = now;
+  }
   if (!isSummon) {
     const ebLvl = (target.runSkills && target.runSkills.energyBarrier) ? (target.runSkills.energyBarrier | 0) : 0;
     const downUntil = (typeof target._energyBarrierDownUntil === "number") ? target._energyBarrierDownUntil : 0;

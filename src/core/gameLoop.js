@@ -733,7 +733,7 @@ function render() {
       return;
     }
 
-    // Pixel_GO: Gate patch button (mouse/tap) — must work for host & joiners.
+    // Pixel_GO: Gate actions (mouse/tap) — must work for host & joiners.
     if (state.mode === "playing" && !state.overlayMode && Array.isArray(state._gateButtons) && state._gateButtons.length) {
       for (const b of state._gateButtons) {
         if (!b) continue;
@@ -742,14 +742,15 @@ function render() {
           const p = state.player;
           if (rd && p) {
             const gateId = b.gateId;
+            const action = b.action || 'repair';
             const online = isOnline(state) && state.net && state.net.status === "connected";
             if (!online || (online && state.net.isHost)) {
-              const did = rd.tryPatchGateById(gateId, p);
+              const did = (typeof rd.performGateAction === 'function') ? rd.performGateAction(gateId, action, p) : false;
               if (did) state._breachPatchedFlash = 0.6;
             } else {
               // Joiner: send an action via input stream (host-authoritative).
               state._gateActSeq = (state._gateActSeq || 0) + 1;
-              state._gateActPending = { gateId, seq: state._gateActSeq };
+              state._gateActPending = { gateId, action, seq: state._gateActSeq };
             }
           }
           return true;
@@ -855,7 +856,7 @@ function render() {
     });
   }
 
-  // Keyboard shortcut: E to patch nearest breach (Pixel_GO)
+  // Keyboard shortcut: E for nearest gate action (Pixel_GO)
   if (typeof window !== "undefined" && !state._breachPatchKeyBound) {
     state._breachPatchKeyBound = true;
     window.addEventListener("keydown", (e) => {
@@ -866,8 +867,28 @@ function render() {
       if (state.overlayMode) return;
       const rd = state.roomDirector;
       const p = state.player;
-      if (!rd || !p || typeof rd.tryPatchNearestBreach !== "function") return;
-      const did = rd.tryPatchNearestBreach(p);
+      if (!rd || !p || typeof rd.performGateAction !== "function") return;
+
+      // Find nearest gate in current room.
+      const room = rd.current;
+      const gates = room && Array.isArray(room.breaches) ? room.breaches : [];
+      let best = null;
+      let bestD2 = Infinity;
+      for (const g of gates) {
+        if (!g) continue;
+        const ip = (typeof rd.getGateInnerPoint === 'function') ? rd.getGateInnerPoint(room, g, 36) : (typeof rd.getBreachInnerPoint === 'function' ? rd.getBreachInnerPoint(room, g, 36) : null);
+        if (!ip) continue;
+        const dx = p.x - ip.x;
+        const dy = p.y - ip.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) { bestD2 = d2; best = g; }
+      }
+      if (!best) return;
+      if (bestD2 > (170 * 170)) return;
+
+      const bridgeOpen = !!state._bridgeBuilt;
+      const action = (room && room.cleared && bridgeOpen && !best.rewardUsed) ? 'reward' : 'repair';
+      const did = rd.performGateAction(best.id, action, p);
       if (did) {
         state._breachPatchedFlash = 0.6;
         e.preventDefault();
@@ -1132,7 +1153,7 @@ function updatePlayers(state, dt, online) {
       const input = state.net.remoteInputs.get(String(p.id)) || {};
       updatePlayerFromInput(p, input, dt, state);
 
-      // Pixel_GO: gate patch action from joiners (host-authoritative)
+      // Pixel_GO: gate actions from joiners (host-authoritative)
       const ga = input && input.gateAct;
       if (ga && ga.gateId) {
         const seq = (ga.seq | 0) || 0;
@@ -1141,9 +1162,9 @@ function updatePlayers(state, dt, online) {
         if (seq && seq !== last) {
           state._gateActLastSeq.set(String(p.id), seq);
           const rd = state.roomDirector;
-          if (rd && typeof rd.tryPatchGateById === 'function') {
+          if (rd && typeof rd.performGateAction === 'function') {
             try {
-              const did = rd.tryPatchGateById(String(ga.gateId), p);
+              const did = rd.performGateAction(String(ga.gateId), String(ga.action || 'repair'), p);
               if (did) state._breachPatchedFlash = 0.35;
             } catch {}
           }
@@ -1546,6 +1567,7 @@ function sendLocalInputToHost(state) {
   if (state._gateActPending && state._gateActPending.gateId) {
     input.gateAct = {
       gateId: String(state._gateActPending.gateId),
+      action: String(state._gateActPending.action || 'repair'),
       seq: (state._gateActPending.seq | 0) || 0,
     };
   }
@@ -1946,7 +1968,13 @@ function serializeSnapshot(state) {
       hasNext: !!state._roomHasNext,
       bridgeP: (typeof state._bridgeP === 'number' ? state._bridgeP : 0),
       bridgeBuilt: !!state._bridgeBuilt,
-      breachPatches: Array.isArray(state._breachPatches) ? state._breachPatches.map((v) => (typeof v === 'number' ? Math.round(v * 10) / 10 : 0)) : [],
+      // Gate state (small arrays; length == number of gates)
+      gateHp: Array.isArray(state._gateHp) ? state._gateHp.map((v) => (typeof v === 'number' ? Math.round(v) : 0)) : [],
+      gateMax: Array.isArray(state._gateMax) ? state._gateMax.map((v) => (typeof v === 'number' ? Math.round(v) : 0)) : [],
+      gateReward: Array.isArray(state._gateReward) ? state._gateReward.map((v) => (typeof v === 'number' ? Math.round(v * 10) / 10 : 0)) : [],
+      gateRepair: Array.isArray(state._gateRepair) ? state._gateRepair.map((v) => (typeof v === 'number' ? Math.round(v * 10) / 10 : 0)) : [],
+      gatePressure: Array.isArray(state._gatePressure) ? state._gatePressure.map((v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : 0)) : [],
+      gateUsed: Array.isArray(state._gateUsed) ? state._gateUsed.map((v) => (typeof v === 'number' ? (v ? 1 : 0) : 0)) : [],
       killed: (state._roomKilled | 0) || 0,
       quota: (state._roomQuota | 0) || 0,
       waveI: (state._roomWaveIndex | 0) || 0,
@@ -2349,7 +2377,12 @@ function applySnapshotToClient(state, snap) {
     state._roomHasNext = !!r.hasNext;
     state._bridgeP = (typeof r.bridgeP === 'number') ? r.bridgeP : 0;
     state._bridgeBuilt = !!r.bridgeBuilt;
-    state._breachPatches = Array.isArray(r.breachPatches) ? r.breachPatches : (state._breachPatches || []);
+    state._gateHp = Array.isArray(r.gateHp) ? r.gateHp : (state._gateHp || []);
+    state._gateMax = Array.isArray(r.gateMax) ? r.gateMax : (state._gateMax || []);
+    state._gateReward = Array.isArray(r.gateReward) ? r.gateReward : (state._gateReward || []);
+    state._gateRepair = Array.isArray(r.gateRepair) ? r.gateRepair : (state._gateRepair || []);
+    state._gatePressure = Array.isArray(r.gatePressure) ? r.gatePressure : (state._gatePressure || []);
+    state._gateUsed = Array.isArray(r.gateUsed) ? r.gateUsed : (state._gateUsed || []);
     state._roomKilled = (r.killed | 0) || 0;
     state._roomQuota = (r.quota | 0) || 0;
     state._roomWaveIndex = (r.waveI | 0) || 0;
@@ -2359,7 +2392,17 @@ function applySnapshotToClient(state, snap) {
     state._roomIsMiniBoss = !!r.isMiniBoss;
     if (state.roomDirector && typeof state.roomDirector.forceSetCurrent === 'function') {
       try {
-        state.roomDirector.forceSetCurrent(state.currentRoomIndex, { cleared: state._roomCleared, hasNext: state._roomHasNext, bridgeP: state._bridgeP, breachPatches: state._breachPatches });
+        state.roomDirector.forceSetCurrent(state.currentRoomIndex, {
+          cleared: state._roomCleared,
+          hasNext: state._roomHasNext,
+          bridgeP: state._bridgeP,
+          gateHp: state._gateHp,
+          gateMax: state._gateMax,
+          gateReward: state._gateReward,
+          gateRepair: state._gateRepair,
+          gatePressure: state._gatePressure,
+          gateUsed: state._gateUsed,
+        });
       } catch {}
     }
   }
