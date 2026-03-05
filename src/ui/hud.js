@@ -98,7 +98,7 @@ if (infoX1 > infoX0 + 40) {
 
   // Floor (Pixel_GO) + Lobby state
   const roomIdx = (state.currentRoomIndex != null ? (state.currentRoomIndex | 0) : 0);
-  const floorBase = roomIdx <= 0 ? "HUB" : ("ROOM " + roomIdx);
+  const floorBase = roomIdx <= 0 ? "HUB" : ("ЭТАЖ " + roomIdx);
   const floorTag = state._roomIsBoss ? "BOSS" : (state._roomIsMiniBoss ? "MINI" : "");
   const floorText = floorTag ? (floorBase + " • " + floorTag) : floorBase;
   const rk = (state._roomKilled | 0) || 0;
@@ -119,7 +119,7 @@ if (infoX1 > infoX0 + 40) {
   ctx.textBaseline = "top";
   ctx.fillStyle = "rgba(255,255,255,0.70)";
   ctx.font = "12px sans-serif";
-  ctx.fillText("Floor", infoX0, infoY);
+  ctx.fillText("Этаж", infoX0, infoY);
 
   ctx.fillStyle = "rgba(255,255,255,0.95)";
   ctx.font = "13px sans-serif";

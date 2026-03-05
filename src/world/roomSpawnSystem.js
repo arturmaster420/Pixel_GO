@@ -7,6 +7,27 @@ function clamp(n, a, b) {
   return n < a ? a : (n > b ? b : n);
 }
 
+function getPartyCount(state) {
+  const ps = (state && state.players && state.players.length)
+    ? state.players
+    : (state && state.player ? [state.player] : []);
+  if (!ps.length) return 1;
+  const ids = new Set();
+  for (const p of ps) {
+    if (!p) continue;
+    if (p.id != null) ids.add(String(p.id));
+  }
+  const n = ids.size || ps.length;
+  return Math.max(1, n | 0);
+}
+
+// Each additional player adds +150% of the base wave size.
+// 1p => 1.0x, 2p => 2.5x, 3p => 4.0x, ...
+function getPartyWaveScale(partyCount) {
+  const extra = Math.max(0, (partyCount | 0) - 1);
+  return 1 + 1.5 * extra;
+}
+
 function getPlayers(state) {
   const arr = (state.players && state.players.length) ? state.players : (state.player ? [state.player] : []);
   return arr.filter((p) => p && p.hp > 0);
@@ -82,8 +103,9 @@ function wrapGateApproachUpdate(enemy, roomIndex, gateId, pad = 10) {
       // Outside-phase: approach/attack gate
       const r = (self.radius || 20);
       const baseSpeed = (self.speed || 80);
-      // Approach speed boost so enemies are visible quickly (especially in small rooms).
-      const speed = Math.max(baseSpeed * 1.15, 120);
+      // Approach speed: keep it readable + give the player time to react/fix gates.
+      // (Previously this was boosted too much and enemies reached the gate instantly.)
+      const speed = clamp(baseSpeed * 0.65, 55, 120);
 
       const target = sealed
         ? rd.getGateContactPoint(room, gate, r, 3)
@@ -135,7 +157,7 @@ function wrapGateApproachUpdate(enemy, roomIndex, gateId, pad = 10) {
         const contactR = Math.max(16, r * 0.75);
         const aligned = (gate.side === 'S') ? (Math.abs(self.x - gate.x) <= halfLen) : (Math.abs(self.y - gate.y) <= halfLen);
         if (aligned && cd2 <= contactR * contactR) {
-          rd.applyGateDamage(String(gateId), (self.damage || 5) * dt * 0.9, self);
+          rd.applyGateDamage(String(gateId), (self.damage || 5) * dt * 0.55, self);
         }
       }
 
@@ -175,7 +197,7 @@ function pickGateSpawn(room, rd, players, minDist = 260) {
   // Keep it noticeably beyond any dynamic bounds so enemies visibly travel in.
   const side = (room.side || 600);
   // Spawn outside the platform but not too far (so room1 isn't empty for 10+ seconds).
-  const out = clamp(side * 0.28, 260, 850);
+  const out = clamp(side * 0.25, 220, 820);
   const op = rd.getGateOuterPoint ? rd.getGateOuterPoint(room, pick.g, out) : rd.getBreachOuterPoint(room, pick.g, out);
 
   return {
@@ -204,6 +226,10 @@ export class RoomSpawnSystem {
     this.waveTarget = 0; // how many to spawn this wave
     this._waveSizes = null;
 
+    // Pause between waves (SAS feel): a short breather after each cleared wave.
+    this._waveRestLeft = 0;
+    this._pendingWaveAdvance = false;
+
     this.isMiniBossRoom = false;
     this.isBossRoom = false;
 
@@ -213,6 +239,9 @@ export class RoomSpawnSystem {
 
     this._spawnTimer = 0;
     this._lastRoomChangeAt = 0;
+
+    this.partyCount = 1;
+    this.partyWaveScale = 1;
 
     // Init from director if present
     const rd = state.roomDirector;
@@ -239,11 +268,18 @@ export class RoomSpawnSystem {
     this.waveTarget = 0;
     this._waveSizes = null;
     this._bossSpawned = false;
+    this._waveRestLeft = 0;
+    this._pendingWaveAdvance = false;
     this._miniBossId = null;
     this._bossId = null;
 
     this.isBossRoom = this.roomIndex > 0 && (this.roomIndex % 10 === 0);
     this.isMiniBossRoom = this.roomIndex > 0 && (this.roomIndex % 5 === 0) && !this.isBossRoom;
+
+    // Party scaling (host authoritative): every extra player adds +150% wave size.
+    // We compute it on room change, so all wave targets/quota are consistent.
+    this.partyCount = getPartyCount(this.state);
+    this.partyWaveScale = getPartyWaveScale(this.partyCount);
 
     // quota/aliveCap (kept) + waves distribution
     if (this.roomIndex <= 0) {
@@ -257,6 +293,10 @@ export class RoomSpawnSystem {
       // Boss rooms: slightly lower quota (boss fight already long)
       if (this.isBossRoom) this.quotaTotal = Math.max(25, Math.floor(this.quotaTotal * 0.75));
       if (this.isMiniBossRoom) this.quotaTotal = Math.max(18, Math.floor(this.quotaTotal * 0.85));
+
+      // Apply party scaling AFTER boss adjustments.
+      // Note: aliveCap stays the same (performance-friendly); only wave size scales.
+      this.quotaTotal = Math.max(1, Math.round(this.quotaTotal * this.partyWaveScale));
 
       // Waves per room: 1->3, 2->5, 3->7 ... capped
       let waves = clamp(2 * this.roomIndex + 1, 3, 21);
@@ -284,6 +324,12 @@ export class RoomSpawnSystem {
 
       this.state._roomWavesTotal = this.wavesTotal | 0;
       this.state._roomWaveIndex = 0;
+
+      // Pre-wave delay before the very first wave on this floor (3s).
+      if ((this.roomIndex | 0) > 0) {
+        this._waveRestLeft = Math.max(this._waveRestLeft || 0, 3);
+        this._pendingWaveAdvance = false;
+      }
     }
   }
 
@@ -292,6 +338,11 @@ export class RoomSpawnSystem {
     const rd = state.roomDirector;
     const room = rd && rd.current;
     if (!room) return;
+
+    // If the host is waiting for all alive players to enter this floor, pause spawns.
+    if (rd && typeof rd.isWaitingForParty === 'function' && rd.isWaitingForParty()) {
+      return;
+    }
 
     // Hub: no spawns
     if ((room.index | 0) <= 0) {
@@ -366,11 +417,36 @@ export class RoomSpawnSystem {
     // Wave progression: if we spawned the full wave and all enemies are dead, advance.
     if (this.wavesTotal > 0 && this.waveIndex < this.wavesTotal) {
       if (this.waveSpawned >= this.waveTarget && aliveInRoom === 0) {
-        this.waveIndex++;
-        this.waveSpawned = 0;
-        this.waveTarget = (this._waveSizes && this._waveSizes[this.waveIndex]) ? this._waveSizes[this.waveIndex] : 0;
-        if (state) state._roomWaveIndex = this.waveIndex | 0;
+        // Inter-wave break (5s)
+        if (this.waveIndex < this.wavesTotal - 1) {
+          this._pendingWaveAdvance = true;
+          if (this._waveRestLeft <= 0) this._waveRestLeft = 5;
+        } else {
+          // Last wave finished: proceed immediately to clear check.
+          this.waveIndex++;
+          this.waveSpawned = 0;
+          this.waveTarget = 0;
+          if (state) state._roomWaveIndex = this.waveIndex | 0;
+        }
       }
+    }
+
+    // Handle inter-wave break
+    if (this._waveRestLeft > 0) {
+      this._waveRestLeft -= dt;
+      if (this._waveRestLeft <= 0) {
+        this._waveRestLeft = 0;
+        if (this._pendingWaveAdvance) {
+          this._pendingWaveAdvance = false;
+          this.waveIndex++;
+          this.waveSpawned = 0;
+          this.waveTarget = (this._waveSizes && this._waveSizes[this.waveIndex]) ? this._waveSizes[this.waveIndex] : 0;
+          this._spawnTimer = 0;
+          if (state) state._roomWaveIndex = this.waveIndex | 0;
+        }
+      }
+      // During the rest period, do not spawn.
+      return;
     }
 
     // If all waves finished, wait for clear check (kills + boss + alive==0)
@@ -469,6 +545,11 @@ export class RoomSpawnSystem {
     const rd = state.roomDirector;
     const room = rd && rd.current;
     if (!room) return;
+
+    // If the host is waiting for all alive players to enter this floor, pause spawns.
+    if (rd && typeof rd.isWaitingForParty === 'function' && rd.isWaitingForParty()) {
+      return;
+    }
     if (room.index !== this.roomIndex) return;
     if (room.cleared) return;
 

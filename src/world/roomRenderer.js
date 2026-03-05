@@ -244,11 +244,13 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
   const fall = geo.fall || 0;
   const pulse = 0.5 + 0.5 * Math.sin(time * 2.4);
 
-  // Gate geometry (narrow; fits into the barrier hole)
-  const len = clamp(room.side * 0.085, 58, 96);
-  const inD = clamp(room.side * 0.012, 8, 14);
-  const outD = clamp(room.side * 0.020, 12, 20);
-  const frame = clamp(room.side * 0.009, 5, 9);
+  // Gate geometry (match the perimeter barrier gap; spans fully between green barrier ends)
+  const gapPad = 6; // must match drawPerimeterBarrier()
+  const lenBase = clamp(room.side * 0.10, 72, 112);
+  const len = lenBase + gapPad * 2;
+  const inD = clamp(room.side * 0.010, 6, 10);
+  const outD = clamp(room.side * 0.016, 9, 14);
+  const frame = clamp(room.side * 0.008, 4, 7);
 
   const isCurrent = !!(state && (state.currentRoomIndex | 0) === (room.index | 0));
   const player = isCurrent && state ? state.player : null;
@@ -304,7 +306,10 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
     const seed = hash01(g.id);
     const flick = 0.5 + 0.5 * Math.sin(time * 28 + seed * 20);
     const danger = clamp(pressure * 0.85 + (1 - hpRatio) * 0.85, 0, 1);
-    const redPulse = (!reward && sealedVisual) ? (danger * (flick > 0.55 ? 1 : 0)) : 0;
+    const rewardRepairing = (!!repairing && repairMode === 'reward' && !reward);
+    // During the long reward fix, blink blue/green (not blue/red).
+    const sealBlink = rewardRepairing ? (0.35 + 0.65 * (0.5 + 0.5 * Math.sin(time * 10 + seed * 17))) : 0;
+    const redPulse = (!rewardRepairing && !reward && sealedVisual) ? (danger * (flick > 0.55 ? 1 : 0)) : 0;
 
     // Portal center sits ON the barrier line, slightly outside.
     let cx = ax + nx * (outD * 0.55);
@@ -344,31 +349,18 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
       ctx.closePath();
       ctx.fill();
 
-      // Light spill slightly onto the platform (inward cone).
-      {
-        const Li = clamp(L * 0.22, 80, 160);
-        const ix = ax - nx * 6;
-        const iy = ay - ny * 6;
-        const ixf = ix - nx * Li;
-        const iyf = iy - ny * Li;
-
-        // Wide at the gate, narrow inward (flashlight spill).
-        const gateW = len * 0.95;
-        const innerW = len * 0.22;
-
-        // Spill intensity by state
-        const spillHue = baseHue;
-        const spillA = reward ? 0.16 : (sealedVisual ? 0.10 : 0.22);
-
-        const gi = ctx.createLinearGradient(ix, iy, ixf, iyf);
-        gi.addColorStop(0, hsla(spillHue, 95, 60, spillA));
-        gi.addColorStop(1, 'rgba(0,0,0,0)');
-        ctx.fillStyle = gi;
+      // Reward-fix blink: add a green pulse cone over the blue seal.
+      if (sealBlink > 0.01) {
+        const gg = ctx.createLinearGradient(ox, oy, fx, fy);
+        gg.addColorStop(0, hsla(H_GREEN, 95, 62, 0.10 + 0.22 * sealBlink));
+        gg.addColorStop(0.55, hsla(H_GREEN, 95, 58, 0.04 + 0.10 * sealBlink));
+        gg.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = gg;
         ctx.beginPath();
-        ctx.moveTo(ix + tx * gateW * 0.5, iy + ty * gateW * 0.5);
-        ctx.lineTo(ix - tx * gateW * 0.5, iy - ty * gateW * 0.5);
-        ctx.lineTo(ixf - tx * innerW * 0.5, iyf - ty * innerW * 0.5);
-        ctx.lineTo(ixf + tx * innerW * 0.5, iyf + ty * innerW * 0.5);
+        ctx.moveTo(ox + tx * nearW * 0.5, oy + ty * nearW * 0.5);
+        ctx.lineTo(ox - tx * nearW * 0.5, oy - ty * nearW * 0.5);
+        ctx.lineTo(fx - tx * farW * 0.5, fy - ty * farW * 0.5);
+        ctx.lineTo(fx + tx * farW * 0.5, fy + ty * farW * 0.5);
         ctx.closePath();
         ctx.fill();
       }
@@ -457,66 +449,128 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
       }
       ctx.globalCompositeOperation = 'source-over';
     } else {
-      const h0 = reward ? H_GREEN : H_BLUE;
-      // Shield fill
-      ctx.fillStyle = reward ? 'rgba(4,14,8,0.94)' : 'rgba(6,10,16,0.94)';
+      // Sealed gate = sci-fi "battery" shield. Cells drain with HP; reward fix charges green and stays.
+      const isRewardDone = !!reward;
+      const isRewardRepairing = (!!repairing && repairMode === 'reward' && !reward);
+      const need = isRewardRepairing ? 5 : 2;
+      const prog = isRewardRepairing ? clamp(repairT / need, 0, 1) : 0;
+      const fillRatio = isRewardDone ? 1 : (isRewardRepairing ? prog : hpRatio);
+
+      // Dark cavity behind the energy cells
+      ctx.fillStyle = 'rgba(0,0,0,0.90)';
       ctx.fillRect(ax - len, ay - len, len * 2, len * 2);
 
-      // Moving scan lines
-      const shift = (!reward && pressure > 0.08) ? (time * (22 + 34 * pressure)) : (time * 10);
-      ctx.strokeStyle = hsla(h0, 95, 62, reward ? 0.22 : 0.16);
-      ctx.lineWidth = 1.5;
-      const step = 10;
-      for (let t = -len; t <= len; t += step) {
-        const yy = ay + t + Math.sin((t * 0.08) + shift) * (pressure * 2.2);
+      // Battery segments
+      const segCount = 5;
+      const segGap = 6;
+      const segLen = (iLen - segGap * (segCount - 1)) / segCount;
+      const uMin = -iLen * 0.5;
+      const vMin = -inD + frame * 0.85;
+      const vMax = outD - frame * 0.85;
+
+      const filled = fillRatio * segCount;
+      const blink = isRewardRepairing ? (0.35 + 0.65 * (0.5 + 0.5 * Math.sin(time * 10 + seed * 17))) : 0;
+
+      const pt = (u, v) => ({ x: ax + tx * u + nx * v, y: ay + ty * u + ny * v });
+
+      const hueOn = isRewardDone ? H_GREEN : (isRewardRepairing ? H_GREEN : H_BLUE);
+      const hueOff = isRewardDone ? H_GREEN : H_BLUE;
+
+      // Segment outlines (dividers)
+      ctx.globalCompositeOperation = 'source-over';
+
+      for (let i = 0; i < segCount; i++) {
+        const u0 = uMin + i * (segLen + segGap);
+        const u1 = u0 + segLen;
+
+        // Fill from the "bottom" for vertical gates so it reads like a battery icon.
+        const j = (g.side === 'W' || g.side === 'E') ? (segCount - 1 - i) : i;
+        const val = clamp(filled - j, 0, 1);
+
+        const s0 = pt(u0, vMin);
+        const s1 = pt(u1, vMin);
+        const s2 = pt(u1, vMax);
+        const s3 = pt(u0, vMax);
+
+        // Base cell (dim)
+        ctx.fillStyle = 'rgba(10,14,20,0.72)';
         ctx.beginPath();
-        ctx.moveTo(ax - len, yy);
-        ctx.lineTo(ax + len, yy);
+        ctx.moveTo(s0.x, s0.y);
+        ctx.lineTo(s1.x, s1.y);
+        ctx.lineTo(s2.x, s2.y);
+        ctx.lineTo(s3.x, s3.y);
+        ctx.closePath();
+        ctx.fill();
+
+        // Filled energy
+        if (val > 0.001) {
+          let aOn = 0.10 + 0.58 * val;
+          if (isRewardRepairing) aOn *= (0.55 + 0.45 * blink);
+
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.fillStyle = hsla(hueOn, 95, 62, aOn);
+          ctx.beginPath();
+          ctx.moveTo(s0.x, s0.y);
+          ctx.lineTo(s1.x, s1.y);
+          ctx.lineTo(s2.x, s2.y);
+          ctx.lineTo(s3.x, s3.y);
+          ctx.closePath();
+          ctx.fill();
+
+          // Inner glow core
+          const cu = (u0 + u1) * 0.5;
+          const cv = (vMin + vMax) * 0.5;
+          const c = pt(cu, cv);
+          ctx.fillStyle = hsla(hueOn, 95, 66, 0.06 + 0.18 * val);
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, Math.max(4, (vMax - vMin) * 0.35), 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalCompositeOperation = 'source-over';
+        }
+
+        // Divider / cell frame
+        const strokeA = 0.18 + 0.12 * (val > 0.01 ? 1 : 0);
+        ctx.strokeStyle = hsla(hueOff, 95, 62, strokeA);
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.moveTo(s0.x, s0.y);
+        ctx.lineTo(s1.x, s1.y);
+        ctx.lineTo(s2.x, s2.y);
+        ctx.lineTo(s3.x, s3.y);
+        ctx.closePath();
         ctx.stroke();
       }
 
-      // Pressure flashes and cracks; also red flicker when close to breaking.
-      if (!reward && pressure > 0.10) {
-        const crackA = clamp(pressure * 0.70 + (1 - hpRatio) * 0.65, 0, 0.92);
-        ctx.strokeStyle = `rgba(255,255,255,${crackA})`;
-        ctx.lineWidth = 1.8;
-        for (let i = 0; i < 7; i++) {
-          const a = time * (1.7 + i * 0.06) + seed * 6 + i * 1.4;
-          const x0 = ax + Math.cos(a) * (iLen * 0.06);
-          const y0 = ay + Math.sin(a) * (iLen * 0.06);
-          const x1 = ax + Math.cos(a + 0.8) * (iLen * (0.36 + i * 0.03));
-          const y1 = ay + Math.sin(a + 0.8) * (iLen * (0.36 + i * 0.03));
+      // Under pressure: sparks/cracks and red warning pulses near breaking.
+      if (!isRewardDone && !isRewardRepairing && pressure > 0.10) {
+        const crackA = clamp(pressure * 0.60 + (1 - hpRatio) * 0.70, 0, 0.92);
+
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = `rgba(255,255,255,${0.10 + 0.55 * crackA})`;
+        ctx.lineWidth = 1.4;
+
+        for (let i = 0; i < 6; i++) {
+          const a = time * (1.6 + i * 0.07) + seed * 6 + i * 1.4;
+          const u0 = Math.sin(a) * (iLen * 0.10);
+          const v0 = Math.cos(a * 1.3) * ((vMax - vMin) * 0.18);
+          const u1 = u0 + Math.cos(a + 0.8) * (iLen * (0.34 + i * 0.03));
+          const v1 = v0 + Math.sin(a + 0.8) * ((vMax - vMin) * (0.46 + i * 0.02));
+          const pA = pt(u0, v0);
+          const pB = pt(u1, v1);
           ctx.beginPath();
-          ctx.moveTo(x0, y0);
-          ctx.lineTo(x1, y1);
+          ctx.moveTo(pA.x, pA.y);
+          ctx.lineTo(pB.x, pB.y);
           ctx.stroke();
         }
 
-        ctx.globalCompositeOperation = 'lighter';
-        ctx.fillStyle = hsla(h0, 95, 62, 0.12 + 0.24 * pressure);
-        ctx.beginPath();
-        ctx.arc(ax, ay, iLen * (0.22 + 0.10 * pressure), 0, Math.PI * 2);
-        ctx.fill();
-
         if (redPulse > 0.01) {
-          ctx.fillStyle = hsla(H_RED, 95, 60, 0.10 + 0.28 * redPulse);
+          ctx.fillStyle = hsla(H_RED, 95, 60, 0.08 + 0.30 * redPulse);
           ctx.beginPath();
-          ctx.arc(ax, ay, iLen * (0.18 + 0.18 * redPulse), 0, Math.PI * 2);
+          ctx.arc(ax, ay, iLen * (0.16 + 0.18 * redPulse), 0, Math.PI * 2);
           ctx.fill();
         }
-        ctx.globalCompositeOperation = 'source-over';
-      }
 
-      // HP bar (always visible when sealed)
-      {
-        const barW = iLen * 0.82;
-        const barH = 5;
-        const bx = ax - barW * 0.5;
-        const by = ay + iLen * 0.30;
-        ctx.fillStyle = 'rgba(0,0,0,0.55)';
-        ctx.fillRect(bx, by, barW, barH);
-        ctx.fillStyle = hsla(h0, 95, 60, reward ? 0.88 : 0.78);
-        ctx.fillRect(bx, by, barW * hpRatio, barH);
+        ctx.globalCompositeOperation = 'source-over';
       }
     }
 
@@ -559,7 +613,7 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
         } else if (room.cleared && bridgeOpen && !g.rewardUsed) {
           action = 'reward';
           clickable = !(repairing && repairMode === 'reward');
-          const need = 10;
+          const need = 5;
           const t = repairing && repairMode === 'reward' ? repairT : 0;
           txt = repairing && repairMode === 'reward' ? `FIX ${(t).toFixed(1)}/${need}` : 'FIX +XP';
           btnHue = 150;
@@ -626,7 +680,7 @@ function drawPerimeterBarrier(ctx, state, room, { hue = 210, time = 0, fall = 0 
 
   const gates = Array.isArray(room.breaches) ? room.breaches : [];
   const half = clamp(room.side * 0.10, 72, 112) * 0.5;
-  const gapPad = 16;
+  const gapPad = 6;
 
   const gapsW = [];
   const gapsE = [];
@@ -1002,11 +1056,9 @@ function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, s
   ctx.restore();
 }
 
-function drawBridge(ctx, rd, { alpha = 1 } = {}) {
-  if (!rd || !rd.bridge || !rd.current || !rd.next) return;
+function drawBridge(ctx, rd, from, to, { alpha = 1 } = {}) {
+  if (!rd || !rd.bridge || !from || !to) return;
   const br = rd.bridge;
-  const from = rd.current;
-  const to = rd.next;
 
   // Bridge spans from current top edge (minY) to next bottom edge (maxY).
   const startY = from.bounds.minY;
@@ -1162,10 +1214,25 @@ export function renderRoomsBackground(ctx, state) {
     drawTile(ctx, r, cam, { alpha: a, fall, label, time: state.time || 0, state });
   }
 
-  // Bridge between current and next (builds after clear)
-  if (rd.current && rd.current.cleared && rd.next && !rd.next.removed) {
-    // Pass pitch for proper 3D thickness compensation.
-    rd._pitch = cam && cam.pitch ? cam.pitch : 1;
-    drawBridge(ctx, rd, { alpha: 1 });
+  // Bridge rendering:
+  // - during normal build: current -> next
+  // - during party transition: prev -> current (kept until everyone enters)
+  if (rd.bridge) {
+    const br = rd.bridge;
+    const fromIdx = (br.fromIndex | 0);
+    const toIdx = (br.toIndex | 0);
+
+    const from = (rd.current && (rd.current.index | 0) === fromIdx) ? rd.current
+      : (rd.prev && (rd.prev.index | 0) === fromIdx) ? rd.prev
+      : null;
+
+    const to = (rd.next && (rd.next.index | 0) === toIdx) ? rd.next
+      : (rd.current && (rd.current.index | 0) === toIdx) ? rd.current
+      : null;
+
+    if (from && to && !(to.removed || from.removed)) {
+      rd._pitch = cam && cam.pitch ? cam.pitch : 1;
+      drawBridge(ctx, rd, from, to, { alpha: 1 });
+    }
   }
 }

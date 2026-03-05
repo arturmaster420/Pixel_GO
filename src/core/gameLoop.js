@@ -359,6 +359,12 @@ if (msg.type === "runRequest") {
   function updateSim(dt) {
     state.time += dt;
 
+    // Expire one-shot kick notifications (used when a downed player is left behind).
+    if (state._kickIdsUntil && state.time >= state._kickIdsUntil) {
+      state._kickIdsUntil = 0;
+      state._kickIds = null;
+    }
+
     if (typeof state._breachPatchedFlash === "number" && state._breachPatchedFlash > 0) {
       state._breachPatchedFlash -= dt;
       if (state._breachPatchedFlash < 0) state._breachPatchedFlash = 0;
@@ -453,6 +459,8 @@ if (msg.type === "runRequest") {
     state._lightningVisual = null;
     updateBuffs(state, dt);
     updatePlayers(state, dt, online);
+
+    updateRevives(state, dt);
 
     // Permanent HP regen from meta bonuses + in-run regen (HP/s)
     const regenPerSec = (state.player.metaHpRegen || 0) + (state.player.runHpRegen || 0);
@@ -757,6 +765,26 @@ function render() {
         }
       }
     }
+
+    // Pixel_GO: Revive actions (mouse/tap) — on corpses.
+    if (state.mode === "playing" && !state.overlayMode && Array.isArray(state._reviveButtons) && state._reviveButtons.length) {
+      for (const b of state._reviveButtons) {
+        if (!b) continue;
+        if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+          const targetId = b.targetId;
+          const online = isOnline(state) && state.net && state.net.status === "connected";
+          if (!online || (online && state.net.isHost)) {
+            try { startReviveById(state, state.player, targetId); } catch {}
+          } else {
+            state._reviveActSeq = (state._reviveActSeq || 0) + 1;
+            state._reviveActPending = { targetId, seq: state._reviveActSeq };
+          }
+          return true;
+        }
+      }
+    }
+
+
 
 
     // Hub NPC tap interaction (mobile-friendly)
@@ -1091,6 +1119,11 @@ function syncHostPlayersFromRoomInfo(state) {
 
 function updatePlayerFromInput(player, input, dt, state) {
   if (!player || player.hp <= 0) return;
+  if (player._reviving) {
+    player.vx = 0;
+    player.vy = 0;
+    return;
+  }
   if (player._lvlUpChoosing) {
     player.vx = 0;
     player.vy = 0;
@@ -1135,7 +1168,7 @@ function updatePlayers(state, dt, online) {
   if (state.player && typeof state.player.update === "function") {
     const blockedByOverlay = !!(online && state.overlayMode);
     const blockedByRunUp = !!state._runUpgradeActive || !!state.player._lvlUpChoosing;
-    if (state.player.hp > 0 && !blockedByOverlay && !blockedByRunUp) {
+    if (state.player.hp > 0 && !blockedByOverlay && !blockedByRunUp && !state.player._reviving) {
       state.player.update(dt, state);
     }
   }
@@ -1170,6 +1203,18 @@ function updatePlayers(state, dt, online) {
           }
         }
       }
+
+      // Pixel_GO: revive actions from joiners (host-authoritative)
+      const ra = input && input.reviveAct;
+      if (ra && ra.targetId) {
+        const seq = (ra.seq | 0) || 0;
+        if (!state._reviveActLastSeq) state._reviveActLastSeq = new Map();
+        const last = state._reviveActLastSeq.get(String(p.id)) || 0;
+        if (seq && seq !== last) {
+          state._reviveActLastSeq.set(String(p.id), seq);
+          try { startReviveById(state, p, String(ra.targetId)); } catch {}
+        }
+      }
     }
   }
 }
@@ -1179,7 +1224,7 @@ function updateWeapons(state, dt, online) {
   if (state.player) {
     const blockedByOverlay = !!(online && state.overlayMode);
     const blockedByRunUpgrade = !!state._runUpgradeActive || !!state.player._lvlUpChoosing;
-    if (state.player.hp > 0 && !blockedByOverlay && !blockedByRunUpgrade) {
+    if (state.player.hp > 0 && !blockedByOverlay && !blockedByRunUpgrade && !state.player._reviving) {
       updateSkills(state.player, state, dt);
     }
   }
@@ -1191,6 +1236,7 @@ function updateWeapons(state, dt, online) {
     if (!p || String(p.id) === String(state.player.id)) continue;
     if (p.hp <= 0) continue;
     if (p._lvlUpChoosing) continue;
+    if (p._reviving) continue;
     const input = state.net.remoteInputs.get(String(p.id)) || {};
     const aim = input?.aim;
     const aimDir = aim && typeof aim.x === "number" && typeof aim.y === "number" ? aim : null;
@@ -1563,12 +1609,27 @@ function sendLocalInputToHost(state) {
     fire: isFiringActive(),
   };
 
+  // While reviving, movement and shooting are disabled.
+  if (p._reviving) {
+    input.mx = 0;
+    input.my = 0;
+    input.fire = false;
+  }
+
   // Pixel_GO: one-shot-ish gate actions (patched by seq on host).
   if (state._gateActPending && state._gateActPending.gateId) {
     input.gateAct = {
       gateId: String(state._gateActPending.gateId),
       action: String(state._gateActPending.action || 'repair'),
       seq: (state._gateActPending.seq | 0) || 0,
+    };
+  }
+
+  // Pixel_GO: one-shot-ish revive actions.
+  if (state._reviveActPending && state._reviveActPending.targetId) {
+    input.reviveAct = {
+      targetId: String(state._reviveActPending.targetId),
+      seq: (state._reviveActPending.seq | 0) || 0,
     };
   }
 
@@ -1968,6 +2029,13 @@ function serializeSnapshot(state) {
       hasNext: !!state._roomHasNext,
       bridgeP: (typeof state._bridgeP === 'number' ? state._bridgeP : 0),
       bridgeBuilt: !!state._bridgeBuilt,
+      prevI: (state._prevRoomIndex | 0) || 0,
+      prevC: !!state._prevRoomCollapsing,
+      prevT: (typeof state._prevRoomCollapseT === 'number' ? Math.round(state._prevRoomCollapseT * 100) / 100 : 0),
+      bridgeFrom: (state._bridgeFrom | 0) || 0,
+      bridgeTo: (state._bridgeTo | 0) || 0,
+      wait: !!state._waitForParty,
+      kickIds: Array.isArray(state._kickIds) ? state._kickIds.slice(0, 6).map(String) : [],
       // Gate state (small arrays; length == number of gates)
       gateHp: Array.isArray(state._gateHp) ? state._gateHp.map((v) => (typeof v === 'number' ? Math.round(v) : 0)) : [],
       gateMax: Array.isArray(state._gateMax) ? state._gateMax.map((v) => (typeof v === 'number' ? Math.round(v) : 0)) : [],
@@ -2000,6 +2068,9 @@ function serializeSnapshot(state) {
       avatarIndex: p.avatarIndex || 0,
       color: p.color || pickColorForId(p.id),
       lastAim: { x: q(p.lastAimDir?.x || 0), y: q(p.lastAimDir?.y || 0) },
+      rv: (p._reviving && p._reviving.targetId) ? String(p._reviving.targetId) : "",
+      rvt: (p._reviving && typeof p._reviving.t === 'number') ? q(p._reviving.t) : 0,
+      rvn: (p._reviving && typeof p._reviving.need === 'number') ? q(p._reviving.need) : 0,
     })),
     enemies: enemySrc.map(({ e }) => ({
       id: String(e.id || e._id || `${e.x.toFixed(1)}:${e.y.toFixed(1)}`),
@@ -2158,6 +2229,14 @@ function applySnapshotToClient(state, snap) {
       p.lastAimDir.x = sp.lastAim.x || 0;
       p.lastAimDir.y = sp.lastAim.y || 0;
     }
+
+    // Revive channel replication
+    if (sp.rv) {
+      p._reviving = { targetId: String(sp.rv), t: (typeof sp.rvt === 'number' ? sp.rvt : 0), need: (typeof sp.rvn === 'number' ? sp.rvn : 2) };
+    } else {
+      p._reviving = null;
+    }
+
     players.push(p);
   }
   // Drop missing players
@@ -2378,6 +2457,12 @@ function applySnapshotToClient(state, snap) {
     state._roomHasNext = !!r.hasNext;
     state._bridgeP = (typeof r.bridgeP === 'number') ? r.bridgeP : 0;
     state._bridgeBuilt = !!r.bridgeBuilt;
+    state._prevRoomIndex = (r.prevI | 0) || 0;
+    state._prevRoomCollapsing = !!r.prevC;
+    state._prevRoomCollapseT = (typeof r.prevT === 'number') ? r.prevT : 0;
+    state._bridgeFrom = (r.bridgeFrom | 0) || 0;
+    state._bridgeTo = (r.bridgeTo | 0) || 0;
+    state._waitForParty = !!r.wait;
     state._gateHp = Array.isArray(r.gateHp) ? r.gateHp : (state._gateHp || []);
     state._gateMax = Array.isArray(r.gateMax) ? r.gateMax : (state._gateMax || []);
     state._gateReward = Array.isArray(r.gateReward) ? r.gateReward : (state._gateReward || []);
@@ -2405,8 +2490,31 @@ function applySnapshotToClient(state, snap) {
           gateRepairMode: state._gateRepairMode,
           gatePressure: state._gatePressure,
           gateUsed: state._gateUsed,
+          prevI: (r.prevI | 0) || 0,
+          prevT: (typeof r.prevT === 'number' ? r.prevT : 0),
+          prevCollapsing: !!r.prevC,
+          bridgeFrom: (r.bridgeFrom | 0) || 0,
+          bridgeTo: (r.bridgeTo | 0) || 0,
+          waitForParty: !!r.wait
+
         });
       } catch {}
+    }
+  }
+  // If host indicates we were left behind, return to start menu.
+  if (r && Array.isArray(r.kickIds) && r.kickIds.length) {
+    const me = state.player ? String(state.player.id || myId) : myId;
+    if (r.kickIds.includes(me)) {
+      state.overlayMode = null;
+      state.mode = 'startMenu';
+      try {
+        if (state.net && state.net.status === 'connected' && !state.net.isHost) {
+          state.net.disconnect();
+        }
+      } catch {}
+      if (Array.isArray(state.popups)) {
+        state.popups.push({ text: 'Left behind', time: 2.0 });
+      }
     }
   }
   if (snap.flags && state.flags) {
@@ -2638,6 +2746,8 @@ function maybeSendSnapshot(state, dt = 0) {
 
 function maybeEnterOnlineDeathOverlay(state) {
   if (!isOnline(state)) return;
+  // Pixel_GO uses downed+revive instead of the old death overlay.
+  if (state.roomDirector) return;
   if (state.mode !== "playing") return;
   if (!state.player) return;
 
@@ -2708,6 +2818,78 @@ function processRespawnRequests(state) {
     respawnPlayerToHub(state, p, meta);
   }
 }
+
+
+// --- Revive system (Pixel_GO co-op) ----------------------------------------
+// When a player dies (hp<=0), they stay as a corpse. Teammates can revive them by channeling.
+// During the channel, the reviver cannot move or shoot.
+// If a downed player is not revived and the party advances to the next floor, they are kicked to menu.
+
+const REVIVE_INTERACT_R = 140;
+const REVIVE_CHANNEL_SEC = 2.0;
+
+function startReviveById(state, reviver, targetId) {
+  if (!state || !reviver || (reviver.hp || 0) <= 0) return false;
+  if (!targetId) return false;
+  if (reviver._reviving) return false;
+
+  const tid = String(targetId);
+  const ps = (state.players && state.players.length) ? state.players : (state.player ? [state.player] : []);
+  const target = ps.find((p) => p && String(p.id || '') === tid) || null;
+  if (!target || (target.hp || 0) > 0) return false;
+
+  const dx = target.x - reviver.x;
+  const dy = target.y - reviver.y;
+  if (dx * dx + dy * dy > REVIVE_INTERACT_R * REVIVE_INTERACT_R) return false;
+
+  reviver._reviving = { targetId: tid, t: 0, need: REVIVE_CHANNEL_SEC };
+  // Stop immediately
+  reviver.vx = 0;
+  reviver.vy = 0;
+  return true;
+}
+
+function updateRevives(state, dt) {
+  if (!state || !Number.isFinite(dt) || dt <= 0) return;
+  const ps = (state.players && state.players.length) ? state.players : (state.player ? [state.player] : []);
+  if (!ps.length) return;
+
+  const byId = new Map(ps.filter(Boolean).map((p) => [String(p.id || ''), p]));
+
+  for (const p of ps) {
+    if (!p || !p._reviving) continue;
+    if ((p.hp || 0) <= 0) { p._reviving = null; continue; }
+    const r = p._reviving;
+    const t = byId.get(String(r.targetId || '')) || null;
+    if (!t || (t.hp || 0) > 0) { p._reviving = null; continue; }
+
+    // Must stay close
+    const dx = t.x - p.x;
+    const dy = t.y - p.y;
+    if (dx * dx + dy * dy > (REVIVE_INTERACT_R * 0.95) * (REVIVE_INTERACT_R * 0.95)) {
+      p._reviving = null;
+      continue;
+    }
+
+    // Channel
+    r.t = (r.t || 0) + dt;
+    p.vx = 0;
+    p.vy = 0;
+
+    if (r.t >= (r.need || REVIVE_CHANNEL_SEC)) {
+      // Revive!
+      t.hp = Math.max(1, Math.floor((t.maxHP || t.maxHp || 100) * 0.55));
+      t._kicked = false;
+
+      p._reviving = null;
+
+      if (Array.isArray(state.floatingTexts)) {
+        state.floatingTexts.push({ x: t.x, y: t.y - 28, text: "REVIVED!", time: 1.0 });
+      }
+    }
+  }
+}
+
 
 function updateEnemies(state, dt) {
   const { enemies } = state;
@@ -3693,7 +3875,10 @@ function renderProjectiles(state, ctx) {
     for (let i = 0; i < projectiles.length; i += stepB) {
       const b = projectiles[i];
       if (!b) continue;
-      ctx.fillRect(b.x - 1, b.y - 1, 2, 2);
+      // Joiners on small mobiles use rectangles for performance; keep bullets readable.
+      const r = (b.radius || 4);
+      const s = Math.max(3, Math.min(8, r * 1.8));
+      ctx.fillRect(b.x - s * 0.5, b.y - s * 0.5, s, s);
     }
       const maxRockets = 80;
   const stepR = rockets.length > maxRockets ? Math.ceil(rockets.length / maxRockets) : 1;
@@ -3969,6 +4154,72 @@ function renderPlayers(state, ctx) {
     ctx.fillText(name, p.x, p.y + (p.radius || 18) + 24);
   }
   ctx.restore();
+
+  // Revive UI (world-space button on the corpse)
+  state._reviveButtons = [];
+  if (state.mode === 'playing' && !state.overlayMode) {
+    const me = state.player;
+    if (me && (me.hp || 0) > 0) {
+      const cam = state.camera;
+      const cvs = state.canvas;
+      const z = cam.zoom || 1;
+      const pitch = cam.pitch || 1;
+      const w2s = (wx, wy) => ({
+        x: (wx - cam.x) * z + (cvs.width || 1) / 2,
+        y: (wy - cam.y) * z * pitch + (cvs.height || 1) / 2,
+      });
+
+      for (const t of players) {
+        if (!t) continue;
+        if (String(t.id || '') === String(me.id || '')) continue;
+        if ((t.hp || 0) > 0) continue;
+        if (t._kicked) continue;
+
+        const dx = t.x - me.x;
+        const dy = t.y - me.y;
+        if (dx * dx + dy * dy > REVIVE_INTERACT_R * REVIVE_INTERACT_R) continue;
+
+        const btnW = 96;
+        const btnH = 30;
+        const wx = t.x - btnW * 0.5;
+        const wy = t.y - (t.radius || 18) - 52;
+
+        // Draw button in world coords (camera transform already applied)
+        ctx.save();
+        ctx.translate(wx, wy);
+        ctx.fillStyle = 'rgba(20,26,34,0.88)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.rect(0, 0, btnW, btnH);
+        ctx.fill();
+        ctx.stroke();
+
+        const healing = me._reviving && String(me._reviving.targetId || '') === String(t.id || '');
+        const pct = healing ? Math.max(0, Math.min(1, (me._reviving.t || 0) / (me._reviving.need || REVIVE_CHANNEL_SEC))) : 0;
+        if (healing) {
+          ctx.fillStyle = 'rgba(90,220,255,0.25)';
+          ctx.fillRect(2, btnH - 6, (btnW - 4) * pct, 4);
+        }
+
+        ctx.fillStyle = 'rgba(255,255,255,0.92)';
+        ctx.font = '13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(healing ? 'Healing…' : 'Heal', btnW / 2, btnH / 2);
+        ctx.restore();
+
+        // Register clickable rect in SCREEN space
+        const s0 = w2s(wx, wy);
+        const s1 = w2s(wx + btnW, wy + btnH);
+        const rx = Math.min(s0.x, s1.x);
+        const ry = Math.min(s0.y, s1.y);
+        const rw = Math.abs(s1.x - s0.x);
+        const rh = Math.abs(s1.y - s0.y);
+        state._reviveButtons.push({ targetId: String(t.id || ''), x: rx, y: ry, w: rw, h: rh });
+      }
+    }
+  }
 }
 
 function renderHPBarsWorld(state, ctx) {

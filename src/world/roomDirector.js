@@ -18,7 +18,7 @@ const GATE_REPAIR_SAFE_SEC = 2.0;
 const GATE_REPAIR_TIME_SEC = 2.0;
 // After clearing waves (bridge built) player can do a longer "reward fix".
 // It takes 10s to complete, then becomes green for a short time and drops XP.
-const GATE_REWARD_REPAIR_TIME_SEC = 10.0;
+const GATE_REWARD_REPAIR_TIME_SEC = 5.0;
 const GATE_REWARD_SEAL_DUR = 10.0;
 
 function clamp(n, a, b) {
@@ -251,8 +251,13 @@ export class RoomDirector {
     this.current = makeRoom(0, 0, 0);
     this.next = null;
 
-    // Bridge connects current -> next after clear.
+    // Bridge connects rooms after clear.
     this.bridge = null;
+
+    // When the host steps into the next floor, we keep the previous floor + bridge
+    // until ALL alive players enter the new floor.
+    this._waitForParty = false;
+    this._pendingPrevCollapse = false;
 
     this._ensureNextSpawned();
     this._applyDynamicBounds();
@@ -280,6 +285,9 @@ export class RoomDirector {
       if (this.prev.collapseT >= 1) {
         this.prev.collapseT = 1;
         this.prev.removed = true;
+        // Once removed, drop reference and also drop the old bridge.
+        this.prev = null;
+        this.bridge = null;
       }
     }
 
@@ -292,6 +300,19 @@ export class RoomDirector {
         this.bridge.built = true;
       } else {
         this.bridge.progress = this.bridge.t;
+      }
+    }
+
+    // Party transition: keep previous floor until everyone is in.
+    if (this._waitForParty && this.prev && !this.prev.removed && !this.prev.collapsing) {
+      if (this._areAllAlivePlayersInCurrent()) {
+        // Start collapsing the previous floor now.
+        this.prev.collapsing = true;
+        this.prev.collapseT = 0;
+        try { this._cleanupRoomEntities(this.prev); } catch {}
+        this._waitForParty = false;
+        // Kick downed players that were left behind on the previous floor.
+        try { this._kickLeftBehindDownedPlayers(); } catch {}
       }
     }
 
@@ -584,9 +605,31 @@ export class RoomDirector {
       prevSide = side;
     }
 
-    this.prev = null;
+    // Optionally compute previous floor center if host kept it.
+    const prevIdx = (typeof o.prevI === 'number') ? (o.prevI | 0) : 0;
+    let pcy = 0;
+    if (prevIdx > 0 && prevIdx < idx) {
+      let pPrevSide = getRoomSide(0);
+      for (let i = 1; i <= prevIdx; i++) {
+        const side = getRoomSide(i);
+        const prevHalf = pPrevSide * 0.5;
+        const half = side * 0.5;
+        pcy = pcy - (prevHalf + GAP + half);
+        pPrevSide = side;
+      }
+    }
+
+    this.prev = (prevIdx > 0 && prevIdx < idx) ? makeRoom(prevIdx, cx, pcy) : null;
+    if (this.prev) {
+      this.prev.cleared = true;
+      this.prev.collapsing = !!o.prevCollapsing;
+      this.prev.collapseT = typeof o.prevT === 'number' ? clamp(o.prevT, 0, 1) : 0;
+      this.prev.removed = false;
+    }
     this.current = makeRoom(idx, cx, cy);
     this.current.cleared = idx === 0 ? true : !!o.cleared;
+
+    this._waitForParty = !!o.waitForParty;
 
     // Apply gate states from host snapshot.
     const gates = Array.isArray(this.current.breaches) ? this.current.breaches : [];
@@ -624,6 +667,25 @@ export class RoomDirector {
     }
 
     this.next = null;
+
+    // If host kept a bridge from previous floor to current, reconstruct it.
+    const bFrom = (typeof o.bridgeFrom === 'number') ? (o.bridgeFrom | 0) : 0;
+    const bTo = (typeof o.bridgeTo === 'number') ? (o.bridgeTo | 0) : 0;
+    if (bFrom > 0 && bTo === idx && this.prev && (this.prev.index | 0) === bFrom) {
+      // Build a full bridge between prev -> current.
+      const from = this.prev;
+      const to = this.current;
+      const width = Math.max(140, Math.min(240, Math.round(Math.min(from.side, to.side) * 0.16)));
+      const startY = from.bounds.minY;
+      const endY = to.bounds.maxY;
+      const minY = Math.min(startY, endY);
+      const maxY = Math.max(startY, endY);
+      const bx = from.centerX;
+      const bounds = { minX: bx - width * 0.5, maxX: bx + width * 0.5, minY, maxY };
+      this.bridge = { fromIndex: from.index | 0, toIndex: to.index | 0, width, bounds, startY, endY, t: 1, progress: 1, built: true };
+    } else {
+      this.bridge = null;
+    }
 
     const wantNext = idx === 0 ? true : !!o.hasNext;
     if (wantNext && this.current.cleared) {
@@ -720,17 +782,19 @@ export class RoomDirector {
   _enterNextRoom() {
     if (!this.next || !this.current) return;
 
-    // Collapse previous room when player enters next.
+    // Transition: move current -> next, but keep the previous floor + bridge
+    // until ALL alive players enter the new floor.
     this.prev = this.current;
-    this.prev.collapsing = true;
+    this.prev.collapsing = false;
     this.prev.collapseT = 0;
-
-    // Mark previous room entities for cleanup (no score, no drops).
-    try { this._cleanupRoomEntities(this.prev); } catch {}
+    this.prev.removed = false;
 
     this.current = this.next;
     this.next = null;
-    this.bridge = null;
+
+    // Now we are "waiting for party" on the new floor.
+    this._waitForParty = true;
+
 
     // Notify systems.
     try {
@@ -748,13 +812,65 @@ export class RoomDirector {
     this._applyDynamicBounds();
   }
 
+  isWaitingForParty() {
+    return !!this._waitForParty;
+  }
+
+  _areAllAlivePlayersInCurrent(pad = 26) {
+    const st = this.state;
+    const b = this.current && this.current.bounds;
+    if (!st || !b) return true;
+    const ps = (st.players && st.players.length) ? st.players : (st.player ? [st.player] : []);
+    for (const p of ps) {
+      if (!p) continue;
+      if (p._kicked) continue;
+      if ((p.hp || 0) <= 0) continue; // alive players only
+      if (!pointInAabb(p.x, p.y, b, pad)) return false;
+    }
+    return true;
+  }
+
+  _kickLeftBehindDownedPlayers() {
+    const st = this.state;
+    if (!st) return;
+    const curIdx = this.current ? (this.current.index | 0) : 0;
+    const curB = this.current ? this.current.bounds : null;
+
+    const ps = (st.players && st.players.length) ? st.players : (st.player ? [st.player] : []);
+    const kick = [];
+    for (const p of ps) {
+      if (!p) continue;
+      if ((p.hp || 0) > 0) continue; // only downed/dead
+      // If their corpse is not in the current floor bounds, they were left behind.
+      if (!curB || !pointInAabb(p.x, p.y, curB, 28)) {
+        kick.push(String(p.id || ""));
+        p._kicked = true;
+      }
+    }
+
+    if (kick.length) {
+      st._kickIds = kick;
+      st._kickIdsUntil = (typeof st.time === 'number' ? st.time : 0) + 2.0;
+    }
+  }
+
   _applyDynamicBounds() {
     if (!this.current) return;
 
     const base = this.current.bounds;
 
-    // During transition phase: allow moving onto the built bridge and into next.
+    // Dynamic bounds should include any active floors + bridge parts.
     let union = base;
+
+    // If we are waiting for party (host entered next), keep previous floor + bridge in bounds.
+    if (this.prev && !this.prev.removed) {
+      union = unionAabb(union, this.prev.bounds, 20);
+    }
+    if (this.bridge && this.prev && !this.prev.removed) {
+      union = unionAabb(union, this.bridge.bounds, 22);
+    }
+
+    // During "clear -> build bridge -> enter next" phase: allow moving onto the built bridge and into next.
     const hasNext = !!(this.current.cleared && this.next && !this.next.removed);
     if (hasNext) {
       this._ensureBridge();
@@ -780,6 +896,14 @@ export class RoomDirector {
 
       this.state._bridgeP = this.bridge ? (this.bridge.progress || 0) : 0;
       this.state._bridgeBuilt = !!(this.bridge && this.bridge.built);
+
+
+      this.state._prevRoomIndex = this.prev && !this.prev.removed ? (this.prev.index | 0) : 0;
+      this.state._prevRoomCollapsing = !!(this.prev && this.prev.collapsing);
+      this.state._prevRoomCollapseT = this.prev ? (this.prev.collapseT || 0) : 0;
+      this.state._bridgeFrom = this.bridge ? (this.bridge.fromIndex | 0) : 0;
+      this.state._bridgeTo = this.bridge ? (this.bridge.toIndex | 0) : 0;
+      this.state._waitForParty = !!this._waitForParty;
 
       const gs = this.current && Array.isArray(this.current.breaches) ? this.current.breaches : [];
       this.state._gateHp = gs.map((g) => (g && typeof g.sealHp === 'number') ? g.sealHp : 0);

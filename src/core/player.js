@@ -243,6 +243,13 @@ export class Player {
   }
 
   update(dt, state) {
+    // Revive channel lock: no movement while reviving someone.
+    if (this._reviving) {
+      this.vx = 0;
+      this.vy = 0;
+      return;
+    }
+
     const pointerMove = getMoveVectorFromPointer();
     let dirX = pointerMove.x;
     let dirY = pointerMove.y;
@@ -314,15 +321,19 @@ export class Player {
     // Aura is drawn FIRST so it stays behind the emoji/avatar.
     const nowSec = (typeof performance !== "undefined" && performance.now) ? (performance.now() / 1000) : 0;
     const dead = (this.hp != null) ? (this.hp <= 0) : false;
-    drawAura(ctx, this.x, this.y, auraR, nowSec, (this.id || this.nickname || "p"), (this.auraId || 0), dead, false);
+    // Corpse: no aura/effects.
+    if (!dead) {
+      drawAura(ctx, this.x, this.y, auraR, nowSec, (this.id || this.nickname || "p"), (this.auraId || 0), dead, false);
+    }
 
 	    if (emo) {
 	      // No extra shadows/glow — keep the avatar crisp.
-	      ctx.fillStyle = "rgba(255,255,255,1)";
+	      ctx.fillStyle = dead ? "rgba(255,255,255,0.72)" : "rgba(255,255,255,1)";
 	      ctx.fillText(emo, this.x, this.y);
 	    }
 
     // Aim indicator (outside the aura, so it doesn't cut through the emoji)
+    if (!dead) {
     const len = Math.hypot(this.lastAimDir.x, this.lastAimDir.y) || 1;
     const nx = this.lastAimDir.x / len;
     const ny = this.lastAimDir.y / len;
@@ -336,6 +347,7 @@ export class Player {
     ctx.moveTo(ax0, ay0);
     ctx.lineTo(ax1, ay1);
     ctx.stroke();
+    }
 
     ctx.restore();
   }
