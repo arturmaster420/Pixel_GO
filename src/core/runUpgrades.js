@@ -2,6 +2,8 @@
 // - Meta upgrades (R-Tier / Stats) remain unchanged and are applied between runs.
 // - During a run, each level grants a choice of upgrades (skills or passives).
 
+import { isStandardSkillKey, getSkillFamily } from "../weapons/skillCatalog.js";
+
 function pickWeightedUnique(items, count) {
   const out = [];
   const pool = items.slice();
@@ -42,14 +44,19 @@ export const RUN_SKILLS = [
   { key: "bullets", name: "Gun", kind: "skill" },
   { key: "bombs", name: "Bombs", kind: "skill" },
   // New early skills (Magic Survival inspired)
-  { key: "satellites", name: "Satellites", kind: "skill" },
+  { key: "satellites", name: "Frost Orbit", kind: "skill", biome: "ice" },
   { key: "energyBarrier", name: "Energy Barrier", kind: "skill" },
-  { key: "spirit", name: "Spirit", kind: "skill" },
-  { key: "summon", name: "Summon Tanks", kind: "skill" },
-  { key: "electricZone", name: "Electric Zone", kind: "skill" },
+  { key: "spirit", name: "Shadow Spirit", kind: "skill", biome: "dark" },
+  { key: "summon", name: "Light Wardens", kind: "skill", biome: "light" },
+  { key: "electricZone", name: "Electric Ring", kind: "skill", biome: "electric" },
   // Advanced skills unlock a bit later (prevents early "take everything" power spike).
-  { key: "laser", name: "Laser", kind: "skill" },
-  { key: "lightning", name: "Chain Lightning", kind: "skill" },
+  { key: "laser", name: "Solar Beam", kind: "skill", biome: "fire" },
+  { key: "lightning", name: "Electric Chain", kind: "skill", biome: "electric" },
+  // Biome actives (sold via Floor Terminal starting from floor 6)
+  { key: "fireball", name: "Fireball", kind: "skill", biome: "fire" },
+  { key: "iceWall", name: "Ice Wall", kind: "skill", biome: "ice" },
+  { key: "blackhole", name: "Blackhole", kind: "skill", biome: "dark" },
+  { key: "lightHeal", name: "Light Heal", kind: "skill", biome: "light" },
   // Rockets are obtained via evolution (fusion), not directly.
   { key: "rockets", name: "Rockets", kind: "skill" },
 ];
@@ -86,6 +93,10 @@ export function initRunUpgrades(player) {
     electricZone: (s.electricZone ?? 0) | 0,
     laser: (s.laser ?? 0) | 0,
     lightning: (s.lightning ?? 0) | 0,
+    fireball: (s.fireball ?? 0) | 0,
+    iceWall: (s.iceWall ?? 0) | 0,
+    blackhole: (s.blackhole ?? 0) | 0,
+    lightHeal: (s.lightHeal ?? 0) | 0,
   };
   player.runEvolutions = player.runEvolutions || {};
   // Passives start at 0 (merge defaults).
@@ -102,6 +113,13 @@ export function initRunUpgrades(player) {
     critChance: (p0.critChance ?? 0) | 0,
     critDamage: (p0.critDamage ?? 0) | 0,
     lifeSteal: (p0.lifeSteal ?? 0) | 0,
+
+    // Biome affinities (floor shop only; not rolled by normal level-up pool)
+    affElectric: (p0.affElectric ?? 0) | 0,
+    affFire: (p0.affFire ?? 0) | 0,
+    affIce: (p0.affIce ?? 0) | 0,
+    affLight: (p0.affLight ?? 0) | 0,
+    affDark: (p0.affDark ?? 0) | 0,
   };
 
   // Snapshot of "maxHP after meta" at run start.
@@ -162,10 +180,14 @@ const MAX_SKILL_LEVEL = {
   electricZone: 6,
   laser: 6,
   lightning: 6,
+  fireball: 6,
+  iceWall: 6,
+  blackhole: 6,
+  lightHeal: 6,
 };
 const evo = player.runEvolutions || {};
 
-const attackKeys = ["bullets", "bombs", "satellites", "energyBarrier", "spirit", "summon", "electricZone", "laser", "lightning", "rockets"];
+const attackKeys = ["bullets", "bombs", "satellites", "energyBarrier", "spirit", "summon", "electricZone", "laser", "lightning", "fireball", "iceWall", "blackhole", "lightHeal", "rockets"];
 const activeAttackSkills = attackKeys.reduce((acc, k) => acc + (((skills[k] || 0) > 0) ? 1 : 0), 0);
 
 // Evolution: Bullets MAX + Bombs MAX => Rockets
@@ -189,16 +211,16 @@ if (canFuseRockets) {
 }
 
 for (const s of RUN_SKILLS) {
+  const fam = getSkillFamily(s.key);
+  const isStandard = isStandardSkillKey(s.key);
   const metaId = `skill:${s.key}`;
   const metaLvl = getMetaLevelForUpgrade(player, metaId);
+  // Standard level-up pool now stays clean: standard actives only + evolution.
+  if (!isStandard && s.key !== "rockets") continue;
   // Shop gating: locked skills (metaLvl<=0) do not appear in run upgrade pool (except base bullets).
   if (s.key !== "bullets" && metaLvl <= 0) continue;
   // After fusion, we don't offer the consumed components again.
   if (evo.rocketFusion && (s.key === "bullets" || s.key === "bombs")) continue;
-
-  // Gate advanced skills to avoid early "grab all attacks" snowball.
-  if (s.key === "laser" && runLevel < 6) continue;
-  if (s.key === "lightning" && runLevel < 8) continue;
 
   const lvl = skills[s.key] | 0;
 
@@ -397,25 +419,37 @@ export function describeRunUpgrade(player, up) {
       return up.from <= 0 ? "Rockets (via fusion)" : `Lv ${up.from} → ${up.to}: +damage / +AoE / faster`;
     }
     if (up.key === "laser") {
-      return up.from <= 0 ? "Unlock laser beam" : `Lv ${up.from} → ${up.to}: +DPS / +range`;
+      return up.from <= 0 ? "Unlock solar beam" : `Lv ${up.from} → ${up.to}: +DPS / +range`;
     }
     if (up.key === "lightning") {
-      return up.from <= 0 ? "Unlock chain lightning" : `Lv ${up.from} → ${up.to}: +targets / +damage`;
+      return up.from <= 0 ? "Unlock electric chain" : `Lv ${up.from} → ${up.to}: +targets / +damage`;
     }
     if (up.key === "satellites") {
-      return up.from <= 0 ? "Orbiting satellites (contact damage)" : `Lv ${up.from} → ${up.to}: +count / +damage`;
+      return up.from <= 0 ? "Unlock frost orbit (icy shards around you)" : `Lv ${up.from} → ${up.to}: +count / +damage`;
     }
     if (up.key === "energyBarrier") {
-      return up.from <= 0 ? "Energy barrier (repel + pulse)" : `Lv ${up.from} → ${up.to}: +radius / +damage`;
+      return up.from <= 0 ? "Unlock shield ring (repel + pulse)" : `Lv ${up.from} → ${up.to}: +radius / +damage`;
     }
     if (up.key === "spirit") {
-      return up.from <= 0 ? "Spirit flames (auto gun shots)" : `Lv ${up.from} → ${up.to}: +range / +atkspd / +dmg (extra spirits at 4 & 6)`;
+      return up.from <= 0 ? "Unlock shadow spirit (auto shots)" : `Lv ${up.from} → ${up.to}: +range / +atkspd / +dmg (extra spirits at 4 & 6)`;
     }
     if (up.key === "summon") {
-      return up.from <= 0 ? "Summon tanks (taunt + soak)" : `Lv ${up.from} → ${up.to}: +HP / +DEF / faster respawn (extra tanks at 4 & 6)`;
+      return up.from <= 0 ? "Unlock light wardens (taunt + soak)" : `Lv ${up.from} → ${up.to}: +HP / +DEF / faster respawn (extra tanks at 4 & 6)`;
     }
     if (up.key === "electricZone") {
-      return up.from <= 0 ? "Electric zone (AoE pulses)" : `Lv ${up.from} → ${up.to}: +radius / +damage`;
+      return up.from <= 0 ? "Unlock electric ring (AoE pulses)" : `Lv ${up.from} → ${up.to}: +radius / +damage`;
+    }
+    if (up.key === "fireball") {
+      return up.from <= 0 ? "Unlock fireball (AoE + burn)" : `Lv ${up.from} → ${up.to}: +damage / +AoE / faster`;
+    }
+    if (up.key === "iceWall") {
+      return up.from <= 0 ? "Unlock ice wall (control + slow)" : `Lv ${up.from} → ${up.to}: +size / +control / +damage`;
+    }
+    if (up.key === "blackhole") {
+      return up.from <= 0 ? "Unlock blackhole (pull + DoT)" : `Lv ${up.from} → ${up.to}: +radius / +pull / +damage`;
+    }
+    if (up.key === "lightHeal") {
+      return up.from <= 0 ? "Unlock light heal (pulse heal)" : `Lv ${up.from} → ${up.to}: +heal / +radius / faster`;
     }
     return `Lv ${up.from} → ${up.to}`;
   }
@@ -432,5 +466,10 @@ export function describeRunUpgrade(player, up) {
   if (k === "critChance") return `+1.5% crit chance (stacking)`;
   if (k === "critDamage") return `+12% crit damage (stacking)`;
   if (k === "lifeSteal") return `+0.4% life steal (stacking)`;
+  if (k === "affElectric") return `Electric Affinity: on-hit chance to zap a nearby enemy (stacking)`;
+  if (k === "affFire") return `Fire Affinity: burning DoT on-hit (stacking)`;
+  if (k === "affIce") return `Ice Affinity: frost mark → extra damage vs marked (stacking)`;
+  if (k === "affLight") return `Light Affinity: heal a bit on kill (stacking)`;
+  if (k === "affDark") return `Dark Affinity: curse mark → extra damage vs cursed (stacking)`;
   return `Lv ${up.from} → ${up.to}`;
 }

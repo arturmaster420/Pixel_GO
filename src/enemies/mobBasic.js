@@ -1,5 +1,6 @@
 import { getZoneScaling } from "../world/zoneController.js";
 import { pickMobTarget, applyDamageToTarget } from "./utils.js";
+import { renderBiomeUnit, biomeKeyFromKind, biomeStyleForKey } from "./biomeVisuals.js";
 
 export function createBasicMob(zone, pos) {
   const s = getZoneScaling(zone);
@@ -108,11 +109,20 @@ export function createBasicMob(zone, pos) {
   };
 
   enemy.render = (self, ctx) => {
+    const bk = String(self._biomeKey || biomeKeyFromKind(self.kind) || "").toLowerCase();
+    if (bk) {
+      const role = biomeStyleForKey(bk).role;
+      renderBiomeUnit(ctx, self, bk, { role, isBasic: true });
+      return;
+    }
     ctx.save();
     ctx.beginPath();
     ctx.fillStyle = "#ff5f6f";
     ctx.arc(self.x, self.y, self.radius, 0, Math.PI * 2);
     ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.25)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
     ctx.restore();
   };
 

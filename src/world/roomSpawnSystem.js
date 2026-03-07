@@ -1,6 +1,7 @@
 import { createBasicMob } from "../enemies/mobBasic.js";
 import { createEliteMob } from "../enemies/mobElite.js";
 import { createRoamingBoss } from "../enemies/roamingBoss.js";
+import { createBiomeMob, createBiomeEliteMob } from "../enemies/biomeMobs.js";
 import { getGateHalfLenForRoomSide } from "./roomDirector.js";
 
 function clamp(n, a, b) {
@@ -105,7 +106,8 @@ function wrapGateApproachUpdate(enemy, roomIndex, gateId, pad = 10) {
       const baseSpeed = (self.speed || 80);
       // Approach speed: keep it readable + give the player time to react/fix gates.
       // (Previously this was boosted too much and enemies reached the gate instantly.)
-      const speed = clamp(baseSpeed * 0.65, 55, 120);
+      const approachMult = (typeof self.gateApproachMult === "number") ? self.gateApproachMult : 1;
+      const speed = clamp(baseSpeed * 0.65 * approachMult, 45, 115);
 
       const target = sealed
         ? rd.getGateContactPoint(room, gate, r, 3)
@@ -157,7 +159,8 @@ function wrapGateApproachUpdate(enemy, roomIndex, gateId, pad = 10) {
         const contactR = Math.max(16, r * 0.75);
         const aligned = (gate.side === 'S') ? (Math.abs(self.x - gate.x) <= halfLen) : (Math.abs(self.y - gate.y) <= halfLen);
         if (aligned && cd2 <= contactR * contactR) {
-          rd.applyGateDamage(String(gateId), (self.damage || 5) * dt * 0.55, self);
+          const gateMult = (typeof self.gateDmgMult === "number") ? self.gateDmgMult : 1;
+          rd.applyGateDamage(String(gateId), (self.damage || 5) * dt * 0.55 * gateMult, self);
         }
       }
 
@@ -273,8 +276,9 @@ export class RoomSpawnSystem {
     this._miniBossId = null;
     this._bossId = null;
 
-    this.isBossRoom = this.roomIndex > 0 && (this.roomIndex % 10 === 0);
-    this.isMiniBossRoom = this.roomIndex > 0 && (this.roomIndex % 5 === 0) && !this.isBossRoom;
+    // Every playable floor ends with its own boss.
+    this.isBossRoom = this.roomIndex > 0;
+    this.isMiniBossRoom = false;
 
     // Party scaling (host authoritative): every extra player adds +150% wave size.
     // We compute it on room change, so all wave targets/quota are consistent.
@@ -288,20 +292,25 @@ export class RoomSpawnSystem {
       this.wavesTotal = 0;
       this._waveSizes = [];
     } else {
-      this.quotaTotal = 12 + Math.floor(this.roomIndex * 3.0);
-      this.aliveCap = Math.min(32, 8 + Math.floor(this.roomIndex * 0.6));
-      // Boss rooms: slightly lower quota (boss fight already long)
-      if (this.isBossRoom) this.quotaTotal = Math.max(25, Math.floor(this.quotaTotal * 0.75));
-      if (this.isMiniBossRoom) this.quotaTotal = Math.max(18, Math.floor(this.quotaTotal * 0.85));
+      this.quotaTotal = 9 + Math.floor(this.roomIndex * 2.0);
+      this.aliveCap = Math.min(28, 6 + Math.floor(this.roomIndex * 0.5));
+      // Because every floor now ends with a boss, keep the mob quota tighter.
+      if (this.isBossRoom) this.quotaTotal = Math.max(8, Math.floor(this.quotaTotal * 0.78));
+      // Early floors should stay snappier because every floor already ends with a boss.
+      if (this.roomIndex <= 3) {
+        this.quotaTotal = Math.max(7, Math.floor(this.quotaTotal * 0.84));
+        this.aliveCap = Math.min(this.aliveCap, 6);
+      } else if (this.roomIndex <= 6) {
+        this.quotaTotal = Math.max(9, Math.floor(this.quotaTotal * 0.90));
+        this.aliveCap = Math.min(this.aliveCap, 7);
+      }
 
       // Apply party scaling AFTER boss adjustments.
       // Note: aliveCap stays the same (performance-friendly); only wave size scales.
       this.quotaTotal = Math.max(1, Math.round(this.quotaTotal * this.partyWaveScale));
 
-      // Waves per room: 1->3, 2->5, 3->7 ... capped
-      let waves = clamp(2 * this.roomIndex + 1, 3, 21);
-      if (this.isBossRoom) waves = Math.min(waves, 11);
-      if (this.isMiniBossRoom) waves = Math.min(waves, 9);
+      // Fewer waves per room so the boss remains the main finale.
+      let waves = clamp(this.roomIndex <= 3 ? 2 : 2 + Math.floor(this.roomIndex * 0.65), 2, 8);
       this.wavesTotal = waves;
 
       // Distribute the quota across waves so total kills stays consistent.
@@ -321,6 +330,7 @@ export class RoomSpawnSystem {
       this.state._roomIsBoss = !!this.isBossRoom;
       this.state._roomIsMiniBoss = !!this.isMiniBossRoom;
       this.state._roomBossAlive = false;
+      this.state._roomBossArenaType = String(room?.arenaSpec?.bossArena?.arenaType || '');
 
       this.state._roomWavesTotal = this.wavesTotal | 0;
       this.state._roomWaveIndex = 0;
@@ -370,46 +380,8 @@ export class RoomSpawnSystem {
       aliveInRoom++;
     }
 
-    // Boss/mini-boss spawn (once)
+    // Each floor now has a finale boss, but it should appear only after the regular waves are done.
     const zone = this._virtualZoneFromRoom(this.roomIndex);
-
-    if (this.isBossRoom && !this._bossSpawned) {
-      const pos = { x: room.centerX, y: room.centerY };
-      const boss = createRoamingBoss(zone, pos);
-      boss._roomIndex = this.roomIndex;
-      boss._roomId = this.roomId;
-      boss._isBoss = true;
-      boss._isRoomBoss = true;
-      boss.id = boss.id || `boss_${this.roomIndex}_${Math.floor(Math.random() * 1e9)}`;
-      this._bossId = boss.id;
-      this._bossSpawned = true;
-      wrapGateApproachUpdate(boss, this.roomIndex, null, 14);
-      state.enemies.push(boss);
-      if (state) state._roomBossAlive = true;
-    }
-
-    if (this.isMiniBossRoom && !this._bossSpawned) {
-      const pos = { x: room.centerX, y: room.centerY };
-      const mb = createEliteMob(zone, pos);
-      // Turn it into a mini-boss
-      mb.isBoss = true;
-      mb._isMiniBoss = true;
-      mb.radius = Math.max(mb.radius || 26, 36);
-      mb.hp *= 6;
-      mb.maxHp *= 6;
-      mb.damage *= 1.6;
-      mb.speed *= 0.95;
-      mb.scoreValue = (mb.scoreValue || 0) + 120 * zone;
-
-      mb._roomIndex = this.roomIndex;
-      mb._roomId = this.roomId;
-      mb.id = mb.id || `miniboss_${this.roomIndex}_${Math.floor(Math.random() * 1e9)}`;
-      this._miniBossId = mb.id;
-      this._bossSpawned = true;
-      wrapGateApproachUpdate(mb, this.roomIndex, null, 14);
-      state.enemies.push(mb);
-      if (state) state._roomBossAlive = true;
-    }
 
     // If current room is already cleared, stop spawning.
     if (room.cleared) return;
@@ -449,14 +421,35 @@ export class RoomSpawnSystem {
       return;
     }
 
-    // If all waves finished, wait for clear check (kills + boss + alive==0)
+    // After all normal waves are cleared, spawn the floor boss in the room center.
     if (this.wavesTotal > 0 && this.waveIndex >= this.wavesTotal) {
+      if (this.isBossRoom && !this._bossSpawned && aliveInRoom === 0) {
+        const arenaBossSpawn = room?.arenaSpec?.anchors?.bossSpawn;
+        const pos = arenaBossSpawn ? { x: Number(arenaBossSpawn.x) || room.centerX, y: Number(arenaBossSpawn.y) || room.centerY } : { x: room.centerX, y: room.centerY };
+        const boss = createRoamingBoss(zone, pos, {
+          floorIndex: this.roomIndex,
+          biomeKey: room.biomeKey || "",
+          bossArena: room?.arenaSpec?.bossArena || null,
+          bossMoveNodes: room?.arenaSpec?.anchors?.bossMoveNodes || [],
+          hazardZones: room?.arenaSpec?.hazardZones || [],
+        });
+        boss._roomIndex = this.roomIndex;
+        boss._roomId = this.roomId;
+        boss._isBoss = true;
+        boss._isRoomBoss = true;
+        boss.id = boss.id || `boss_${this.roomIndex}_${Math.floor(Math.random() * 1e9)}`;
+        this._bossId = boss.id;
+        this._bossSpawned = true;
+        state.enemies.push(boss);
+        if (state) state._roomBossAlive = true;
+        return;
+      }
       this._checkClearCondition();
       return;
     }
 
     // Spawn cadence
-    const spawnInterval = clamp(0.9 - this.roomIndex * 0.005, 0.25, 0.9);
+    const spawnInterval = clamp((this.roomIndex <= 4 ? 1.02 : 0.92) - this.roomIndex * 0.005, 0.28, 1.02);
     this._spawnTimer += dt;
     if (this._spawnTimer < spawnInterval) return;
     this._spawnTimer = 0;
@@ -486,10 +479,23 @@ export class RoomSpawnSystem {
       }
 
       // Type selection
-      const eliteChance = clamp(0.02 + this.roomIndex * 0.0015, 0.02, 0.18);
+      const eliteChance = clamp(0.015 + this.roomIndex * 0.0014, 0.015, 0.16);
       const useElite = Math.random() < eliteChance;
 
-      const enemy = useElite ? createEliteMob(zone, pos) : createBasicMob(zone, pos);
+      const biomeKey = String(room.biomeKey || "");
+      const biomeMobChance = this.roomIndex <= 5 ? 0.30 : 0.42;
+      const useBiome = !useElite && biomeKey && (Math.random() < biomeMobChance);
+      const enemy = useElite
+        ? (biomeKey ? createBiomeEliteMob(biomeKey, zone, pos) : createEliteMob(zone, pos))
+        : (useBiome ? createBiomeMob(biomeKey, zone, pos) : createBasicMob(zone, pos));
+
+      // If this is a plain basic mob on a biome floor, tag its kind for joiner visuals.
+      if (!useElite && biomeKey && !useBiome) {
+        enemy.kind = `${String(biomeKey).toLowerCase()}Basic`;
+      }
+
+      // Let even basic mobs inherit a biome tint (for host visuals)
+      if (biomeKey && !enemy._biomeKey) enemy._biomeKey = biomeKey;
       enemy._roomIndex = this.roomIndex;
       enemy._roomId = this.roomId;
       enemy.id = enemy.id || `e_${this.roomIndex}_${this.spawned}_${Math.floor(Math.random() * 1e6)}`;
@@ -556,8 +562,9 @@ export class RoomSpawnSystem {
     // Must meet kill quota.
     if (this.killed < this.quotaTotal) return;
 
-    // Boss rooms must have boss dead.
+    // Boss rooms must actually spawn their finale boss before the floor can clear.
     if (this.isBossRoom) {
+      if (!this._bossSpawned) return;
       const bossAlive = (state.enemies || []).some((e) => e && !e.dead && (e._roomIndex | 0) === this.roomIndex && e._isRoomBoss && e.hp > 0);
       if (bossAlive) return;
     }

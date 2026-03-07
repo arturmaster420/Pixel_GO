@@ -5,9 +5,14 @@ import { getKeyboardVector } from "./input.js";
 import { setControlMode } from "./mouseController.js";
 import { getMoveVectorFromPointer, getAimDirectionForPlayer, isFiringActive } from "./mouseController.js";
 import { updateSkills, updateSkillsNet, getAttackRangeForPlayer, getAimRangeForPlayer } from "../weapons/skillSystem.js";
+import { updateIceWalls } from "../weapons/iceWall.js";
+import { updateBlackholes } from "../weapons/blackhole.js";
+import { updateHealPulses } from "../weapons/lightHeal.js";
+import { explodeFireball } from "../weapons/fireball.js";
 import { RoomSpawnSystem } from "../world/roomSpawnSystem.js";
 import { RoomDirector } from "../world/roomDirector.js";
 import { renderRoomsBackground } from "../world/roomRenderer.js";
+import { renderBiomeUnit, biomeKeyFromKind, biomeStyleForKey, biomeRoleFromKind } from "../enemies/biomeVisuals.js";
 import { renderHUD } from "../ui/hud.js";
 import { renderUpgradeMenu, handleUpgradeClick } from "../ui/upgradeMenu.js";
 import { renderResurrectionScreen, handleResurrectionClick } from "../ui/resurrectionScreen.js";
@@ -20,11 +25,14 @@ import {
   applyLifeSteal,
 } from "./progression.js";
 import { initRunUpgrades, rollRunUpgrades, applyRunUpgrade } from "./runUpgrades.js";
+import { rollFloorShopOffersStandard, rollFloorShopOffers, describeFloorShopOffer, tryBuyFloorShopOfferEx, getReplaceCandidates } from "./floorShop.js";
+import { biomeName } from "../world/biomes.js";
 import { updateBuffs } from "../buffs/buffs.js";
 import { getZone, ZONE_RADII, ZONE6_SQUARE_HALF, WORLD_SQUARE_HALF, HUB_HALF, HUB_CORNER_R, isPointInHub, WORLD_SCALE } from "../world/zoneController.js";
 import { WORLD_HEIGHT, WORLD_WIDTH } from "../world/mapGenerator.js";
 import { createNetClient, getDefaultWsUrl } from "../net/netClient.js";
 import { showRunUpgradeOverlay, hideRunUpgradeOverlay } from "../ui/runUpgradeDom.js";
+import { showFloorShopOverlay, hideFloorShopOverlay } from "../ui/floorShopDom.js";
 import { ensureShopMeta } from "../meta/shopMeta.js";
 import {
   renderHubNpcs,
@@ -50,6 +58,11 @@ export function createGame(canvas, ctx, progression) {
     enemies: [],
     projectiles: [],
     rockets: [],
+    // Biome skill FX (host-authoritative, replicated via snapshots)
+    iceWalls: [],
+    blackholes: [],
+    healPulses: [],
+    _explosions: [],
     xpOrbs: [],
     summons: [],
     buffs: [],
@@ -88,6 +101,10 @@ export function createGame(canvas, ctx, progression) {
     _deathHandled: false,
     _waitingRespawnAck: false,
 
+    // Pixel_GO v0.4: floor shop overlay (local only; host authoritative purchases)
+    _floorShopActive: false,
+    _shopButtons: [],
+
     // Host keeps per-player meta snapshots (limits/resTier/etc.)
     _netMetaById: new Map(),
 
@@ -96,6 +113,11 @@ export function createGame(canvas, ctx, progression) {
       sessions: new Map(),
     },
   };
+
+  // Helpers for weapon/FX modules (avoid circular imports).
+  // These are used by biome skills to resolve owners and ally lists.
+  state._getPlayerById = (id) => getPlayerById(state, id);
+  state.getPlayersArr = (st) => getPlayersArr(st);
 
   // Net client (optional)
   state.net = createNetClient();
@@ -397,7 +419,7 @@ if (msg.type === "runRequest") {
 
       // Lightweight client-side prediction for our own movement
       // (we still rely on host for all combat/world state).
-      if (state.mode === "playing" && !state.paused && !state._runUpgradeActive && state.player && typeof state.player.update === "function") {
+      if (state.mode === "playing" && !state.paused && !state._runUpgradeActive && !state._floorShopActive && state.player && typeof state.player.update === "function") {
         if (state.player.hp > 0 && !state.overlayMode && !state.player._lvlUpChoosing) {
           state.player.update(dt, state);
         }
@@ -496,6 +518,9 @@ if (msg.type === "runRequest") {
     // If the run-upgrade menu was just opened, briefly repel nearby enemies.
     applyRunUpgradeRepel(state, dt);
 
+    // Biome skill effects that act on enemies/world (blackholes, ice walls, heal pulses, explosions).
+    updateSkillFx(state, dt);
+
     updateProjectiles(state, dt);
     updateXPOrbs(state, dt);
 
@@ -581,6 +606,7 @@ function render() {
     renderWorldBackground(state, ctx);
     renderHubNpcs(ctx, state);
     renderXPOrbs(state, ctx);
+    renderSkillFx(state, ctx);
     renderEnemies(state, ctx);
     renderSummons(state, ctx);
     renderProjectiles(state, ctx);
@@ -779,6 +805,17 @@ function render() {
             state._reviveActSeq = (state._reviveActSeq || 0) + 1;
             state._reviveActPending = { targetId, seq: state._reviveActSeq };
           }
+          return true;
+        }
+      }
+    }
+
+    // Pixel_GO v0.4: Floor terminal (NPC shop) open (mouse/tap)
+    if (state.mode === "playing" && !state.overlayMode && Array.isArray(state._shopButtons) && state._shopButtons.length) {
+      for (const b of state._shopButtons) {
+        if (!b) continue;
+        if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+          tryOpenFloorShop(state);
           return true;
         }
       }
@@ -985,6 +1022,11 @@ function startNewRun(state) {
   state.enemies = [];
   state.projectiles = [];
   state.rockets = [];
+  state.iceWalls = [];
+  state.blackholes = [];
+  state.healPulses = [];
+  state._explosions = [];
+  state._nextFxId = 0;
   state.xpOrbs = [];
   state.summons = [];
   state._nextSummonId = 0;
@@ -999,6 +1041,8 @@ function startNewRun(state) {
   state._lightningVisual = null;
   state._runUpgradeActive = false;
   state._runUpgradeChoices = null;
+  state._floorShopActive = false;
+  try { hideFloorShopOverlay(); } catch {}
   if (state._runUpNet && state._runUpNet.sessions && typeof state._runUpNet.sessions.clear === "function") {
     state._runUpNet.sessions.clear();
   }
@@ -1168,7 +1212,8 @@ function updatePlayers(state, dt, online) {
   if (state.player && typeof state.player.update === "function") {
     const blockedByOverlay = !!(online && state.overlayMode);
     const blockedByRunUp = !!state._runUpgradeActive || !!state.player._lvlUpChoosing;
-    if (state.player.hp > 0 && !blockedByOverlay && !blockedByRunUp && !state.player._reviving) {
+    const blockedByShop = !!state._floorShopActive;
+    if (state.player.hp > 0 && !blockedByOverlay && !blockedByRunUp && !blockedByShop && !state.player._reviving) {
       state.player.update(dt, state);
     }
   }
@@ -1215,6 +1260,18 @@ function updatePlayers(state, dt, online) {
           try { startReviveById(state, p, String(ra.targetId)); } catch {}
         }
       }
+
+      // Pixel_GO v0.4: floor shop purchases from joiners (host-authoritative)
+      const sa = input && input.shopAct;
+      if (sa && sa.offerId) {
+        const seq = (sa.seq | 0) || 0;
+        if (!state._shopActLastSeq) state._shopActLastSeq = new Map();
+        const last = state._shopActLastSeq.get(String(p.id)) || 0;
+        if (seq && seq !== last) {
+          state._shopActLastSeq.set(String(p.id), seq);
+          try { performFloorShopPurchase(state, p, String(sa.offerId), sa.replaceKey != null ? String(sa.replaceKey) : null); } catch {}
+        }
+      }
     }
   }
 }
@@ -1224,7 +1281,8 @@ function updateWeapons(state, dt, online) {
   if (state.player) {
     const blockedByOverlay = !!(online && state.overlayMode);
     const blockedByRunUpgrade = !!state._runUpgradeActive || !!state.player._lvlUpChoosing;
-    if (state.player.hp > 0 && !blockedByOverlay && !blockedByRunUpgrade && !state.player._reviving) {
+    const blockedByFloorShop = !!state._floorShopActive;
+    if (state.player.hp > 0 && !blockedByOverlay && !blockedByRunUpgrade && !blockedByFloorShop && !state.player._reviving) {
       updateSkills(state.player, state, dt);
     }
   }
@@ -1317,6 +1375,27 @@ function applyRunUpgradeRepel(state, dt) {
     const push = basePush * (0.25 + 0.75 * t);
     e.x += nx * push * dt;
     e.y += ny * push * dt;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Biome skill FX (host-authoritative)
+// ---------------------------------------------------------------------------
+
+function updateSkillFx(state, dt) {
+  if (!state) return;
+  try { updateBlackholes(state, dt); } catch {}
+  try { updateIceWalls(state, dt); } catch {}
+  try { updateHealPulses(state, dt); } catch {}
+
+  // Explosions are purely visual.
+  if (Array.isArray(state._explosions)) {
+    for (let i = state._explosions.length - 1; i >= 0; i--) {
+      const ex = state._explosions[i];
+      if (!ex) { state._explosions.splice(i, 1); continue; }
+      ex.t -= dt;
+      if (ex.t <= 0) state._explosions.splice(i, 1);
+    }
   }
 }
 
@@ -1433,6 +1512,170 @@ function maybeOpenRunUpgradeOverlay(state) {
 
   // Deprecated auto-open (kept for backward compatibility). Use manual opening instead.
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Pixel_GO v0.4: Floor terminal (NPC shop)
+// ---------------------------------------------------------------------------
+
+function canPlayerUseFloorShop(state, player) {
+  if (!state || !player) return false;
+  if (state.mode !== 'playing') return false;
+  if (player.hp <= 0) return false;
+  const rd = state.roomDirector;
+  const room = rd && rd.current;
+  if (!room || (room.index | 0) <= 0) return false;
+  if (!room.cleared) return false;
+  const npc = room.shopNpc || { x: room.centerX, y: room.centerY + (room.side || 600) * 0.18 };
+  const dx = player.x - npc.x;
+  const dy = player.y - npc.y;
+  return (dx * dx + dy * dy) <= (210 * 210);
+}
+
+function tryOpenFloorShop(state) {
+  if (!state || state.mode !== 'playing') return false;
+  if (state._floorShopActive) return true;
+  const p = state.player;
+  if (!p) return false;
+  if (!canPlayerUseFloorShop(state, p)) return false;
+
+  // Ensure we have offers (offline/host should have generated them on floor clear).
+  const curFloor = (state.currentRoomIndex != null ? (state.currentRoomIndex | 0) : (state.roomDirector ? (state.roomDirector.roomIndex | 0) : 0));
+  if (!p.floorShop || (p.floorShop.floor | 0) !== curFloor || !Array.isArray(p.floorShop.offers)) {
+    // Fallback: offline/host generate a fresh set.
+    const online = isOnline(state);
+    const isHost = !online || !!state.net?.isHost;
+    if (isHost) {
+      const biomeKey = (state.roomDirector && state.roomDirector.current) ? (state.roomDirector.current.biomeKey || "") : (state._roomBiome || "");
+      const offers = rollFloorShopOffers(p, curFloor, biomeKey, 3);
+      p.floorShop = { floor: curFloor, offers, sold: offers.map(() => false) };
+    }
+  }
+
+  const fs = p.floorShop;
+  if (!fs || !Array.isArray(fs.offers) || !fs.offers.length) return false;
+
+  const spNow = (p.skillPoints | 0) || 0;
+  const choices = [];
+  for (let i = 0; i < fs.offers.length; i++) {
+    const o = fs.offers[i];
+    if (!o) continue;
+    if (Array.isArray(fs.sold) && fs.sold[i]) continue;
+    const desc = describeFloorShopOffer(p, o);
+    const cost = (o.spCost | 0) || 0;
+    choices.push({ ...o, desc, disabled: spNow < cost });
+  }
+
+  if (!choices.length) {
+    if (state.popups) state.popups.push({ text: 'Terminal: nothing to buy', time: 1.2 });
+    return false;
+  }
+
+  state._floorShopActive = true;
+  const biomeKey = (state.roomDirector && state.roomDirector.current) ? (state.roomDirector.current.biomeKey || "") : (state._roomBiome || "");
+  const biomeLabel = (curFloor >= 4 && biomeKey) ? ` • Biome: ${biomeName(biomeKey)}` : "";
+  showFloorShopOverlay({
+    title: 'Terminal',
+    subtitle: `Spend Skill Points (SP)${biomeLabel}`,
+    metaText: `SP: ${spNow}`,
+    choices: choices.slice(0, 3),
+    onCloseCb: () => { state._floorShopActive = false; },
+    onPickCb: (pick) => {
+      // NOTE: overlay is already closed by UI module; keep _floorShopActive until we're done (replace flow)
+      if (!pick || pick.disabled) { state._floorShopActive = false; return; }
+
+      const online = isOnline(state);
+      const isJoiner = !!(online && state.net && !state.net.isHost);
+
+      // Active skill cap: unlocking a new skill may require replacement.
+      if (pick.kind === 'skill' && (pick.from | 0) <= 0 && pick.requiresReplace) {
+        const cand = getReplaceCandidates(p, pick.key);
+        if (!cand || !cand.length) {
+          state._floorShopActive = false;
+          if (state.popups) state.popups.push({ text: 'No skill to replace', time: 1.1 });
+          return;
+        }
+
+        showFloorShopOverlay({
+          title: 'Replace Skill',
+          subtitle: `Max 6 active skills • Replace one with ${pick.name}`,
+          metaText: `SP: ${spNow}`,
+          hint: 'Pick a skill to remove (Esc cancels)',
+          choices: cand.map((c, i) => ({
+            id: `rep_${c.key}`,
+            replaceKey: c.key,
+            name: `${c.name}  Lv${c.level}`,
+            desc: 'Will be removed to make room',
+            spCost: null,
+          })),
+          onCloseCb: () => { state._floorShopActive = false; },
+          onPickCb: (rep) => {
+            if (!rep || !rep.replaceKey) { state._floorShopActive = false; return; }
+            const replaceKey = String(rep.replaceKey);
+
+            if (isJoiner) {
+              state._shopActSeq = (state._shopActSeq || 0) + 1;
+              state._shopActPending = { offerId: String(pick.id || ''), replaceKey, seq: state._shopActSeq };
+              if (state.popups) state.popups.push({ text: 'Buying…', time: 0.8 });
+              // keep shop active until we send; then close
+              state._floorShopActive = false;
+              return;
+            }
+
+            const ok = performFloorShopPurchase(state, p, String(pick.id || ''), replaceKey);
+            state._floorShopActive = false;
+            if (!ok && state.popups) state.popups.push({ text: 'Cannot buy', time: 1.2 });
+          },
+        });
+        return;
+      }
+
+      if (isJoiner) {
+        // Send purchase request to host.
+        state._shopActSeq = (state._shopActSeq || 0) + 1;
+        state._shopActPending = { offerId: String(pick.id || ''), replaceKey: null, seq: state._shopActSeq };
+        if (state.popups) state.popups.push({ text: 'Buying…', time: 0.8 });
+        state._floorShopActive = false;
+        return;
+      }
+
+      // Offline/host: apply immediately.
+      const ok = performFloorShopPurchase(state, p, String(pick.id || ''), null);
+      state._floorShopActive = false;
+      if (!ok && state.popups) state.popups.push({ text: 'Not enough SP', time: 1.2 });
+    },
+  });
+
+  return true;
+}
+
+function performFloorShopPurchase(state, buyer, offerId, replaceKey) {
+  if (!state || !buyer || !offerId) return false;
+  if (!canPlayerUseFloorShop(state, buyer)) return false;
+
+  const fs = buyer.floorShop;
+  if (!fs || !Array.isArray(fs.offers)) return false;
+  const curFloor = (state.currentRoomIndex != null ? (state.currentRoomIndex | 0) : 0);
+  if ((fs.floor | 0) !== curFloor) return false;
+
+  const idx = fs.offers.findIndex((o) => o && String(o.id) === String(offerId));
+  if (idx < 0) return false;
+  if (Array.isArray(fs.sold) && fs.sold[idx]) return false;
+
+  const offer = fs.offers[idx];
+  const res = tryBuyFloorShopOfferEx(buyer, offer, replaceKey);
+  if (!res || !res.ok) return false;
+
+  if (Array.isArray(fs.sold)) fs.sold[idx] = true;
+
+  // Feedback
+  if (Array.isArray(state.floatingTexts)) {
+    state.floatingTexts.push({ x: buyer.x, y: buyer.y - 34, text: `-${offer.spCost | 0} SP`, time: 0.8 });
+  }
+  if (Array.isArray(state.popups)) {
+    state.popups.push({ text: `Bought: ${offer.name}`, time: 1.1 });
+  }
+  return true;
 }
 
 // Host-authoritative run-upgrade flow (per-player):
@@ -1616,6 +1859,13 @@ function sendLocalInputToHost(state) {
     input.fire = false;
   }
 
+  // While floor shop overlay is open, movement and shooting are disabled.
+  if (state._floorShopActive) {
+    input.mx = 0;
+    input.my = 0;
+    input.fire = false;
+  }
+
   // Pixel_GO: one-shot-ish gate actions (patched by seq on host).
   if (state._gateActPending && state._gateActPending.gateId) {
     input.gateAct = {
@@ -1633,6 +1883,15 @@ function sendLocalInputToHost(state) {
     };
   }
 
+  // Pixel_GO v0.4: floor shop purchases (host-authoritative)
+  if (state._shopActPending && state._shopActPending.offerId) {
+    input.shopAct = {
+      offerId: String(state._shopActPending.offerId),
+      replaceKey: (state._shopActPending.replaceKey != null) ? String(state._shopActPending.replaceKey) : null,
+      seq: (state._shopActPending.seq | 0) || 0,
+    };
+  }
+
   state.net.sendInput(input);
 }
 
@@ -1642,7 +1901,7 @@ function serializePlayerState(state) {
 
   const encSkills = (p) => {
     const s = p?.runSkills || {};
-    // bullets,bombs,rockets,satellites,energyBarrier,spirit,summon,electricZone,laser,lightning
+    // bullets,bombs,rockets,satellites,energyBarrier,spirit,summon,electricZone,laser,lightning,fireball,iceWall,blackhole,lightHeal
     return [
       s.bullets | 0,
       s.bombs | 0,
@@ -1654,7 +1913,30 @@ function serializePlayerState(state) {
       s.electricZone | 0,
       s.laser | 0,
       s.lightning | 0,
+      s.fireball | 0,
+      s.iceWall | 0,
+      s.blackhole | 0,
+      s.lightHeal | 0,
     ].join(",");
+  };
+
+  const encFloorShop = (p) => {
+    const fs = p && p.floorShop;
+    if (!fs || !Array.isArray(fs.offers) || !fs.offers.length) return null;
+    // Only replicate the current-floor shop (keeps payload small).
+    const curFloor = (state.currentRoomIndex != null ? (state.currentRoomIndex | 0) : 0);
+    if ((fs.floor | 0) !== curFloor) return null;
+    const offers = fs.offers.slice(0, 3).map((o) => ({
+      id: String(o.id || ""),
+      kind: String(o.kind || ""),
+      key: String(o.key || ""),
+      name: String(o.name || ""),
+      from: (o.from | 0) || 0,
+      to: (o.to | 0) || 0,
+      c: (o.spCost | 0) || 0,
+    }));
+    const sold = Array.isArray(fs.sold) ? fs.sold.slice(0, 3).map((v) => (v ? 1 : 0)) : [0, 0, 0];
+    return { f: (fs.floor | 0) || 0, o: offers, s: sold };
   };
 
   return {
@@ -1668,6 +1950,8 @@ function serializePlayerState(state) {
       hp: p.hp,
       maxHP: p.maxHP,
       level: p.level,
+      // Pixel_GO v0.4: Skill Points (SP)
+      sp: (p.skillPoints | 0) || 0,
       // Pending in-run upgrade choices (kept in sync for joiners)
       pu: (p._pendingLevelUps || 0) | 0,
       // Joiners do not run weapon sim; sync these so their camera/aim feels correct.
@@ -1679,6 +1963,9 @@ function serializePlayerState(state) {
       color: p.color || pickColorForId(p.id),
       aim: { x: q(p.lastAimDir?.x || 0), y: q(p.lastAimDir?.y || 0) },
       rs: encSkills(p),
+
+      // Pixel_GO v0.4: floor terminal offers for THIS player (current floor only)
+      fs: encFloorShop(p),
 
       // Visual/UX replication for joiners (small payload):
       // - Energy Barrier needs shield state to be visible on joiners.
@@ -1795,6 +2082,32 @@ function applyPlayerStateToClient(state, pstate) {
     p.hp = sp.hp;
     p.maxHP = sp.maxHP;
     p.level = sp.level;
+
+    // Pixel_GO v0.4: Skill Points (SP)
+    if (typeof sp.sp === "number" && Number.isFinite(sp.sp)) {
+      p.skillPoints = sp.sp | 0;
+    }
+
+    // Pixel_GO v0.4: floor terminal offers (current floor only)
+    if (sp.fs && typeof sp.fs === "object" && Array.isArray(sp.fs.o)) {
+      const offers = sp.fs.o.slice(0, 3).map((o) => ({
+        id: String(o.id || ""),
+        kind: String(o.kind || ""),
+        key: String(o.key || ""),
+        name: String(o.name || ""),
+        from: (o.from | 0) || 0,
+        to: (o.to | 0) || 0,
+        spCost: (o.c | 0) || 0,
+      }));
+      const sold = Array.isArray(sp.fs.s) ? sp.fs.s.slice(0, 3).map((v) => !!v) : offers.map(() => false);
+      p.floorShop = { floor: (sp.fs.f | 0) || 0, offers, sold };
+    } else {
+      // If host isn't sending a shop, clear stale one on joiners.
+      const curFloor = (state.currentRoomIndex != null ? (state.currentRoomIndex | 0) : 0);
+      if (p.floorShop && (p.floorShop.floor | 0) !== curFloor) {
+        p.floorShop = null;
+      }
+    }
     if (typeof sp.pu === "number" && Number.isFinite(sp.pu)) {
       p._pendingLevelUps = sp.pu | 0;
       p._netHostPending = p._pendingLevelUps;
@@ -1815,7 +2128,7 @@ function applyPlayerStateToClient(state, pstate) {
       // Sync run skill levels from host (for HUD + visuals consistency on joiners).
     if (typeof sp.rs === "string" && sp.rs.length) {
       const parts = sp.rs.split(",");
-      // bullets,bombs,rockets,satellites,energyBarrier,spirit,summon,electricZone,laser,lightning
+      // bullets,bombs,rockets,satellites,energyBarrier,spirit,summon,electricZone,laser,lightning,fireball,iceWall,blackhole,lightHeal
       if (parts.length >= 10) {
         const b = parts[0] | 0;
         const bo = parts[1] | 0;
@@ -1827,6 +2140,10 @@ function applyPlayerStateToClient(state, pstate) {
         const ez = parts[7] | 0;
         const la = parts[8] | 0;
         const li = parts[9] | 0;
+        const fb = parts.length >= 11 ? (parts[10] | 0) : 0;
+        const iw = parts.length >= 12 ? (parts[11] | 0) : 0;
+        const bh = parts.length >= 13 ? (parts[12] | 0) : 0;
+        const lh = parts.length >= 14 ? (parts[13] | 0) : 0;
         p.runSkills = p.runSkills || {};
         p.runSkills.bullets = b;
         p.runSkills.bombs = bo;
@@ -1838,6 +2155,10 @@ function applyPlayerStateToClient(state, pstate) {
         p.runSkills.electricZone = ez;
         p.runSkills.laser = la;
         p.runSkills.lightning = li;
+        p.runSkills.fireball = fb;
+        p.runSkills.iceWall = iw;
+        p.runSkills.blackhole = bh;
+        p.runSkills.lightHeal = lh;
       }
     }
 
@@ -1952,6 +2273,7 @@ function serializeSnapshot(state) {
   const capRockets = isMobileHost ? 90 : 160;
   const capOrbs = isMobileHost ? 260 : 420;
   const capSummons = isMobileHost ? 120 : 220;
+  const capFx = isMobileHost ? 28 : 48;
 
   // Enemies (filtered + capped by distance to nearest player)
   const enemySrc = [];
@@ -2018,12 +2340,64 @@ function serializeSnapshot(state) {
     sumSrc.length = capSummons;
   }
 
+  // Biome skill FX (small lists)
+  const bhSrc = [];
+  for (const b of (state.blackholes || [])) {
+    if (!b) continue;
+    const d2 = minD2ToPlayers(b.x, b.y);
+    if (d2 > INTEREST_R2) continue;
+    bhSrc.push({ b, d2 });
+  }
+  if (bhSrc.length > capFx) {
+    bhSrc.sort((a, b) => a.d2 - b.d2);
+    bhSrc.length = capFx;
+  }
+
+  const iwSrc = [];
+  for (const w of (state.iceWalls || [])) {
+    if (!w) continue;
+    const d2 = minD2ToPlayers(w.x, w.y);
+    if (d2 > INTEREST_R2) continue;
+    iwSrc.push({ w, d2 });
+  }
+  if (iwSrc.length > capFx) {
+    iwSrc.sort((a, b) => a.d2 - b.d2);
+    iwSrc.length = capFx;
+  }
+
+  const hpSrc = [];
+  for (const h of (state.healPulses || [])) {
+    if (!h) continue;
+    const d2 = minD2ToPlayers(h.x, h.y);
+    if (d2 > INTEREST_R2) continue;
+    hpSrc.push({ h, d2 });
+  }
+  if (hpSrc.length > 18) {
+    hpSrc.sort((a, b) => a.d2 - b.d2);
+    hpSrc.length = 18;
+  }
+
+  const exSrc = [];
+  for (const ex of (state._explosions || [])) {
+    if (!ex) continue;
+    const d2 = minD2ToPlayers(ex.x, ex.y);
+    if (d2 > INTEREST_R2) continue;
+    exSrc.push({ ex, d2 });
+  }
+  if (exSrc.length > 22) {
+    exSrc.sort((a, b) => a.d2 - b.d2);
+    exSrc.length = 22;
+  }
+
   return {
     t: state.time,
     runScore: state.runScore,
     zone: state.currentZone,
     room: {
       i: (state.currentRoomIndex != null ? (state.currentRoomIndex | 0) : (state.roomDirector ? (state.roomDirector.roomIndex | 0) : 0)),
+      biome: String(state._roomBiome || ""),
+      nextBiome: String(state._nextRoomBiome || ""),
+      prevBiome: String(state._prevRoomBiome || ""),
       side: (state._roomSide | 0) || 0,
       cleared: !!state._roomCleared,
       hasNext: !!state._roomHasNext,
@@ -2086,6 +2460,7 @@ function serializeSnapshot(state) {
     projectiles: projSrc.map(({ b }) => ({
       id: b.id != null ? b.id : undefined,
       ownerId: b.ownerId != null ? String(b.ownerId) : "",
+      type: String(b.type || "bullet"),
       x: q(b.x),
       y: q(b.y),
       vx: q(b.vx),
@@ -2134,6 +2509,41 @@ function serializeSnapshot(state) {
       multiplier: q(b.multiplier || 0),
       amount: q(b.amount || 0),
     })),
+
+    fx: {
+      bh: bhSrc.map(({ b }) => ({
+        id: b.id != null ? b.id : undefined,
+        ownerId: b.ownerId != null ? String(b.ownerId) : "",
+        x: q(b.x),
+        y: q(b.y),
+        r: q(b.r || 0),
+        t: q(b.t || 0),
+      })),
+      iw: iwSrc.map(({ w }) => ({
+        id: w.id != null ? w.id : undefined,
+        ownerId: w.ownerId != null ? String(w.ownerId) : "",
+        x: q(w.x),
+        y: q(w.y),
+        a: q(w.a || 0),
+        len: q(w.len || 0),
+        thick: q(w.thick || 0),
+        t: q(w.t || 0),
+      })),
+      hp: hpSrc.map(({ h }) => ({
+        id: h.id != null ? h.id : undefined,
+        x: q(h.x),
+        y: q(h.y),
+        r: q(h.r || 0),
+        t: q(h.t || 0),
+      })),
+      ex: exSrc.map(({ ex }) => ({
+        x: q(ex.x),
+        y: q(ex.y),
+        r: q(ex.r || 0),
+        t: q(ex.t || 0),
+        k: String(ex.kind || ""),
+      })),
+    },
   };
 }
 
@@ -2312,8 +2722,7 @@ function applySnapshotToClient(state, snap) {
     if (!ob) {
       ob = {
         id,
-        // Snapshots don't include projectile type; keep a safe default.
-        type: "bullet",
+        type: String(b.type || "bullet"),
         x: tx,
         y: ty,
         vx: Number.isFinite(b.vx) ? b.vx : 0,
@@ -2332,6 +2741,7 @@ function applySnapshotToClient(state, snap) {
     ob._netTy = ty;
     if (Number.isFinite(b.vx)) ob.vx = b.vx;
     if (Number.isFinite(b.vy)) ob.vy = b.vy;
+    if (b.type != null) ob.type = String(b.type || "bullet");
     ob.radius = b.radius || ob.radius || 4;
     if (Number.isFinite(b.life)) ob._netLife = b.life;
 
@@ -2446,12 +2856,49 @@ function applySnapshotToClient(state, snap) {
   }
   state.summons = dstS;
 
+  // Biome skill FX (visual-only on joiners; host is authoritative).
+  const fx = snap.fx && typeof snap.fx === 'object' ? snap.fx : null;
+  if (fx) {
+    const bh = Array.isArray(fx.bh) ? fx.bh : [];
+    state.blackholes = bh.map((b) => ({
+      id: b.id != null ? b.id : undefined,
+      ownerId: b.ownerId != null ? String(b.ownerId) : "",
+      x: b.x || 0,
+      y: b.y || 0,
+      r: b.r || 0,
+      t: b.t || 0,
+    }));
+    const iw = Array.isArray(fx.iw) ? fx.iw : [];
+    state.iceWalls = iw.map((w) => ({
+      id: w.id != null ? w.id : undefined,
+      ownerId: w.ownerId != null ? String(w.ownerId) : "",
+      x: w.x || 0,
+      y: w.y || 0,
+      a: w.a || 0,
+      len: w.len || 0,
+      thick: w.thick || 0,
+      t: w.t || 0,
+    }));
+    const hp = Array.isArray(fx.hp) ? fx.hp : [];
+    state.healPulses = hp.map((h) => ({ id: h.id != null ? h.id : undefined, x: h.x || 0, y: h.y || 0, r: h.r || 0, t: h.t || 0 }));
+    const ex = Array.isArray(fx.ex) ? fx.ex : [];
+    state._explosions = ex.map((e) => ({ x: e.x || 0, y: e.y || 0, r: e.r || 0, t: e.t || 0, kind: e.k || '' }));
+  } else {
+    state.blackholes = [];
+    state.iceWalls = [];
+    state.healPulses = [];
+    state._explosions = [];
+  }
+
   state.runScore = snap.runScore || 0;
   state.currentZone = snap.zone ?? state.currentZone;
   // Pixel_GO: room sync
   const r = snap.room || null;
   if (r && typeof r === 'object') {
     state.currentRoomIndex = (r.i | 0) || 0;
+    state._roomBiome = String(r.biome || "");
+    state._nextRoomBiome = String(r.nextBiome || "");
+    state._prevRoomBiome = String(r.prevBiome || "");
     state._roomSide = (r.side | 0) || state._roomSide;
     state._roomCleared = !!r.cleared;
     state._roomHasNext = !!r.hasNext;
@@ -2480,6 +2927,9 @@ function applySnapshotToClient(state, snap) {
     if (state.roomDirector && typeof state.roomDirector.forceSetCurrent === 'function') {
       try {
         state.roomDirector.forceSetCurrent(state.currentRoomIndex, {
+          biome: state._roomBiome,
+          nextBiome: state._nextRoomBiome,
+          prevBiome: state._prevRoomBiome,
           cleared: state._roomCleared,
           hasNext: state._roomHasNext,
           bridgeP: state._bridgeP,
@@ -2597,6 +3047,16 @@ function createNetEnemy(data) {
     isElite: !!data.elite,
     update: null,
     render(self, ctx) {
+      const biomeKey = biomeKeyFromKind(self.kind);
+      if (biomeKey && !self._isBoss) {
+        renderBiomeUnit(ctx, self, biomeKey, {
+          role: biomeRoleFromKind(self.kind) || (self.isElite ? biomeStyleForKey(biomeKey).eliteRole : biomeStyleForKey(biomeKey).role),
+          isBasic: String(self.kind || '').toLowerCase().includes('basic'),
+          isElite: !!self.isElite,
+          time: performance.now() * 0.001,
+        });
+        return;
+      }
       ctx.save();
       ctx.beginPath();
       // Make remote enemies readable (avoid "gray blobs" on clients)
@@ -2901,6 +3361,32 @@ function updateEnemies(state, dt) {
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
 
+    // Biome status ticks (burn / marks). Applies to all enemy types.
+    try {
+      if (e) {
+        if (typeof e._burnLeft === 'number' && e._burnLeft > 0) {
+          e._burnLeft -= dt;
+          const dps = (typeof e._burnDps === 'number' ? e._burnDps : 0);
+          if (dps > 0) {
+            e.hp -= dps * dt;
+            e._lastHitAt = state.time;
+          }
+          if (e._burnLeft <= 0) {
+            e._burnLeft = 0;
+            e._burnDps = 0;
+          }
+        }
+        if (typeof e._frostLeft === 'number' && e._frostLeft > 0) {
+          e._frostLeft -= dt;
+          if (e._frostLeft <= 0) { e._frostLeft = 0; e._frostLv = 0; }
+        }
+        if (typeof e._curseLeft === 'number' && e._curseLeft > 0) {
+          e._curseLeft -= dt;
+          if (e._curseLeft <= 0) { e._curseLeft = 0; e._curseLv = 0; }
+        }
+      }
+    } catch {}
+
     if (e.update) {
       // Defensive: a single enemy script error must not freeze the whole run.
       // If an enemy update throws, remove that enemy and continue.
@@ -2958,6 +3444,21 @@ function updateEnemies(state, dt) {
     }
 
     if (e.hp <= 0 || e._remove) {
+      // Light affinity: heal the killer on kill.
+      try {
+        const killerId = e && e._lastHitBy != null ? String(e._lastHitBy) : "";
+        if (killerId) {
+          const killer = getPlayerById(state, killerId);
+          const lv = killer && killer.runPassives ? (killer.runPassives.affLight | 0) : 0;
+          if (killer && lv > 0 && killer.hp > 0) {
+            const heal = 2 + lv * 2;
+            killer.hp = Math.min(killer.maxHP || 999999, killer.hp + heal);
+            if (Array.isArray(state.floatingTexts)) {
+              state.floatingTexts.push({ x: killer.x, y: killer.y - 42, text: `+${heal} HP`, time: 0.9 });
+            }
+          }
+        }
+      } catch {}
       if (!e._noScore) {
         const baseScore = e.scoreValue || 10;
         const scoreMult = state.meta?.scoreMult || 1;
@@ -2986,6 +3487,13 @@ function updateProjectiles(state, dt) {
     b.y += b.vy * dt;
     b.travel += b.speed * dt;
 
+    // Fireball: explodes on max range.
+    if (b.type === 'fireball' && b.travel >= b.range) {
+      try { explodeFireball(b, state); } catch {}
+      projectiles.splice(i, 1);
+      continue;
+    }
+
     if (b.travel >= b.range) {
       projectiles.splice(i, 1);
       continue;
@@ -2998,8 +3506,23 @@ function updateProjectiles(state, dt) {
       const dy = e.y - b.y;
       const r = (e.radius || 20) + (b.radius || 4);
       if (dx * dx + dy * dy <= r * r) {
+        // Fireball: explode instead of direct single-target hit.
+        if (b.type === 'fireball') {
+          hit = true;
+          break;
+        }
         const owner = getPlayerById(state, b.ownerId) || state.player;
-        const dmg = applyCritToDamage(owner, b.damage);
+        let dmg = applyCritToDamage(owner, b.damage);
+
+        // Biome marks (Ice/Dark) increase damage vs marked targets.
+        try {
+          const rp = owner && owner.runPassives ? owner.runPassives : null;
+          const iceLv = rp ? (rp.affIce | 0) : 0;
+          const darkLv = rp ? (rp.affDark | 0) : 0;
+          if (iceLv > 0 && (e._frostLeft || 0) > 0) dmg *= (1 + iceLv * 0.07);
+          if (darkLv > 0 && (e._curseLeft || 0) > 0) dmg *= (1 + darkLv * 0.06);
+        } catch {}
+
         e.hp -= dmg;
         applyLifeSteal(owner, dmg);
         owner._lastCombatAt = state.time;
@@ -3009,12 +3532,67 @@ function updateProjectiles(state, dt) {
         e._lastHitAt = state.time;
         e._lastHitBy = owner.id || "local";
         e.aggroed = true;
+
+        // Apply biome on-hit effects (Fire burn, Ice/Dark mark, Electric zap).
+        try {
+          const rp = owner && owner.runPassives ? owner.runPassives : null;
+          const fireLv = rp ? (rp.affFire | 0) : 0;
+          const iceLv = rp ? (rp.affIce | 0) : 0;
+          const darkLv = rp ? (rp.affDark | 0) : 0;
+          const elecLv = rp ? (rp.affElectric | 0) : 0;
+
+          if (fireLv > 0) {
+            const dur = 1.4 + fireLv * 0.35;
+            const dps = Math.max((e._burnDps || 0), 2.2 + fireLv * 1.35);
+            e._burnLeft = Math.max((e._burnLeft || 0), dur);
+            e._burnDps = dps;
+          }
+
+          if (iceLv > 0) {
+            e._frostLeft = Math.max((e._frostLeft || 0), 2.0);
+            e._frostLv = Math.max((e._frostLv || 0), iceLv);
+          }
+
+          if (darkLv > 0) {
+            e._curseLeft = Math.max((e._curseLeft || 0), 2.4);
+            e._curseLv = Math.max((e._curseLv || 0), darkLv);
+          }
+
+          if (elecLv > 0 && state && Array.isArray(state.enemies)) {
+            const chance = Math.min(0.30, 0.10 + elecLv * 0.04);
+            if (Math.random() < chance) {
+              const rZap = 160 + elecLv * 24;
+              const r2Zap = rZap * rZap;
+              let best = null;
+              let bestD2 = Infinity;
+              for (const ee of state.enemies) {
+                if (!ee || ee === e || ee.hp <= 0) continue;
+                const dx2 = ee.x - e.x;
+                const dy2 = ee.y - e.y;
+                const d2 = dx2 * dx2 + dy2 * dy2;
+                if (d2 <= r2Zap && d2 < bestD2) { best = ee; bestD2 = d2; }
+              }
+              if (best) {
+                const zapDmg = dmg * (0.22 + elecLv * 0.05);
+                best.hp -= zapDmg;
+                best._lastHitAt = state.time;
+                best._lastHitBy = owner.id || "local";
+                if (Array.isArray(state.floatingTexts)) {
+                  state.floatingTexts.push({ x: best.x, y: best.y - 22, text: "ZAP", time: 0.5 });
+                }
+              }
+            }
+          }
+        } catch {}
         hit = true;
         break;
       }
     }
 
     if (hit) {
+      if (b.type === 'fireball') {
+        try { explodeFireball(b, state); } catch {}
+      }
       projectiles.splice(i, 1);
     }
   }
@@ -3062,7 +3640,14 @@ function explodeRocket(rocket, state) {
     const dx = e.x - rocket.x;
     const dy = e.y - rocket.y;
     if (dx * dx + dy * dy <= r2) {
-      const dmg = applyCritToDamage(owner, rocket.damage);
+      let dmg = applyCritToDamage(owner, rocket.damage);
+      try {
+        const rp = owner && owner.runPassives ? owner.runPassives : null;
+        const iceLv = rp ? (rp.affIce | 0) : 0;
+        const darkLv = rp ? (rp.affDark | 0) : 0;
+        if (iceLv > 0 && (e._frostLeft || 0) > 0) dmg *= (1 + iceLv * 0.07);
+        if (darkLv > 0 && (e._curseLeft || 0) > 0) dmg *= (1 + darkLv * 0.06);
+      } catch {}
       e.hp -= dmg;
       applyLifeSteal(owner, dmg);
       owner._lastCombatAt = state.time;
@@ -3072,6 +3657,28 @@ function explodeRocket(rocket, state) {
       e._lastHitAt = state.time;
       e._lastHitBy = owner.id || "local";
       e.aggroed = true;
+
+      // Rocket hit marks/burn in AoE too.
+      try {
+        const rp = owner && owner.runPassives ? owner.runPassives : null;
+        const fireLv = rp ? (rp.affFire | 0) : 0;
+        const iceLv = rp ? (rp.affIce | 0) : 0;
+        const darkLv = rp ? (rp.affDark | 0) : 0;
+        if (fireLv > 0) {
+          const dur = 1.2 + fireLv * 0.35;
+          const dps = Math.max((e._burnDps || 0), 2.0 + fireLv * 1.25);
+          e._burnLeft = Math.max((e._burnLeft || 0), dur);
+          e._burnDps = dps;
+        }
+        if (iceLv > 0) {
+          e._frostLeft = Math.max((e._frostLeft || 0), 1.8);
+          e._frostLv = Math.max((e._frostLv || 0), iceLv);
+        }
+        if (darkLv > 0) {
+          e._curseLeft = Math.max((e._curseLeft || 0), 2.2);
+          e._curseLv = Math.max((e._curseLv || 0), darkLv);
+        }
+      } catch {}
     }
   }
 
@@ -3810,6 +4417,92 @@ function renderEnemies(state, ctx) {
   }
 }
 
+function renderSkillFx(state, ctx) {
+  if (!state || !ctx) return;
+  const bhs = Array.isArray(state.blackholes) ? state.blackholes : [];
+  const iws = Array.isArray(state.iceWalls) ? state.iceWalls : [];
+  const hps = Array.isArray(state.healPulses) ? state.healPulses : [];
+  const exs = Array.isArray(state._explosions) ? state._explosions : [];
+  if (!bhs.length && !iws.length && !hps.length && !exs.length) return;
+
+  ctx.save();
+
+  // Blackholes (draw behind enemies)
+  for (const b of bhs) {
+    const r = Math.max(10, b.r || 0);
+    const t = Math.max(0, Math.min(1, (b.t || 0) / 3.0));
+    // Outer glow
+    ctx.beginPath();
+    ctx.fillStyle = `rgba(165,100,255,${0.10 + 0.18 * t})`;
+    ctx.arc(b.x, b.y, r * 1.15, 0, Math.PI * 2);
+    ctx.fill();
+    // Core
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(8,10,14,0.82)";
+    ctx.arc(b.x, b.y, r * 0.62, 0, Math.PI * 2);
+    ctx.fill();
+    // Swirl ring
+    ctx.beginPath();
+    ctx.strokeStyle = `rgba(210,160,255,${0.35 + 0.25 * t})`;
+    ctx.lineWidth = 2.5;
+    const a0 = (state.time || 0) * 2.0;
+    ctx.arc(b.x, b.y, r * 0.88, a0, a0 + Math.PI * 1.35);
+    ctx.stroke();
+  }
+
+  // Ice walls
+  for (const w of iws) {
+    const len = Math.max(40, w.len || 0);
+    const thick = Math.max(8, w.thick || 0);
+    const ca = Math.cos(w.a || 0);
+    const sa = Math.sin(w.a || 0);
+    const x1 = w.x - ca * len * 0.5;
+    const y1 = w.y - sa * len * 0.5;
+    const x2 = w.x + ca * len * 0.5;
+    const y2 = w.y + sa * len * 0.5;
+    // Glow
+    ctx.beginPath();
+    ctx.strokeStyle = "rgba(120,220,255,0.25)";
+    ctx.lineWidth = thick * 0.75;
+    ctx.lineCap = "round";
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    // Core shards
+    ctx.beginPath();
+    ctx.strokeStyle = "rgba(200,250,255,0.85)";
+    ctx.lineWidth = Math.max(2, thick * 0.22);
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+
+  // Heal pulses
+  for (const h of hps) {
+    const base = Math.max(30, h.r || 0);
+    const p = 1 - Math.max(0, Math.min(1, (h.t || 0) / 0.55));
+    const rr = base * (0.55 + p * 0.55);
+    ctx.beginPath();
+    ctx.strokeStyle = `rgba(120,255,210,${0.55 * (1 - p)})`;
+    ctx.lineWidth = 3.5;
+    ctx.arc(h.x, h.y, rr, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Explosions (fireball)
+  for (const ex of exs) {
+    const p = 1 - Math.max(0, Math.min(1, (ex.t || 0) / 0.35));
+    const rr = (ex.r || 0) * (0.65 + p * 0.55);
+    ctx.beginPath();
+    ctx.strokeStyle = `rgba(255,120,60,${0.55 * (1 - p)})`;
+    ctx.lineWidth = 4;
+    ctx.arc(ex.x, ex.y, rr, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
 function renderSummons(state, ctx) {
   const summons = (state && Array.isArray(state.summons)) ? state.summons : [];
   if (!summons.length) return;
@@ -3871,13 +4564,15 @@ function renderProjectiles(state, ctx) {
   if (isSmallMobile) {
     const maxBullets = 220;
     const stepB = projectiles.length > maxBullets ? Math.ceil(projectiles.length / maxBullets) : 1;
-    ctx.fillStyle = "#f4e9a3";
+    // Bullets + fireballs (rect fallback)
     for (let i = 0; i < projectiles.length; i += stepB) {
       const b = projectiles[i];
       if (!b) continue;
       // Joiners on small mobiles use rectangles for performance; keep bullets readable.
       const r = (b.radius || 4);
-      const s = Math.max(3, Math.min(8, r * 1.8));
+      const isFb = (b.type === 'fireball');
+      const s = isFb ? Math.max(6, Math.min(14, r * 2.2)) : Math.max(3, Math.min(8, r * 1.8));
+      ctx.fillStyle = isFb ? "rgba(255,120,60,0.95)" : "#f4e9a3";
       ctx.fillRect(b.x - s * 0.5, b.y - s * 0.5, s, s);
     }
       const maxRockets = 80;
@@ -3897,11 +4592,26 @@ function renderProjectiles(state, ctx) {
     ctx.fillRect(rkt.x - 2, rkt.y - 2, 4, 4);
   }
 } else {
-    ctx.fillStyle = "#f4e9a3";
     for (const b of projectiles) {
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, b.radius || 4, 0, Math.PI * 2);
-      ctx.fill();
+      if (!b) continue;
+      const isFb = (b.type === 'fireball');
+      if (isFb) {
+        const r = Math.max(6, (b.radius || 10));
+        ctx.beginPath();
+        ctx.fillStyle = "rgba(255,120,60,0.92)";
+        ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.strokeStyle = "rgba(255,220,170,0.55)";
+        ctx.lineWidth = 2;
+        ctx.arc(b.x, b.y, r * 0.7, 0, Math.PI * 2);
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.fillStyle = "#f4e9a3";
+        ctx.arc(b.x, b.y, b.radius || 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
     // Bombs (grey)
@@ -3992,6 +4702,117 @@ function renderPlayers(state, ctx) {
   // Render behind the player sprite for readability.
   ctx.save();
   const now = state.time || 0;
+
+  // Electric Zone ring (jagged lightning circle)
+  function _ezHash32(str) {
+    // FNV-1a 32-bit
+    let h = 2166136261;
+    const s = String(str ?? "");
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  function _ezNoise(a, t, seed) {
+    // Cheap smooth-ish noise in [-1..1]
+    const s = seed * 0.000001;
+    const n1 = Math.sin(a * 7.0 + t * 2.6 + s * 11.0);
+    const n2 = Math.sin(a * 13.0 - t * 1.9 + s * 7.0);
+    const n3 = Math.sin(a * 23.0 + t * 3.4 + s * 3.0);
+    return (n1 * 0.50 + n2 * 0.32 + n3 * 0.18);
+  }
+
+  function _drawElectricZoneRing(p, rr, lvl) {
+    const seed = _ezHash32(p.id || p.name || "p");
+    const t = now;
+    const N = 72;
+    const amp = Math.max(6, rr * 0.045) * (0.85 + lvl * 0.03);
+    const wob = 0.65 + 0.35 * Math.sin(t * 6.5 + seed * 0.001);
+
+    // Build jagged ring points
+    const pts = new Array(N + 1);
+    for (let i = 0; i <= N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      const n = _ezNoise(a, t, seed);
+      const r = rr + n * amp;
+      pts[i] = {
+        x: p.x + Math.cos(a) * r,
+        y: p.y + Math.sin(a) * r,
+      };
+    }
+
+    ctx.save();
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+
+    // Outer glow
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i <= N; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.strokeStyle = `rgba(80,220,255,${0.10 + wob * 0.08})`;
+    ctx.lineWidth = 10;
+    ctx.stroke();
+
+    // Main lightning ring (white-ish)
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i <= N; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.strokeStyle = `rgba(245,255,255,${0.35 + wob * 0.35})`;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    // Secondary jitter pass for "electric" feel + tiny gaps
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < N; i++) {
+      if (((i + (seed & 7)) % 9) === 0) { started = false; continue; }
+      const a = (i / N) * Math.PI * 2;
+      const n = _ezNoise(a + 0.7, t * 1.2, seed ^ 0x9e3779b9);
+      const r = rr + n * (amp * 0.65);
+      const x = p.x + Math.cos(a) * r;
+      const y = p.y + Math.sin(a) * r;
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = `rgba(180,245,255,${0.18 + wob * 0.22})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Sparks / bursts on the ring (like the reference)
+    const burstCount = 3;
+    for (let k = 0; k < burstCount; k++) {
+      const a = (seed * 0.0004 + k * 2.25 + t * 0.55) % (Math.PI * 2);
+      const n = _ezNoise(a, t * 0.7, seed + k * 991);
+      const r = rr + n * (amp * 0.55);
+      const cx = p.x + Math.cos(a) * r;
+      const cy = p.y + Math.sin(a) * r;
+      const rays = 7;
+      const base = 16 + (k % 2) * 6;
+
+      ctx.beginPath();
+      for (let j = 0; j < rays; j++) {
+        const aa = a + (j / rays) * Math.PI * 2 + Math.sin(t * 3.2 + j) * 0.08;
+        const len = base + (10 + 10 * Math.abs(Math.sin(t * 2.1 + j + seed * 0.001))) * (0.6 + 0.4 * wob);
+        const ex = cx + Math.cos(aa) * len;
+        const ey = cy + Math.sin(aa) * len;
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(ex, ey);
+      }
+      ctx.strokeStyle = `rgba(255,255,255,${0.40 + wob * 0.35})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(180,245,255,${0.20 + wob * 0.25})`;
+      ctx.arc(cx, cy, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
   for (const p of players) {
     if (!p || p.hp <= 0) continue;
     const s = p.runSkills || {};
@@ -4004,15 +4825,7 @@ function renderPlayers(state, ctx) {
     const ezLvl = (s.electricZone || 0) | 0;
     if (ezLvl > 0) {
       const rr = (140 + (ezLvl - 1) * 9) * rMult;
-      ctx.beginPath();
-      ctx.fillStyle = "rgba(80,220,255,0.07)";
-      ctx.arc(p.x, p.y, rr, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.strokeStyle = "rgba(180,245,255,0.20)";
-      ctx.lineWidth = 2;
-      ctx.arc(p.x, p.y, rr, 0, Math.PI * 2);
-      ctx.stroke();
+      _drawElectricZoneRing(p, rr, ezLvl);
     }
 
     // Energy Barrier (only when shield is up)

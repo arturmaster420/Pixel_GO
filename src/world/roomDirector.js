@@ -1,5 +1,8 @@
 import { HUB_HALF } from "./zoneController.js";
 import { setDynamicWorldBounds } from "./mapGenerator.js";
+import { rollFloorShopOffers } from "../core/floorShop.js";
+import { biomeForFloorIndex } from "./biomes.js";
+import { buildArenaSpec } from "./arenaSpecBuilder.js";
 
 // Pixel_GO: infinite rooms in a chain.
 // Forward direction = UP on screen = negative Y in world coords.
@@ -51,7 +54,7 @@ export function getRoomSide(roomIndex) {
   return Math.round(L);
 }
 
-function makeRoom(index, centerX, centerY) {
+function makeRoom(index, centerX, centerY, biomeKey = "") {
   const side = getRoomSide(index);
   const half = side * 0.5;
   const bounds = {
@@ -60,11 +63,13 @@ function makeRoom(index, centerX, centerY) {
     minY: centerY - half,
     maxY: centerY + half,
   };
+  const arenaSpec = buildArenaSpec({ roomIndex: index, biomeKey, side, centerX, centerY });
 
-  const gates = makeGates(index, bounds, side);
+  const gates = makeGates(index, bounds, side, arenaSpec);
   return {
     id: `room_${index}`,
     index,
+    biomeKey: String(biomeKey || ""),
     hue: (() => {
       if ((index | 0) <= 0) return 210;
       const biome = Math.floor(((index | 0) - 1) / 10);
@@ -75,6 +80,9 @@ function makeRoom(index, centerX, centerY) {
     centerY,
     bounds,
     breaches: gates, // keep legacy field name used elsewhere
+    arenaSpec,
+    // Floor terminal position (visible after clear). Always deterministic for joiners.
+    shopNpc: index > 0 ? { x: centerX, y: centerY + side * 0.18, r: 20 } : null,
     cleared: index === 0,
     collapsing: false,
     collapseT: 0,
@@ -93,7 +101,7 @@ function makeRng(seed) {
   };
 }
 
-function makeGates(index, bounds, side) {
+function makeGates(index, bounds, side, arenaSpec = null) {
   const idx = index | 0;
   if (idx <= 0) return [];
 
@@ -118,6 +126,28 @@ function makeGates(index, bounds, side) {
 
   const used = [];
   const minSep = Math.max(120, Math.min(260, sideLen * 0.22));
+
+  const anchorGates = Array.isArray(arenaSpec?.anchors?.gateAnchors) ? arenaSpec.anchors.gateAnchors : [];
+  if (anchorGates.length) {
+    const sealMax = Math.round(160 + idx * 18);
+    return anchorGates.slice(0, 6).map((g, i) => ({
+      id: `g_${idx}_${i}` ,
+      side: String(g.side || 'S').toUpperCase(),
+      x: Number(g.x) || (((bounds.minX + bounds.maxX) * 0.5)),
+      y: Number(g.y) || (((bounds.minY + bounds.maxY) * 0.5)),
+      sealHp: 0,
+      sealMax,
+      lastHitAt: -Infinity,
+      pressure: 0,
+      repairActive: false,
+      repairBy: '',
+      repairT: 0,
+      repairMode: '',
+      rewardSealed: false,
+      rewardSealLeft: 0,
+      rewardUsed: false,
+    }));
+  }
 
   const tryPick = (sideChar) => {
     let x = 0;
@@ -248,8 +278,11 @@ export class RoomDirector {
     this.state = state;
 
     this.prev = null;
-    this.current = makeRoom(0, 0, 0);
+    this.current = makeRoom(0, 0, 0, "");
     this.next = null;
+
+    // Biome tracking (host chooses randomly; joiners receive via snapshot)
+    this._lastBiomeKey = "";
 
     // Bridge connects rooms after clear.
     this.bridge = null;
@@ -271,13 +304,70 @@ export class RoomDirector {
     if (!this.current) return;
     if (this.current.cleared) return;
     this.current.cleared = true;
+
+    // Pixel_GO v0.4: award +1 Skill Point for completing this floor.
+    // Host/offline only (joiners receive via snapshot).
+    try {
+      const st = this.state;
+      const online = !!(st && st.net && st.net.status === 'connected' && st.net.roomCode);
+      const isHost = !online || !!st.net.isHost;
+      if (isHost) {
+        const ps = (st && st.players && st.players.length) ? st.players : (st && st.player ? [st.player] : []);
+        for (const p of ps) {
+          if (!p) continue;
+          p.skillPoints = ((p.skillPoints | 0) + 1) | 0;
+        }
+      }
+    } catch {}
+
+    // Spawn the floor terminal (NPC) and generate per-player offers.
+    try { this._ensureFloorShop(); } catch {}
+
     this._ensureNextSpawned();
     this._ensureBridge();
     this._applyDynamicBounds();
   }
 
+  _ensureFloorShop() {
+    const st = this.state;
+    const room = this.current;
+    if (!st || !room || (room.index | 0) <= 0) return;
+
+    // Only host/offline generates offers.
+    const online = !!(st.net && st.net.status === 'connected' && st.net.roomCode);
+    const isHost = !online || !!st.net.isHost;
+    if (!isHost) return;
+
+    // Place the terminal slightly behind center (toward south / entry side).
+    const side = room.side || 600;
+    room.shopNpc = {
+      x: room.centerX,
+      y: room.centerY + side * 0.18,
+      r: 20,
+    };
+
+    const ps = (st.players && st.players.length) ? st.players : (st.player ? [st.player] : []);
+    for (const p of ps) {
+      if (!p) continue;
+      // Generate offers once per floor.
+      const fs = p.floorShop;
+      if (fs && (fs.floor | 0) === (room.index | 0) && Array.isArray(fs.offers) && fs.offers.length) continue;
+      const offers = rollFloorShopOffers(p, room.index, room.biomeKey || "", 3);
+      p.floorShop = {
+        floor: room.index | 0,
+        offers,
+        sold: offers.map(() => false),
+      };
+    }
+  }
+
   update(dt) {
     const st = this.state;
+
+    // If a player joined mid-floor and this floor is already cleared, ensure they get offers.
+    if (this.current && this.current.cleared) {
+      try { this._ensureFloorShop(); } catch {}
+    }
 
     // Update collapse animation and remove collapsed rooms.
     if (this.prev && this.prev.collapsing) {
@@ -619,14 +709,14 @@ export class RoomDirector {
       }
     }
 
-    this.prev = (prevIdx > 0 && prevIdx < idx) ? makeRoom(prevIdx, cx, pcy) : null;
+    this.prev = (prevIdx > 0 && prevIdx < idx) ? makeRoom(prevIdx, cx, pcy, (o.prevBiome || "")) : null;
     if (this.prev) {
       this.prev.cleared = true;
       this.prev.collapsing = !!o.prevCollapsing;
       this.prev.collapseT = typeof o.prevT === 'number' ? clamp(o.prevT, 0, 1) : 0;
       this.prev.removed = false;
     }
-    this.current = makeRoom(idx, cx, cy);
+    this.current = makeRoom(idx, cx, cy, (o.biome || ""));
     this.current.cleared = idx === 0 ? true : !!o.cleared;
 
     this._waitForParty = !!o.waitForParty;
@@ -689,7 +779,7 @@ export class RoomDirector {
 
     const wantNext = idx === 0 ? true : !!o.hasNext;
     if (wantNext && this.current.cleared) {
-      this._ensureNextSpawned();
+      this._ensureNextSpawned(String(o.nextBiome || ""));
       this._ensureBridge();
       if (this.bridge && typeof o.bridgeP === 'number') {
         const p = Math.max(0, Math.min(1, o.bridgeP));
@@ -708,7 +798,7 @@ export class RoomDirector {
 
   // ---- Room chain ---------------------------------------------------------
 
-  _ensureNextSpawned() {
+  _ensureNextSpawned(overrideBiomeKey = "") {
     if (!this.current) return;
     if (!this.current.cleared) return;
     if (this.next && !this.next.removed) return;
@@ -722,7 +812,10 @@ export class RoomDirector {
     const nextCenterX = this.current.centerX;
     const nextCenterY = this.current.centerY - (curHalf + GAP + nextHalf);
 
-    this.next = makeRoom(nextIndex, nextCenterX, nextCenterY);
+    // Pick biome for the next floor (floors 1–5 are neutral). Anti-repeat from current biome.
+    const forced = String(overrideBiomeKey || "");
+    const nextBiome = forced || biomeForFloorIndex(nextIndex, this.current ? (this.current.biomeKey || "") : this._lastBiomeKey);
+    this.next = makeRoom(nextIndex, nextCenterX, nextCenterY, nextBiome);
   }
 
   _ensureBridge() {
@@ -791,6 +884,9 @@ export class RoomDirector {
 
     this.current = this.next;
     this.next = null;
+
+    // Track last biome for anti-repeat.
+    this._lastBiomeKey = this.current ? (this.current.biomeKey || "") : this._lastBiomeKey;
 
     // Now we are "waiting for party" on the new floor.
     this._waitForParty = true;
@@ -893,6 +989,18 @@ export class RoomDirector {
       this.state._hubSide = getRoomSide(0) | 0;
       this.state._roomCleared = !!this.current.cleared;
       this.state._roomHasNext = !!(this.next && !this.next.removed);
+
+      // Biomes (floors 1–5 are neutral, 6+ randomized by host)
+      this.state._roomBiome = String(this.current.biomeKey || "");
+      this.state._nextRoomBiome = String((this.next && !this.next.removed) ? (this.next.biomeKey || "") : "");
+      this.state._prevRoomBiome = String((this.prev && !this.prev.removed) ? (this.prev.biomeKey || "") : "");
+      this.state._arenaLayoutId = String(this.current?.arenaSpec?.layoutId || "");
+      this.state._arenaProfileId = String(this.current?.arenaSpec?.profileId || "");
+      this.state._arenaVisualPreset = String(this.current?.arenaSpec?.visualPreset || "");
+      this.state._arenaValidationIssues = Array.isArray(this.current?.arenaSpec?.validation?.issues) ? this.current.arenaSpec.validation.issues.slice(0, 8) : [];
+      this.state._arenaValidationOk = !!this.current?.arenaSpec?.validation?.ok;
+      this.state._arenaUsedFallback = !!this.current?.arenaSpec?.validation?.usedFallback;
+      this.state._arenaValidationStats = this.current?.arenaSpec?.validation?.stats || null;
 
       this.state._bridgeP = this.bridge ? (this.bridge.progress || 0) : 0;
       this.state._bridgeBuilt = !!(this.bridge && this.bridge.built);

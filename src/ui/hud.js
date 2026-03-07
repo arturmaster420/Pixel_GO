@@ -302,53 +302,21 @@ ctx.textBaseline = "alphabetic";
     h: btnSize * uiScale,
   };
 
-  // In-run upgrades button (manual open)
-  const pending = (state._runUpPending != null ? state._runUpPending : (player._pendingLevelUps || 0)) | 0;
-  const ready = !!state._runUpReady;
-  const canPress = pending > 0 && ready;
-
-  // UP button (drawn over XP strip so the strip visually fills into it)
-  // Keep the fill translucent so the XP strip visually continues into the button.
-  ctx.fillStyle = canPress ? "rgba(80,160,255,0.22)" : (pending > 0 ? "rgba(0,0,0,0.30)" : "rgba(0,0,0,0.18)");
+  // Pixel_GO v0.4: show Skill Points instead of the old in-run upgrade button.
+  const sp = (player.skillPoints | 0) || 0;
+  ctx.fillStyle = "rgba(0,0,0,0.22)";
   ctx.fillRect(upX, upY, upW, upH);
-  ctx.strokeStyle = canPress ? "rgba(120,220,255,0.95)" : "rgba(255,255,255,0.70)";
+  ctx.strokeStyle = "rgba(255,255,255,0.30)";
   ctx.strokeRect(upX, upY, upW, upH);
 
-  if (canPress) {
-    ctx.strokeStyle = "rgba(120,220,255,0.35)";
-    ctx.strokeRect(upX - 2, upY - 2, upW + 4, upH + 4);
-  }
-
-  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.font = "16px sans-serif";
-  ctx.fillText("UP", upX + upW / 2, upY + upH / 2);
+  ctx.font = "14px sans-serif";
+  ctx.fillText(`SP: ${sp}`, upX + upW / 2, upY + upH / 2);
 
-  // Pending badge / status
-  ctx.font = "11px sans-serif";
-  ctx.textAlign = "right";
-  ctx.textBaseline = "top";
-  if (pending > 0) {
-    ctx.fillText("x" + pending, upX + upW - 6, upY + 6);
-    if (!ready) {
-      const reason = state._runUpBlockReason || "";
-      if (reason === "combat") {
-        const t = Math.max(0, Number(state._runUpReadyIn || 0));
-        ctx.textAlign = "center";
-        ctx.textBaseline = "bottom";
-        ctx.fillText(`${t.toFixed(1)}s`, upX + upW / 2, upY + upH - 6);
-      }
-    }
-  }
-
-  // Save button rect in original screen coordinates (always visible)
-  state._runUpgradeButtonRect = {
-    x: upX * uiScale,
-    y: upY * uiScale,
-    w: upW * uiScale,
-    h: upH * uiScale,
-  };
+  // Disable legacy upgrade button hitbox
+  state._runUpgradeButtonRect = null;
 
   // Pixel_GO: gate interaction is now shown directly on the gate (click/tap).
 

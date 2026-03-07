@@ -22,6 +22,11 @@ export class Player {
     this._runStartLevel = this.level;
     this.xp = 0;
 
+    // Pixel_GO v0.4: Skill Points (SP)
+    // - Earned on level-up and on floor clear
+    // - Spent at the floor NPC terminal (per-player, per-run)
+    this.skillPoints = 0;
+
     this.baseMaxHP = 100;
     this.baseMoveSpeed = 220;
     this.baseDamage = 4;
@@ -60,13 +65,17 @@ export class Player {
       rockets: 0,
       // Satellites are available in the run-upgrade pool by default,
       // but are NOT granted at run start.
-      satellites: 0,
+      satellites: 0, // Ice
       energyBarrier: 0,
-      spirit: 0,
-      summon: 0,
-      electricZone: 0,
-      laser: 0,
-      lightning: 0,
+      spirit: 0, // Dark
+      summon: 0, // Light
+      electricZone: 0, // Electric
+      laser: 0, // Fire
+      lightning: 0, // Electric
+      fireball: 0,
+      iceWall: 0,
+      blackhole: 0,
+      lightHeal: 0,
     };
     this.runEvolutions = {};
     this.runPassives = {
@@ -120,6 +129,9 @@ export class Player {
     this._runStartLevel = this.level;
     this.xp = 0;
 
+    // Reset run-only Skill Points
+    this.skillPoints = 0;
+
     this.maxHP = this.baseMaxHP;
     this.hp = this.maxHP;
 
@@ -141,13 +153,17 @@ export class Player {
       bullets: 1,
       bombs: 0,
       rockets: 0,
-      satellites: 0,
+      satellites: 0, // Ice
       energyBarrier: 0,
-      spirit: 0,
-      summon: 0,
-      electricZone: 0,
-      laser: 0,
-      lightning: 0,
+      spirit: 0, // Dark
+      summon: 0, // Light
+      electricZone: 0, // Electric
+      laser: 0, // Fire
+      lightning: 0, // Electric
+      fireball: 0,
+      iceWall: 0,
+      blackhole: 0,
+      lightHeal: 0,
     };
     this.runEvolutions = {};
     this.runPassives = {
@@ -208,8 +224,11 @@ export class Player {
       this.level += 1;
       leveled = true;
 
-      // Queue an in-run upgrade choice per level.
-      this._pendingLevelUps = (this._pendingLevelUps || 0) + 1;
+      // Pixel_GO v0.4: Level-up grants Skill Points (SP) instead of auto-upgrade choices.
+      this.skillPoints = (this.skillPoints | 0) + 1;
+
+      // Keep legacy field at 0 (we no longer use level-up upgrade UI).
+      this._pendingLevelUps = 0;
 
       // Full HP restore on each level up
       this.hp = this.maxHP;

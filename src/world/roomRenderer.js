@@ -1,5 +1,7 @@
 // Pixel_GO room-based background renderer (floating tiles + bridge in space).
 
+import { biomeByKey } from "./biomes.js";
+
 function clamp(n, a, b) {
   return n < a ? a : (n > b ? b : n);
 }
@@ -19,6 +21,703 @@ function hash2(ix, iy) {
 
 function rand01(u32) {
   return (u32 & 0xfffffff) / 0xfffffff;
+}
+
+function getArenaSpec(room) {
+  return room && room.arenaSpec ? room.arenaSpec : null;
+}
+
+
+function drawArenaDebugOverlay(ctx, room, arenaSpec, state = null) {
+  if (!arenaSpec) return;
+  const validationIssues = Array.isArray(arenaSpec?.validation?.issues) ? arenaSpec.validation.issues : [];
+  const shouldDraw = !!(state?._arenaDebug || arenaSpec?.validation?.usedFallback || validationIssues.length);
+  if (!shouldDraw) return;
+
+  const geometry = arenaSpec.geometry || {};
+  const platforms = Array.isArray(geometry.platforms) ? geometry.platforms : [];
+  const bridges = Array.isArray(geometry.bridges) ? geometry.bridges : [];
+  const navZones = Array.isArray(geometry.navZones) ? geometry.navZones : [];
+  const anchors = arenaSpec.anchors || {};
+  const spawnAnchors = Array.isArray(anchors.spawnAnchors) ? anchors.spawnAnchors : [];
+  const gateAnchors = Array.isArray(anchors.gateAnchors) ? anchors.gateAnchors : [];
+  const decorAnchors = Array.isArray(anchors.decorAnchors) ? anchors.decorAnchors : [];
+  const coverAnchors = Array.isArray(anchors.coverAnchors) ? anchors.coverAnchors : [];
+  const hazardAnchors = Array.isArray(anchors.hazardAnchors) ? anchors.hazardAnchors : [];
+  const bossMoveNodes = Array.isArray(anchors.bossMoveNodes) ? anchors.bossMoveNodes : [];
+  const hazards = Array.isArray(arenaSpec.hazardZones) ? arenaSpec.hazardZones : [];
+  const bossArena = arenaSpec.bossArena || null;
+
+  ctx.save();
+  ctx.setLineDash([8, 7]);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(90,210,255,0.40)';
+  for (const r of platforms) {
+    if (!r || r.type !== 'rect') continue;
+    ctx.strokeRect(Number(r.x) || 0, Number(r.y) || 0, Number(r.w) || 0, Number(r.h) || 0);
+  }
+  ctx.strokeStyle = 'rgba(255,210,120,0.35)';
+  for (const r of bridges) {
+    if (!r || r.type !== 'rect') continue;
+    ctx.strokeRect(Number(r.x) || 0, Number(r.y) || 0, Number(r.w) || 0, Number(r.h) || 0);
+  }
+  ctx.setLineDash([4, 6]);
+  ctx.strokeStyle = 'rgba(120,255,140,0.30)';
+  for (const r of navZones) {
+    if (!r || r.type !== 'rect') continue;
+    ctx.strokeRect(Number(r.x) || 0, Number(r.y) || 0, Number(r.w) || 0, Number(r.h) || 0);
+  }
+  ctx.setLineDash([]);
+
+  const drawPoint = (p, color, size = 8, cross = false) => {
+    const x = Number(p?.x) || 0;
+    const y = Number(p?.y) || 0;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 2;
+    if (cross) {
+      ctx.beginPath();
+      ctx.moveTo(x - size, y - size);
+      ctx.lineTo(x + size, y + size);
+      ctx.moveTo(x + size, y - size);
+      ctx.lineTo(x - size, y + size);
+      ctx.stroke();
+      return;
+    }
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, Math.PI * 2);
+    ctx.stroke();
+  };
+
+  drawPoint(anchors.playerStart, 'rgba(255,255,255,0.90)', 11);
+  drawPoint(anchors.bossSpawn, 'rgba(255,120,120,0.90)', 12, true);
+  for (const p of spawnAnchors) drawPoint(p, 'rgba(80,240,120,0.85)', 7);
+  for (const p of gateAnchors) drawPoint(p, 'rgba(255,210,80,0.85)', 9);
+  for (const p of decorAnchors) drawPoint(p, 'rgba(180,200,255,0.50)', 5);
+  for (const p of coverAnchors) drawPoint(p, 'rgba(160,160,160,0.55)', 6);
+  for (const p of hazardAnchors) drawPoint(p, 'rgba(255,120,190,0.70)', 6, true);
+  for (const p of bossMoveNodes) drawPoint(p, 'rgba(255,150,60,0.85)', 6);
+
+  ctx.strokeStyle = 'rgba(255,80,120,0.28)';
+  ctx.fillStyle = 'rgba(255,80,120,0.05)';
+  for (const z of hazards) {
+    const r = Math.max(12, Number(z?.r) || 24);
+    ctx.beginPath();
+    ctx.arc(Number(z?.x) || 0, Number(z?.y) || 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  if (bossArena?.center) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.20)';
+    ctx.beginPath();
+    ctx.arc(Number(bossArena.center.x) || 0, Number(bossArena.center.y) || 0, Math.max(40, (room?.side || 700) * 0.06), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  const lines = [
+    `${arenaSpec.validation?.usedFallback ? 'SAFE FALLBACK' : 'ARENA DEBUG'} • ${String(arenaSpec.profileId || '')}/${String(arenaSpec.layoutId || '')}`,
+    `platforms:${platforms.length} bridges:${bridges.length} nav:${navZones.length} spawns:${spawnAnchors.length} gates:${gateAnchors.length} hazards:${hazards.length}`,
+    ...validationIssues.slice(0, 4).map((s) => `issue: ${String(s)}`),
+  ];
+  const bx = (room?.bounds?.minX || 0) + 28;
+  const by = (room?.bounds?.minY || 0) + 34;
+  ctx.font = '18px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  let maxW = 0;
+  for (const line of lines) maxW = Math.max(maxW, ctx.measureText(line).width);
+  ctx.fillStyle = validationIssues.length ? 'rgba(50,12,20,0.66)' : 'rgba(8,20,34,0.54)';
+  ctx.fillRect(bx - 10, by - 8, maxW + 20, lines.length * 20 + 12);
+  let ty = by;
+  for (let i = 0; i < lines.length; i++) {
+    ctx.fillStyle = i === 0 ? 'rgba(255,245,220,0.94)' : 'rgba(230,240,255,0.86)';
+    ctx.fillText(lines[i], bx, ty);
+    ty += 20;
+  }
+  ctx.restore();
+}
+
+function rectPath(ctx, r) {
+  const x = Number(r?.x) || 0;
+  const y = Number(r?.y) || 0;
+  const w = Number(r?.w) || 0;
+  const h = Number(r?.h) || 0;
+  if (w <= 0 || h <= 0) return false;
+  ctx.rect(x, y, w, h);
+  return true;
+}
+
+
+function getArenaParts(arenaSpec) {
+  const geometry = arenaSpec?.geometry || null;
+  const platforms = Array.isArray(geometry?.platforms) ? geometry.platforms : [];
+  const bridges = Array.isArray(geometry?.bridges) ? geometry.bridges : [];
+  return [...platforms, ...bridges].filter(Boolean);
+}
+
+function clipToArenaParts(ctx, arenaSpec) {
+  const parts = getArenaParts(arenaSpec);
+  if (!parts.length) return false;
+  ctx.beginPath();
+  for (const part of parts) rectPath(ctx, part);
+  ctx.clip();
+  return true;
+}
+
+function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
+  const geometry = arenaSpec?.geometry || null;
+  const platforms = Array.isArray(geometry?.platforms) ? geometry.platforms : [];
+  const bridges = Array.isArray(geometry?.bridges) ? geometry.bridges : [];
+  const parts = [...platforms, ...bridges].filter(Boolean);
+  if (!parts.length || !bounds) return false;
+
+  const biomeKey = String(room?.biomeKey || '').toLowerCase();
+  let coreA = 'rgba(84,100,126,0.96)';
+  let coreB = 'rgba(32,40,58,0.96)';
+  let bridgeA = 'rgba(106,126,154,0.90)';
+  let bridgeB = 'rgba(42,54,78,0.92)';
+  let edge = 'rgba(210,230,255,0.20)';
+  let glow = 'rgba(120,180,255,0.18)';
+  if (biomeKey === 'electric') {
+    coreA = 'rgba(168,252,255,0.98)'; coreB = 'rgba(34,112,146,0.96)';
+    bridgeA = 'rgba(118,244,255,0.92)'; bridgeB = 'rgba(26,94,124,0.96)';
+    edge = 'rgba(188,252,255,0.28)'; glow = 'rgba(74,226,255,0.22)';
+  } else if (biomeKey === 'fire') {
+    coreA = 'rgba(255,198,132,0.98)'; coreB = 'rgba(126,46,22,0.96)';
+    bridgeA = 'rgba(255,148,96,0.94)'; bridgeB = 'rgba(98,34,18,0.96)';
+    edge = 'rgba(255,214,166,0.24)'; glow = 'rgba(255,132,72,0.18)';
+  } else if (biomeKey === 'ice') {
+    coreA = 'rgba(238,248,255,0.98)'; coreB = 'rgba(152,192,240,0.96)';
+    bridgeA = 'rgba(220,242,255,0.94)'; bridgeB = 'rgba(112,164,226,0.96)';
+    edge = 'rgba(255,255,255,0.30)'; glow = 'rgba(188,224,255,0.18)';
+  } else if (biomeKey === 'dark') {
+    coreA = 'rgba(88,62,132,0.98)'; coreB = 'rgba(20,14,34,0.98)';
+    bridgeA = 'rgba(110,76,172,0.94)'; bridgeB = 'rgba(28,18,48,0.98)';
+    edge = 'rgba(218,192,255,0.20)'; glow = 'rgba(140,94,255,0.18)';
+  } else if (biomeKey === 'light') {
+    coreA = 'rgba(255,251,230,0.98)'; coreB = 'rgba(238,206,112,0.98)';
+    bridgeA = 'rgba(255,238,172,0.94)'; bridgeB = 'rgba(214,168,70,0.98)';
+    edge = 'rgba(255,252,220,0.26)'; glow = 'rgba(255,230,142,0.18)';
+  }
+
+  ctx.save();
+  for (const part of parts) {
+    const x = Number(part?.x) || 0;
+    const y = Number(part?.y) || 0;
+    const w = Number(part?.w) || 0;
+    const h = Number(part?.h) || 0;
+    if (w <= 0 || h <= 0) continue;
+    const isBridge = bridges.includes(part);
+    const shadow = ctx.createRadialGradient(x + w * 0.5, y + h * 0.5, 0, x + w * 0.5, y + h * 0.5, Math.max(w, h) * 0.8);
+    shadow.addColorStop(0, 'rgba(0,0,0,0.18)');
+    shadow.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = shadow;
+    ctx.fillRect(x - 28, y - 28, w + 56, h + 56);
+    const g = ctx.createLinearGradient(x, y, x + w, y + h);
+    g.addColorStop(0, isBridge ? bridgeA : coreA);
+    g.addColorStop(1, isBridge ? bridgeB : coreB);
+    ctx.shadowColor = glow;
+    ctx.shadowBlur = isBridge ? 10 : 16;
+    ctx.fillStyle = g;
+    ctx.fillRect(x, y, w, h);
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = isBridge ? 2 : 3;
+    ctx.strokeRect(x + 1.5, y + 1.5, Math.max(0, w - 3), Math.max(0, h - 3));
+  }
+  ctx.restore();
+  return true;
+}
+
+
+function drawArenaShapeOverlay(ctx, room, arenaSpec, time = 0) {
+  const geometry = arenaSpec?.geometry || null;
+  const platforms = Array.isArray(geometry?.platforms) ? geometry.platforms : [];
+  const bridges = Array.isArray(geometry?.bridges) ? geometry.bridges : [];
+  if (!platforms.length && !bridges.length) return;
+
+  const biomeKey = String(room?.biomeKey || '').toLowerCase();
+  let panelStroke = 'rgba(255,255,255,0.08)';
+  let fillCore = 'rgba(16,18,28,0.16)';
+  let fillBridge = 'rgba(160,200,255,0.06)';
+  if (biomeKey === 'electric') {
+    panelStroke = 'rgba(130,240,255,0.22)';
+    fillCore = 'rgba(8,20,32,0.28)';
+    fillBridge = 'rgba(70,210,255,0.10)';
+  } else if (biomeKey === 'fire') {
+    panelStroke = 'rgba(255,170,96,0.20)';
+    fillCore = 'rgba(48,18,10,0.24)';
+    fillBridge = 'rgba(255,120,60,0.10)';
+  } else if (biomeKey === 'ice') {
+    panelStroke = 'rgba(235,250,255,0.24)';
+    fillCore = 'rgba(180,215,255,0.16)';
+    fillBridge = 'rgba(210,240,255,0.12)';
+  } else if (biomeKey === 'dark') {
+    panelStroke = 'rgba(164,120,255,0.22)';
+    fillCore = 'rgba(24,14,34,0.30)';
+    fillBridge = 'rgba(92,64,160,0.12)';
+  } else if (biomeKey === 'light') {
+    panelStroke = 'rgba(255,236,150,0.22)';
+    fillCore = 'rgba(255,250,214,0.14)';
+    fillBridge = 'rgba(255,224,120,0.12)';
+  }
+
+  ctx.save();
+  const drawRectLike = (r, fill, stroke, line = 3) => {
+    const x = Number(r?.x) || 0;
+    const y = Number(r?.y) || 0;
+    const w = Number(r?.w) || 0;
+    const h = Number(r?.h) || 0;
+    if (w <= 0 || h <= 0) return;
+    ctx.fillStyle = fill;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = line;
+    ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+  };
+
+  for (const p of platforms) drawRectLike(p, fillCore, panelStroke, 3);
+  for (const b of bridges) drawRectLike(b, fillBridge, panelStroke, 2);
+
+  if (biomeKey === 'electric' || biomeKey === 'dark' || biomeKey === 'light') {
+    ctx.strokeStyle = biomeKey === 'electric'
+      ? 'rgba(120,245,255,0.36)'
+      : (biomeKey === 'dark' ? 'rgba(190,120,255,0.28)' : 'rgba(255,232,132,0.30)');
+    ctx.lineWidth = 2;
+    const glow = 0.5 + 0.5 * Math.sin(time * (biomeKey === 'dark' ? 1.8 : 3.2));
+    for (const b of bridges) {
+      const x = Number(b?.x) || 0;
+      const y = Number(b?.y) || 0;
+      const w = Number(b?.w) || 0;
+      const h = Number(b?.h) || 0;
+      if (w <= 0 || h <= 0) continue;
+      ctx.globalAlpha = 0.28 + glow * (biomeKey === 'dark' ? 0.18 : 0.24);
+      if (w > h) {
+        ctx.beginPath();
+        ctx.moveTo(x + 10, y + h * 0.5);
+        ctx.lineTo(x + w - 10, y + h * 0.5);
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(x + w * 0.5, y + 10);
+        ctx.lineTo(x + w * 0.5, y + h - 10);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
+
+function drawBossArenaOverlay(ctx, room, arenaSpec, time = 0) {
+  const bossArena = arenaSpec?.bossArena || null;
+  if (!bossArena || arenaSpec?.rules?.isHub) return;
+
+  const biomeKey = String(room?.biomeKey || '').toLowerCase();
+  const safe = Array.isArray(bossArena.safeLanes) ? bossArena.safeLanes : [];
+  const pressure = Array.isArray(bossArena.pressureZones) ? bossArena.pressureZones : [];
+  const phases = Array.isArray(bossArena.phaseNodes) ? bossArena.phaseNodes : [];
+  const center = bossArena.center || null;
+
+  let safeStroke = 'rgba(190,220,255,0.18)';
+  let pressureFill = 'rgba(255,120,90,0.05)';
+  let pressureStroke = 'rgba(255,180,120,0.16)';
+  let phaseStroke = 'rgba(255,255,255,0.12)';
+  if (biomeKey === 'electric') {
+    safeStroke = 'rgba(130,245,255,0.18)';
+    pressureFill = 'rgba(95,240,255,0.05)';
+    pressureStroke = 'rgba(135,248,255,0.18)';
+    phaseStroke = 'rgba(180,250,255,0.14)';
+  } else if (biomeKey === 'fire') {
+    safeStroke = 'rgba(255,220,160,0.14)';
+    pressureFill = 'rgba(255,115,70,0.07)';
+    pressureStroke = 'rgba(255,176,120,0.18)';
+    phaseStroke = 'rgba(255,210,170,0.12)';
+  } else if (biomeKey === 'ice') {
+    safeStroke = 'rgba(255,255,255,0.18)';
+    pressureFill = 'rgba(170,225,255,0.05)';
+    pressureStroke = 'rgba(230,248,255,0.18)';
+    phaseStroke = 'rgba(220,245,255,0.14)';
+  } else if (biomeKey === 'dark') {
+    safeStroke = 'rgba(170,120,255,0.16)';
+    pressureFill = 'rgba(120,70,190,0.07)';
+    pressureStroke = 'rgba(185,135,255,0.18)';
+    phaseStroke = 'rgba(220,195,255,0.12)';
+  } else if (biomeKey === 'light') {
+    safeStroke = 'rgba(255,236,150,0.18)';
+    pressureFill = 'rgba(255,232,140,0.05)';
+    pressureStroke = 'rgba(255,245,190,0.18)';
+    phaseStroke = 'rgba(255,245,210,0.12)';
+  }
+
+  ctx.save();
+  if (center) {
+    const pulse = 0.5 + 0.5 * Math.sin(time * 1.1);
+    ctx.strokeStyle = safeStroke;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(Number(center.x) || 0, Number(center.y) || 0, Math.max(56, (room?.side || 700) * (0.07 + pulse * 0.01)), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.setLineDash([10, 10]);
+  for (const z of safe) {
+    const r = Math.max(18, Number(z?.r) || 42);
+    ctx.strokeStyle = safeStroke;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(Number(z?.x) || 0, Number(z?.y) || 0, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.setLineDash([8, 12]);
+  for (const z of pressure) {
+    const r = Math.max(22, Number(z?.r) || 48);
+    ctx.fillStyle = pressureFill;
+    ctx.strokeStyle = pressureStroke;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(Number(z?.x) || 0, Number(z?.y) || 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  ctx.setLineDash([]);
+  ctx.strokeStyle = phaseStroke;
+  ctx.lineWidth = 2;
+  for (const z of phases) {
+    const x = Number(z?.x) || 0;
+    const y = Number(z?.y) || 0;
+    ctx.beginPath();
+    ctx.moveTo(x - 10, y);
+    ctx.lineTo(x + 10, y);
+    ctx.moveTo(x, y - 10);
+    ctx.lineTo(x, y + 10);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawArenaSpecDecor(ctx, room, arenaSpec, time = 0) {
+  const decor = Array.isArray(arenaSpec?.anchors?.decorAnchors) ? arenaSpec.anchors.decorAnchors : [];
+  const cover = Array.isArray(arenaSpec?.anchors?.coverAnchors) ? arenaSpec.anchors.coverAnchors : [];
+  if (!decor.length && !cover.length) return;
+
+  ctx.save();
+  for (const d of decor) {
+    if (!d) continue;
+    const size = Math.max(10, Number(d.size) || 24);
+    const x = Number(d.x) || 0;
+    const y = Number(d.y) || 0;
+    const isReactor = String(d.kind || '') === 'reactor';
+    ctx.fillStyle = isReactor ? 'rgba(10,22,40,0.42)' : 'rgba(8,14,28,0.30)';
+    ctx.fillRect(x - size, y - size * 0.5, size * 2, size);
+    ctx.strokeStyle = isReactor ? 'rgba(140,238,255,0.24)' : 'rgba(200,220,255,0.12)';
+    ctx.lineWidth = isReactor ? 3 : 2;
+    ctx.strokeRect(x - size + 1, y - size * 0.5 + 1, size * 2 - 2, size - 2);
+    const glow = ctx.createRadialGradient(x, y, 0, x, y, size * (isReactor ? 1.6 : 1.2));
+    glow.addColorStop(0, isReactor ? 'rgba(150,235,255,0.26)' : 'rgba(220,230,255,0.10)');
+    glow.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(x, y, size * (isReactor ? 1.6 : 1.2), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  for (const c of cover) {
+    if (!c) continue;
+    const size = Math.max(10, Number(c.size) || 18);
+    const x = Number(c.x) || 0;
+    const y = Number(c.y) || 0;
+    ctx.fillStyle = 'rgba(0,0,0,0.16)';
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, size - 2, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  if (arenaSpec?.rules?.isHub && arenaSpec?.bossArena?.center) {
+    const cx = Number(arenaSpec.bossArena.center.x) || 0;
+    const cy = Number(arenaSpec.bossArena.center.y) || 0;
+    const r = Math.max(70, ((room?.side || 800) * 0.11));
+    ctx.strokeStyle = 'rgba(165,245,255,0.30)';
+    ctx.lineWidth = 5;
+    for (let i = 0; i < 2; i++) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + i * 26, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    for (let i = 0; i < 6; i++) {
+      const a = (Math.PI * 2 * i) / 6 + time * 0.08;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * (r * 0.5), cy + Math.sin(a) * (r * 0.5));
+      ctx.lineTo(cx + Math.cos(a) * (r * 1.45), cy + Math.sin(a) * (r * 1.45));
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// Extra biome surface FX on the tile top face.
+// Goal: each biome should read like a distinct floating platform in space, not just a recolored tile.
+function drawBiomeSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { biomeKey, hue, time }) {
+  const key = String(biomeKey || "").toLowerCase();
+  if (!key) return;
+
+  const seed = ((room.index || 0) * 2654435761) ^ ((hue | 0) * 1013904223) ^ 0x5bd1e995;
+  const rnd = makeRng(seed >>> 0);
+  const cx = (x0 + x1) * 0.5;
+  const cy = (y0 + y1) * 0.5;
+
+  ctx.save();
+  const arenaSpec = getArenaSpec(room);
+  clipToArenaParts(ctx, arenaSpec);
+
+  if (key === "electric") {
+    const g = ctx.createLinearGradient(x0, y0, x1, y1);
+    g.addColorStop(0, "rgba(8,26,36,0.88)");
+    g.addColorStop(1, "rgba(5,18,26,0.90)");
+    ctx.fillStyle = g;
+    ctx.fillRect(x0, y0, w, h);
+
+    ctx.strokeStyle = hsla(hue, 95, 64, 0.44);
+    ctx.lineWidth = 4;
+    for (let i = 0; i < 7; i++) {
+      const yy = y0 + 55 + rnd() * (h - 110);
+      ctx.beginPath();
+      ctx.moveTo(x0 + 40, yy);
+      ctx.lineTo(x0 + w * (0.25 + rnd() * 0.18), yy);
+      ctx.lineTo(x0 + w * (0.34 + rnd() * 0.22), yy + (rnd() - 0.5) * 80);
+      ctx.lineTo(x1 - 40, yy + (rnd() - 0.5) * 40);
+      ctx.stroke();
+    }
+    ctx.fillStyle = hsla(hue, 95, 68, 0.22);
+    for (let i = 0; i < 16; i++) {
+      const px = x0 + 60 + rnd() * (w - 120);
+      const py = y0 + 60 + rnd() * (h - 120);
+      ctx.fillRect(px - 12, py - 12, 24, 24);
+    }
+  } else if (key === "fire") {
+    const g = ctx.createLinearGradient(x0, y0, x0, y1);
+    g.addColorStop(0, "rgba(52,19,10,0.84)");
+    g.addColorStop(0.55, "rgba(88,30,14,0.82)");
+    g.addColorStop(1, "rgba(28,8,6,0.90)");
+    ctx.fillStyle = g;
+    ctx.fillRect(x0, y0, w, h);
+
+    for (let i = 0; i < 6; i++) {
+      const lx = x0 + 70 + rnd() * (w - 140);
+      const lw = 36 + rnd() * 100;
+      const lg = ctx.createLinearGradient(lx, y0, lx + lw, y0);
+      lg.addColorStop(0, "rgba(255,180,90,0.00)");
+      lg.addColorStop(0.5, "rgba(255,120,50,0.44)");
+      lg.addColorStop(1, "rgba(255,220,120,0.00)");
+      ctx.fillStyle = lg;
+      ctx.fillRect(lx, y0 + 35, lw, h - 70);
+    }
+    ctx.fillStyle = "rgba(255,160,90,0.15)";
+    for (let i = 0; i < 22; i++) {
+      const sx = x0 + 40 + rnd() * (w - 80);
+      const sy = y1 - 30 - rnd() * (h * 0.45);
+      const rr = 2 + rnd() * 4;
+      ctx.beginPath();
+      ctx.arc(sx, sy - ((time * 22 + i * 11) % 30), rr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (key === "ice") {
+    const g = ctx.createLinearGradient(x0, y0, x1, y1);
+    g.addColorStop(0, "rgba(212,236,255,0.74)");
+    g.addColorStop(1, "rgba(160,206,255,0.78)");
+    ctx.fillStyle = g;
+    ctx.fillRect(x0, y0, w, h);
+
+    ctx.strokeStyle = "rgba(255,255,255,0.48)";
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 14; i++) {
+      const ax = x0 + 40 + rnd() * (w - 80);
+      const ay = y0 + 40 + rnd() * (h - 80);
+      const bx = ax + (rnd() - 0.5) * 280;
+      const by = ay + (rnd() - 0.5) * 220;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(255,255,255,0.20)";
+    for (let i = 0; i < 28; i++) {
+      const px = x0 + 30 + rnd() * (w - 60);
+      const py = y0 + 30 + rnd() * (h - 60);
+      ctx.beginPath();
+      ctx.arc(px, py, 1.5 + rnd() * 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (key === "dark") {
+    const g = ctx.createRadialGradient(cx, cy, 20, cx, cy, Math.max(w, h) * 0.6);
+    g.addColorStop(0, "rgba(16,8,26,0.94)");
+    g.addColorStop(0.55, "rgba(24,10,40,0.88)");
+    g.addColorStop(1, "rgba(7,5,14,0.96)");
+    ctx.fillStyle = g;
+    ctx.fillRect(x0, y0, w, h);
+
+    ctx.strokeStyle = hsla(hue, 55, 44, 0.34);
+    ctx.lineWidth = 4;
+    for (let i = 0; i < 8; i++) {
+      const ax = x0 + 70 + rnd() * (w - 140);
+      const ay = y0 + 70 + rnd() * (h - 140);
+      const bx = ax + (rnd() - 0.5) * 340;
+      const by = ay + (rnd() - 0.5) * 340;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+    }
+    const fog = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) * 0.5);
+    fog.addColorStop(0, "rgba(140,90,255,0.18)");
+    fog.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = fog;
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.max(w, h) * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (key === "light") {
+    const g = ctx.createRadialGradient(cx, cy, 10, cx, cy, Math.max(w, h) * 0.55);
+    g.addColorStop(0, "rgba(255,250,220,0.92)");
+    g.addColorStop(0.75, "rgba(255,233,150,0.78)");
+    g.addColorStop(1, "rgba(246,212,110,0.74)");
+    ctx.fillStyle = g;
+    ctx.fillRect(x0, y0, w, h);
+
+    ctx.strokeStyle = hsla(hue, 95, 56, 0.28);
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 4; i++) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, 120 + i * 75, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    for (let i = 0; i < 12; i++) {
+      const a = (Math.PI * 2 * i) / 12 + time * 0.08;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * 70, cy + Math.sin(a) * 70);
+      ctx.lineTo(cx + Math.cos(a) * (w * 0.45), cy + Math.sin(a) * (h * 0.45));
+      ctx.stroke();
+    }
+  }
+
+  // Shared sci-fi platform modules so every biome still reads like a man-made tile in space.
+  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  ctx.lineWidth = 2;
+  const moduleSize = Math.max(120, Math.min(210, Math.min(w, h) * 0.18));
+  let gx = x0 + 26;
+  for (; gx < x1 - 26; gx += moduleSize) {
+    let gy = y0 + 26;
+    for (; gy < y1 - 26; gy += moduleSize) {
+      ctx.strokeRect(gx, gy, Math.min(moduleSize - 14, x1 - gx - 26), Math.min(moduleSize - 14, y1 - gy - 26));
+    }
+  }
+
+  ctx.restore();
+}
+
+
+function drawNeutralSpaceSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { hue, time }) {
+  const arenaSpec = getArenaSpec(room);
+  const seed = (((room.index || 0) + 17) * 2246822519) ^ 0x7f4a7c15;
+  const rnd = makeRng(seed >>> 0);
+  const cx = (x0 + x1) * 0.5;
+  const cy = (y0 + y1) * 0.5;
+  const isHub = !!(arenaSpec?.rules?.isHub || (room && (room.index | 0) === 0));
+
+  ctx.save();
+  clipToArenaParts(ctx, arenaSpec);
+
+  const g = ctx.createLinearGradient(x0, y0, x1, y1);
+  drawArenaSpecDecor(ctx, room, arenaSpec, time);
+
+  if (isHub) {
+    g.addColorStop(0, 'rgba(92,115,160,0.98)');
+    g.addColorStop(0.5, 'rgba(56,75,116,0.98)');
+    g.addColorStop(1, 'rgba(30,42,72,0.99)');
+  } else {
+    g.addColorStop(0, 'rgba(78,94,124,0.98)');
+    g.addColorStop(0.5, 'rgba(42,52,78,0.99)');
+    g.addColorStop(1, 'rgba(24,30,46,0.99)');
+  }
+  ctx.fillStyle = g;
+  ctx.fillRect(x0, y0, w, h);
+
+  // Orbital rings / lane marks so neutral tiles still feel like station platforms in open space.
+  ctx.strokeStyle = isHub ? 'rgba(120,210,255,0.22)' : 'rgba(160,190,255,0.16)';
+  ctx.lineWidth = isHub ? 4 : 3;
+  for (let i = 0; i < (isHub ? 4 : 3); i++) {
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, w * (0.18 + i * 0.12), h * (0.14 + i * 0.09), 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Tech rails / docking strips
+  for (let i = 0; i < (isHub ? 5 : 4); i++) {
+    const yy = y0 + h * (0.18 + i * 0.17);
+    const gg = ctx.createLinearGradient(x0, yy, x1, yy);
+    gg.addColorStop(0, 'rgba(255,255,255,0)');
+    gg.addColorStop(0.15, isHub ? 'rgba(120,225,255,0.10)' : 'rgba(140,160,255,0.06)');
+    gg.addColorStop(0.5, isHub ? 'rgba(120,225,255,0.24)' : 'rgba(180,200,255,0.10)');
+    gg.addColorStop(0.85, isHub ? 'rgba(120,225,255,0.10)' : 'rgba(140,160,255,0.06)');
+    gg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = gg;
+    ctx.fillRect(x0 + 30, yy - 5, w - 60, 10);
+  }
+
+  // Docking modules / reactors
+  const moduleCount = isHub ? 8 : 5;
+  for (let i = 0; i < moduleCount; i++) {
+    const mx = x0 + 50 + rnd() * (w - 100);
+    const my = y0 + 50 + rnd() * (h - 100);
+    const mw = (isHub ? 46 : 36) + rnd() * (isHub ? 42 : 28);
+    const mh = (isHub ? 24 : 20) + rnd() * (isHub ? 26 : 20);
+    ctx.fillStyle = isHub ? 'rgba(12,20,38,0.34)' : 'rgba(10,14,28,0.32)';
+    ctx.fillRect(mx, my, mw, mh);
+    ctx.strokeStyle = isHub ? 'rgba(135,235,255,0.22)' : 'rgba(200,220,255,0.12)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(mx + 1, my + 1, mw - 2, mh - 2);
+  }
+
+  // Floating helper beacons around the hub / floor center.
+  const beaconCount = isHub ? 6 : 4;
+  for (let i = 0; i < beaconCount; i++) {
+    const a = (Math.PI * 2 * i) / beaconCount + time * (isHub ? 0.1 : 0.06);
+    const rx = cx + Math.cos(a) * w * (isHub ? 0.28 : 0.22);
+    const ry = cy + Math.sin(a) * h * (isHub ? 0.22 : 0.18);
+    const gg = ctx.createRadialGradient(rx, ry, 0, rx, ry, isHub ? 26 : 18);
+    gg.addColorStop(0, isHub ? 'rgba(140,235,255,0.42)' : 'rgba(220,230,255,0.22)');
+    gg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = gg;
+    ctx.beginPath();
+    ctx.arc(rx, ry, isHub ? 26 : 18, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (isHub) {
+    // Hub core: central station pad / portal reactor.
+    const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.min(w, h) * 0.18);
+    cg.addColorStop(0, 'rgba(210,250,255,0.70)');
+    cg.addColorStop(0.45, 'rgba(120,220,255,0.24)');
+    cg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = cg;
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.min(w, h) * 0.18, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(170,245,255,0.34)';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.min(w, h) * 0.12, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.restore();
 }
 
 // ---- Cosmos (screen-space, multi-layer parallax) ----
@@ -171,6 +870,23 @@ function drawCosmosScreen(ctx, state) {
   bg.addColorStop(1, "#02020a");
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, w, h);
+
+  // Biome tint (very subtle). Applied in screen-space so it feels like the whole "space" changes.
+  try {
+    const biomeKey = String(state._roomBiome || (state.roomDirector && state.roomDirector.current ? state.roomDirector.current.biomeKey : "") || "");
+    const biome = biomeByKey(biomeKey);
+    if (biome) {
+      // A bit more "nebula" feel per biome.
+      const gx = ctx.createRadialGradient(w * 0.5, h * 0.5, 0, w * 0.5, h * 0.5, Math.max(w, h) * 0.9);
+      gx.addColorStop(0, `hsla(${biome.hue},95%,40%,0.26)`);
+      gx.addColorStop(0.55, `hsla(${(biome.hue + 30) % 360},85%,22%,0.18)`);
+      gx.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.globalAlpha = 1.0;
+      ctx.fillStyle = gx;
+      ctx.fillRect(0, 0, w, h);
+      ctx.globalAlpha = 1;
+    }
+  } catch {}
 
   // Nebula (slowest)
   if (cache.nebula) {
@@ -668,6 +1384,95 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
   }
 }
 
+// Floor terminal (NPC shop). Drawn on the platform surface.
+// Shows a clickable/tappable button when the player is nearby.
+function drawFloorShopNpc(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
+  if (!state || !room) return;
+  if ((room.index | 0) <= 0) return;
+  if (!room.cleared) return;
+
+  const npc = room.shopNpc || { x: room.centerX, y: room.centerY + (room.side || 600) * 0.18, r: 20 };
+  const x = npc.x;
+  const y = npc.y + (geo.fall || 0);
+
+  // Terminal body
+  ctx.save();
+  ctx.globalAlpha = 0.95;
+
+  const bw = 38;
+  const bh = 28;
+  const baseCol = hsla((hue + 190) % 360, 20, 18, 0.9);
+  ctx.fillStyle = baseCol;
+  drawRoundedRect(ctx, x - bw * 0.5, y - bh * 0.5, bw, bh, 6);
+  ctx.fill();
+
+  // Screen glow
+  const gg = ctx.createRadialGradient(x, y - 6, 0, x, y - 6, 30);
+  gg.addColorStop(0, hsla((hue + 120) % 360, 95, 65, 0.22));
+  gg.addColorStop(0.55, hsla((hue + 120) % 360, 95, 55, 0.10));
+  gg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = gg;
+  ctx.beginPath();
+  ctx.arc(x, y - 6, 30, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Small "antenna" / beacon
+  ctx.strokeStyle = hsla((hue + 130) % 360, 95, 62, 0.55);
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, y - 16);
+  ctx.lineTo(x, y - 28);
+  ctx.stroke();
+  ctx.fillStyle = hsla((hue + 130) % 360, 95, 62, 0.65);
+  ctx.beginPath();
+  ctx.arc(x, y - 30, 3.2, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+
+  // Interaction button
+  const player = state.player;
+  if (!player) return;
+
+  const dx = player.x - npc.x;
+  const dy = player.y - npc.y;
+  const near = (dx * dx + dy * dy) <= (190 * 190);
+  if (!near) return;
+
+  const bx = npc.x;
+  const by = npc.y - 46;
+  const bwBtn = 150;
+  const bhBtn = 40;
+
+  ctx.save();
+  ctx.globalAlpha = 0.95;
+  const panelX = bx - bwBtn * 0.5;
+  const panelY = by - bhBtn * 0.5;
+  drawRoundedRect(ctx, panelX, panelY, bwBtn, bhBtn, 10);
+  ctx.fillStyle = 'rgba(10,14,20,0.72)';
+  ctx.fill();
+  ctx.strokeStyle = hsla((hue + 120) % 360, 95, 62, 0.55);
+  ctx.lineWidth = 2.6;
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('UPGRADE TERMINAL', bx, by);
+  ctx.restore();
+
+  // Register clickable rect (screen space, with pitch transform)
+  const s0 = worldToScreenPitch(panelX, panelY, state);
+  const s1 = worldToScreenPitch(panelX + bwBtn, panelY + bhBtn, state);
+  const rx = Math.min(s0.x, s1.x);
+  const ry = Math.min(s0.y, s1.y);
+  const rw = Math.abs(s1.x - s0.x);
+  const rh = Math.abs(s1.y - s0.y);
+  if (!Array.isArray(state._shopButtons)) state._shopButtons = [];
+  state._shopButtons.push({ x: rx, y: ry, w: rw, h: rh, floor: room.index | 0 });
+}
+
 // Visible force-field barrier around the platform perimeter.
 // Leaves holes where gates are, so it's clear "where the wall is" and "where the portal is".
 function drawPerimeterBarrier(ctx, state, room, { hue = 210, time = 0, fall = 0 } = {}) {
@@ -852,10 +1657,15 @@ function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, s
   const w = x1 - x0;
   const h = y1 - y0;
 
-  const hue = (room.hue | 0) || 210;
+  const arenaSpec = getArenaSpec(room);
+  const geometry = arenaSpec?.geometry || null;
+  const platformCount = Array.isArray(geometry?.platforms) ? geometry.platforms.length : 0;
+  const bridgeCount = Array.isArray(geometry?.bridges) ? geometry.bridges.length : 0;
+  const useGeometryBody = (platformCount + bridgeCount) > 0;
+  const biome = biomeByKey(room && room.biomeKey);
+  const hue = biome ? (biome.hue | 0) : ((room.hue | 0) || 210);
+  const glowCol = biome ? (biome.glow || "rgba(80,255,255,0.6)") : hsla(hue, 95, 62, 0.10);
 
-  // 3D illusion: a real "box" with diagonal thickness vector (front-right).
-  // Since camera pitch compresses Y, compensate thickness so it still reads as 3D.
   const pitch = (cam && cam.pitch) ? cam.pitch : 1;
   const thickness = clamp(room.side * 0.030, 16, 70);
   const tx = thickness * 0.65;
@@ -879,7 +1689,7 @@ function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, s
     const cy = (y0 + y1) * 0.5 + ty * 0.55;
     const r = Math.max(w, h) * 0.62;
     const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-    g.addColorStop(0, hsla(hue, 95, 62, 0.10));
+    g.addColorStop(0, glowCol);
     g.addColorStop(0.55, hsla((hue + 40) % 360, 95, 58, 0.05));
     g.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = g;
@@ -892,156 +1702,202 @@ function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, s
   {
     const cx = (x0 + x1) * 0.5 + tx * 0.35;
     const cy = (y0 + y1) * 0.5 + ty * 0.85;
-    const rx = w * 0.55;
-    const ry = h * 0.45;
-    ctx.fillStyle = "rgba(0,0,0,0.38)";
+    const rx = w * (useGeometryBody ? 0.42 : 0.55);
+    const ry = h * (useGeometryBody ? 0.34 : 0.45);
+    ctx.fillStyle = useGeometryBody ? "rgba(0,0,0,0.26)" : "rgba(0,0,0,0.38)";
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Left face (west)
-  ctx.fillStyle = hsla(hue, 24, 17, 0.95);
-  ctx.beginPath();
-  ctx.moveTo(A.x, A.y);
-  ctx.lineTo(D.x, D.y);
-  ctx.lineTo(D2.x, D2.y);
-  ctx.lineTo(A2.x, A2.y);
-  ctx.closePath();
-  ctx.fill();
-
-  // Right face (east)
-  ctx.fillStyle = hsla(hue, 26, 16, 0.95);
-  ctx.beginPath();
-  ctx.moveTo(B.x, B.y);
-  ctx.lineTo(C.x, C.y);
-  ctx.lineTo(C2.x, C2.y);
-  ctx.lineTo(B2.x, B2.y);
-  ctx.closePath();
-  ctx.fill();
-
-  // Front face (south)
-  ctx.fillStyle = hsla(hue, 28, 13, 0.96);
-  ctx.beginPath();
-  ctx.moveTo(D.x, D.y);
-  ctx.lineTo(C.x, C.y);
-  ctx.lineTo(C2.x, C2.y);
-  ctx.lineTo(D2.x, D2.y);
-  ctx.closePath();
-  ctx.fill();
-
-  // Top face: "cosmic platform" surface (panels + subtle emissive lines)
-  {
-    // Slightly darker, metallic surface with a cool tint.
-    const g = ctx.createLinearGradient(x0, y0, x1, y1);
-    g.addColorStop(0, hsla(hue, 14, 90, 1));
-    g.addColorStop(0.55, hsla(hue, 10, 86, 1));
-    g.addColorStop(1, hsla(hue, 12, 82, 1));
-    ctx.fillStyle = g;
+  if (!useGeometryBody) {
+    ctx.fillStyle = hsla(hue, 24, 17, 0.95);
     ctx.beginPath();
     ctx.moveTo(A.x, A.y);
-    ctx.lineTo(B.x, B.y);
-    ctx.lineTo(C.x, C.y);
     ctx.lineTo(D.x, D.y);
+    ctx.lineTo(D2.x, D2.y);
+    ctx.lineTo(A2.x, A2.y);
     ctx.closePath();
     ctx.fill();
 
-    // Panel seams (large)
-    const stepL = 210;
-    ctx.strokeStyle = "rgba(0,0,0,0.18)";
-    ctx.lineWidth = 3;
-    let vx = Math.ceil(x0 / stepL) * stepL;
-    for (; vx < x0 + w; vx += stepL) {
+    ctx.fillStyle = hsla(hue, 26, 16, 0.95);
+    ctx.beginPath();
+    ctx.moveTo(B.x, B.y);
+    ctx.lineTo(C.x, C.y);
+    ctx.lineTo(C2.x, C2.y);
+    ctx.lineTo(B2.x, B2.y);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = hsla(hue, 28, 13, 0.96);
+    ctx.beginPath();
+    ctx.moveTo(D.x, D.y);
+    ctx.lineTo(C.x, C.y);
+    ctx.lineTo(C2.x, C2.y);
+    ctx.lineTo(D2.x, D2.y);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Top face: legacy slab for fallback rooms, geometry-only rooms skip square body.
+  {
+    if (!useGeometryBody) {
+      const g = ctx.createLinearGradient(x0, y0, x1, y1);
+      const biomeSurface = String((room && room.biomeKey) || "").toLowerCase();
+      const visualPreset = String(arenaSpec?.visualPreset || '');
+      if (biomeSurface === "fire") {
+        g.addColorStop(0, "rgba(255,188,120,1)");
+        g.addColorStop(0.55, "rgba(255,136,82,1)");
+        g.addColorStop(1, "rgba(124,52,30,1)");
+      } else if (biomeSurface === "ice") {
+        g.addColorStop(0, "rgba(236,247,255,1)");
+        g.addColorStop(0.55, "rgba(210,232,255,1)");
+        g.addColorStop(1, "rgba(166,205,255,1)");
+      } else if (biomeSurface === "dark") {
+        g.addColorStop(0, "rgba(74,50,106,1)");
+        g.addColorStop(0.55, "rgba(42,26,68,1)");
+        g.addColorStop(1, "rgba(20,14,34,1)");
+      } else if (biomeSurface === "light") {
+        g.addColorStop(0, "rgba(255,251,226,1)");
+        g.addColorStop(0.55, "rgba(255,239,174,1)");
+        g.addColorStop(1, "rgba(240,210,116,1)");
+      } else if (biomeSurface === "electric") {
+        g.addColorStop(0, "rgba(192,252,255,1)");
+        g.addColorStop(0.55, "rgba(125,237,255,1)");
+        g.addColorStop(1, "rgba(52,168,204,1)");
+      } else if (visualPreset === 'hub_core_station' || (room && (room.index | 0) === 0)) {
+        g.addColorStop(0, 'rgba(90,118,164,1)');
+        g.addColorStop(0.55, 'rgba(58,78,120,1)');
+        g.addColorStop(1, 'rgba(30,42,72,1)');
+      } else {
+        g.addColorStop(0, 'rgba(92,104,128,1)');
+        g.addColorStop(0.55, 'rgba(54,62,84,1)');
+        g.addColorStop(1, 'rgba(28,34,48,1)');
+      }
+      ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.moveTo(vx, y0);
-      ctx.lineTo(vx, y1);
-      ctx.stroke();
+      ctx.moveTo(A.x, A.y);
+      ctx.lineTo(B.x, B.y);
+      ctx.lineTo(C.x, C.y);
+      ctx.lineTo(D.x, D.y);
+      ctx.closePath();
+      ctx.fill();
+
+      const stepL = 210;
+      ctx.strokeStyle = "rgba(0,0,0,0.18)";
+      ctx.lineWidth = 3;
+      let vx = Math.ceil(x0 / stepL) * stepL;
+      for (; vx < x0 + w; vx += stepL) {
+        ctx.beginPath();
+        ctx.moveTo(vx, y0);
+        ctx.lineTo(vx, y1);
+        ctx.stroke();
+      }
+      let hy = Math.ceil(y0 / stepL) * stepL;
+      for (; hy < y0 + h; hy += stepL) {
+        ctx.beginPath();
+        ctx.moveTo(x0, hy);
+        ctx.lineTo(x1, hy);
+        ctx.stroke();
+      }
+
+      const stepS = 105;
+      ctx.strokeStyle = hsla(hue, 22, 20, 0.07);
+      ctx.lineWidth = 1;
+      vx = Math.ceil(x0 / stepS) * stepS;
+      for (; vx < x0 + w; vx += stepS) {
+        ctx.beginPath();
+        ctx.moveTo(vx, y0);
+        ctx.lineTo(vx, y1);
+        ctx.stroke();
+      }
     }
-    let hy = Math.ceil(y0 / stepL) * stepL;
-    for (; hy < y0 + h; hy += stepL) {
-      ctx.beginPath();
-      ctx.moveTo(x0, hy);
-      ctx.lineTo(x1, hy);
-      ctx.stroke();
+
+    drawArenaSolidShape(ctx, room, arenaSpec, time, { x0, y0, x1, y1, w, h });
+    drawArenaShapeOverlay(ctx, room, arenaSpec, time);
+
+    // Biome-specific surface accents (neon / frost / runes / etc.)
+    drawBiomeSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { biomeKey: (room && room.biomeKey) || "", hue, time });
+    if (!((room && room.biomeKey) || '')) {
+      drawNeutralSpaceSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { hue, time });
     }
 
-    // Micro grid (very subtle)
-    const stepS = 105;
-    ctx.strokeStyle = hsla(hue, 22, 20, 0.07);
-    ctx.lineWidth = 1;
-    vx = Math.ceil(x0 / stepS) * stepS;
-    for (; vx < x0 + w; vx += stepS) {
-      ctx.beginPath();
-      ctx.moveTo(vx, y0);
-      ctx.lineTo(vx, y1);
-      ctx.stroke();
+    // Emissive inner border (thin) only for fallback slab rooms.
+    if (!useGeometryBody) {
+      ctx.strokeStyle = hsla(hue, 95, 60, 0.18);
+      ctx.lineWidth = 6;
+      ctx.strokeRect(x0 + 18, y0 + 18, w - 36, h - 36);
     }
 
-    // Emissive inner border (thin)
-    ctx.strokeStyle = hsla(hue, 95, 60, 0.18);
-    ctx.lineWidth = 6;
-    ctx.strokeRect(x0 + 18, y0 + 18, w - 36, h - 36);
+    // Legacy square perimeter visuals only for fallback slab rooms.
+    if (!useGeometryBody) {
+      drawPerimeterBarrier(ctx, state, room, { hue, time, fall });
+      drawGates(ctx, state, room, { x0, x1, y0, y1, w, h, fall }, { hue, time });
+    }
 
-    // Perimeter barrier (force field) — leaves holes where gates are.
-    drawPerimeterBarrier(ctx, state, room, { hue, time, fall });
+    drawArenaDebugOverlay(ctx, room, arenaSpec, state);
 
-    // Gates: cosmic portals on the edge (SAS-like spawns)
-    drawGates(ctx, state, room, { x0, x1, y0, y1, w, h, fall }, { hue, time });
+    // Floor terminal (NPC shop) — appears after the floor is cleared.
+    drawFloorShopNpc(ctx, state, room, { x0, x1, y0, y1, w, h, fall }, { hue, time });
 
     // Corner beacons (small glows)
-    const corners = [
-      [x0 + 34, y0 + 34],
-      [x1 - 34, y0 + 34],
-      [x1 - 34, y1 - 34],
-      [x0 + 34, y1 - 34],
-    ];
-    for (const [cx, cy] of corners) {
-      const gg = ctx.createRadialGradient(cx, cy, 0, cx, cy, 44);
-      gg.addColorStop(0, hsla((hue + 35) % 360, 95, 65, 0.25));
-      gg.addColorStop(0.55, hsla((hue + 35) % 360, 95, 55, 0.10));
-      gg.addColorStop(1, "rgba(255,255,255,0)");
-      ctx.fillStyle = gg;
-      ctx.beginPath();
-      ctx.arc(cx, cy, 44, 0, Math.PI * 2);
-      ctx.fill();
+    if (!useGeometryBody) {
+      const corners = [
+        [x0 + 34, y0 + 34],
+        [x1 - 34, y0 + 34],
+        [x1 - 34, y1 - 34],
+        [x0 + 34, y1 - 34],
+      ];
+      for (const [cx, cy] of corners) {
+        const gg = ctx.createRadialGradient(cx, cy, 0, cx, cy, 44);
+        gg.addColorStop(0, hsla((hue + 35) % 360, 95, 65, 0.25));
+        gg.addColorStop(0.55, hsla((hue + 35) % 360, 95, 55, 0.10));
+        gg.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = gg;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 44, 0, Math.PI * 2);
+        ctx.fill();
 
-      ctx.fillStyle = "rgba(0,0,0,0.35)";
-      ctx.beginPath();
-      ctx.arc(cx, cy, 6, 0, Math.PI * 2);
-      ctx.fill();
+        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        ctx.beginPath();
+        ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
 
 
-  // Bevel highlight (top edges)
-  ctx.strokeStyle = hsla(hue, 95, 70, 0.35);
-  ctx.lineWidth = 6;
-  ctx.beginPath();
-  ctx.moveTo(A.x + 8, A.y + 8);
-  ctx.lineTo(B.x - 8, B.y + 8);
-  ctx.lineTo(C.x - 8, C.y - 8);
-  ctx.stroke();
+  if (!useGeometryBody) {
+    // Bevel highlight (top edges)
+    ctx.strokeStyle = hsla(hue, 95, 70, 0.35);
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(A.x + 8, A.y + 8);
+    ctx.lineTo(B.x - 8, B.y + 8);
+    ctx.lineTo(C.x - 8, C.y - 8);
+    ctx.stroke();
 
-  // Outer border + glow
-  ctx.strokeStyle = hsla(hue, 95, 62, 0.22);
-  ctx.lineWidth = 7;
-  ctx.beginPath();
-  ctx.moveTo(A.x + 5, A.y + 5);
-  ctx.lineTo(B.x - 5, B.y + 5);
-  ctx.lineTo(C.x - 5, C.y - 5);
-  ctx.lineTo(D.x + 5, D.y - 5);
-  ctx.closePath();
-  ctx.stroke();
+    // Outer border + glow
+    ctx.strokeStyle = hsla(hue, 95, 62, 0.22);
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    ctx.moveTo(A.x + 5, A.y + 5);
+    ctx.lineTo(B.x - 5, B.y + 5);
+    ctx.lineTo(C.x - 5, C.y - 5);
+    ctx.lineTo(D.x + 5, D.y - 5);
+    ctx.closePath();
+    ctx.stroke();
 
-  ctx.strokeStyle = "rgba(0,0,0,0.28)";
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.moveTo(A.x + 2, A.y + 2);
-  ctx.lineTo(B.x - 2, B.y + 2);
-  ctx.lineTo(C.x - 2, C.y - 2);
-  ctx.lineTo(D.x + 2, D.y - 2);
-  ctx.closePath();
-  ctx.stroke();
+    ctx.strokeStyle = "rgba(0,0,0,0.28)";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(A.x + 2, A.y + 2);
+    ctx.lineTo(B.x - 2, B.y + 2);
+    ctx.lineTo(C.x - 2, C.y - 2);
+    ctx.lineTo(D.x + 2, D.y - 2);
+    ctx.closePath();
+    ctx.stroke();
+  }
 
   // Label
   if (label) {
@@ -1094,7 +1950,11 @@ function drawBridge(ctx, rd, from, to, { alpha = 1 } = {}) {
   const padX = x0;
   const padY = startY - padH - ty;
   // Top
-  ctx.fillStyle = hsla(hue, 14, 88, 1);
+  const padGrad = ctx.createLinearGradient(padX, padY, padX + padW, padY + padH);
+  padGrad.addColorStop(0, hsla(hue, 24, 78, 1));
+  padGrad.addColorStop(0.55, hsla(hue, 18, 42, 1));
+  padGrad.addColorStop(1, hsla(hue, 18, 22, 1));
+  ctx.fillStyle = padGrad;
   ctx.fillRect(padX, padY, padW, padH);
   // Front thickness
   ctx.fillStyle = hsla(hue, 26, 12, 0.95);
@@ -1144,7 +2004,11 @@ function drawBridge(ctx, rd, from, to, { alpha = 1 } = {}) {
     ctx.fill();
 
     // Top
-    ctx.fillStyle = hsla(hue, 18, 93, 1);
+    const topGrad = ctx.createLinearGradient(x0, y0, x1, y1);
+    topGrad.addColorStop(0, hsla(hue, 26, 76, 1));
+    topGrad.addColorStop(0.5, hsla(hue, 18, 44, 1));
+    topGrad.addColorStop(1, hsla(hue, 18, 26, 1));
+    ctx.fillStyle = topGrad;
     ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
 
     // Planks / segments
@@ -1199,6 +2063,7 @@ export function renderRoomsBackground(ctx, state) {
   // Clickable gate buttons are computed during rendering.
   // Reset once per frame.
   state._gateButtons = [];
+  state._shopButtons = [];
 
   // Render order: prev (falling), current, next.
   const rooms = [];
@@ -1210,7 +2075,7 @@ export function renderRoomsBackground(ctx, state) {
     const r = it.room;
     const fall = (r.collapsing ? (clamp(r.collapseT, 0, 1) * (r.side * 0.25 + 640)) : 0);
     const a = (r.collapsing ? (1 - clamp(r.collapseT, 0, 1)) : 1);
-    const label = (r.index === 0 ? "HUB" : `ROOM ${r.index}`);
+    const label = (r.index === 0 ? "HUB" : `FLOOR ${r.index}`);
     drawTile(ctx, r, cam, { alpha: a, fall, label, time: state.time || 0, state });
   }
 

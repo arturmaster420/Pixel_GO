@@ -11,6 +11,10 @@ import { updateEnergyBarrier } from "./energyBarrier.js";
 import { updateSpirit } from "./spirit.js";
 import { updateElectricZone } from "./electricZone.js";
 import { updateSummonTanks } from "./summonTanks.js";
+import { updateFireball } from "./fireball.js";
+import { spawnIceWall } from "./iceWall.js";
+import { spawnBlackhole } from "./blackhole.js";
+import { emitHealPulse } from "./lightHeal.js";
 import { getAimDirectionForPlayer, isFiringActive } from "../core/mouseController.js";
 
 // Shared preferred distance for pets/minions around the player.
@@ -68,7 +72,13 @@ export function getAimRangeForPlayer(player) {
   const laserLvl = (s.laser || 0) | 0;
   const laserRange = laserLvl > 0 ? (260 + (laserLvl - 1) * 15) * rMult : 0;
 
-  return Math.max(220 * rMult, bulletRange, bombRange, rocketRange, lightRange, laserRange);
+  const fbLvl = (s.fireball || 0) | 0;
+  const fbRange = fbLvl > 0 ? (320 + (fbLvl - 1) * 16) * rMult : 0;
+
+  const bhLvl = (s.blackhole || 0) | 0;
+  const bhRange = bhLvl > 0 ? (360 + (bhLvl - 1) * 18) * rMult : 0;
+
+  return Math.max(220 * rMult, bulletRange, bombRange, rocketRange, lightRange, laserRange, fbRange, bhRange);
 }
 
 
@@ -92,7 +102,13 @@ export function getAttackRangeForPlayer(player) {
   const laserLvl = (s.laser || 0) | 0;
   const laserRange = laserLvl > 0 ? (260 + (laserLvl - 1) * 15) * rMult : 0;
 
-  return Math.max(220 * rMult, bulletRange, bombRange, rocketRange, lightRange, laserRange);
+  const fbLvl = (s.fireball || 0) | 0;
+  const fbRange = fbLvl > 0 ? (320 + (fbLvl - 1) * 16) * rMult : 0;
+
+  const bhLvl = (s.blackhole || 0) | 0;
+  const bhRange = bhLvl > 0 ? (360 + (bhLvl - 1) * 18) * rMult : 0;
+
+  return Math.max(220 * rMult, bulletRange, bombRange, rocketRange, lightRange, laserRange, fbRange, bhRange);
 }
 
 function bulletParams(player) {
@@ -183,6 +199,65 @@ function lightningParams(player) {
     chainRange,
     cooldown: cd,
   };
+}
+
+function fireballParams(player) {
+  const lvl = (player.runSkills?.fireball || 0) | 0;
+  if (lvl <= 0) return null;
+  const rMult = getTotalRangeMult(player);
+  const dMult = getDamageMult(player);
+
+  const range = (320 + (lvl - 1) * 16) * rMult;
+  const speed = 520 + (lvl - 1) * 22;
+  const cooldown = Math.max(1.65, 2.9 - (lvl - 1) * 0.18);
+  const damage = (18 + (lvl - 1) * 7.2) * dMult;
+  const splashRadius = 70 + (lvl - 1) * 6;
+  const burnDur = 1.2 + (lvl - 1) * 0.22;
+  const burnDps = (6 + (lvl - 1) * 2.4) * dMult;
+  const radius = 10 + Math.floor((lvl - 1) / 2);
+  return { level: lvl, range, speed, cooldown, damage, splashRadius, burnDur, burnDps, radius };
+}
+
+function iceWallParams(player) {
+  const lvl = (player.runSkills?.iceWall || 0) | 0;
+  if (lvl <= 0) return null;
+  const rMult = getTotalRangeMult(player);
+  const dMult = getDamageMult(player);
+
+  const cooldown = Math.max(2.5, 4.5 - (lvl - 1) * 0.25);
+  const duration = 3.0 + (lvl - 1) * 0.35;
+  const length = (180 + (lvl - 1) * 12) * (0.95 + (rMult - 1) * 0.25);
+  const thickness = 24 + (lvl - 1) * 2;
+  const placeDist = 150 + (lvl - 1) * 4;
+  const slowMult = 0.22;
+  const pushSpeed = 200 + (lvl - 1) * 20;
+  const damage = (5.2 + (lvl - 1) * 2.1) * dMult;
+  return { level: lvl, cooldown, duration, length, thickness, placeDist, slowMult, pushSpeed, damage };
+}
+
+function blackholeParams(player) {
+  const lvl = (player.runSkills?.blackhole || 0) | 0;
+  if (lvl <= 0) return null;
+  const rMult = getTotalRangeMult(player);
+  const dMult = getDamageMult(player);
+
+  const cooldown = Math.max(4.6, 8.0 - (lvl - 1) * 0.52);
+  const duration = 2.6 + (lvl - 1) * 0.35;
+  const radius = (170 + (lvl - 1) * 18) * (0.95 + (rMult - 1) * 0.25);
+  const pull = 260 + (lvl - 1) * 30;
+  const dps = (10 + (lvl - 1) * 4.2) * dMult;
+  const castRange = (360 + (lvl - 1) * 18) * rMult;
+  return { level: lvl, cooldown, duration, radius, pull, dps, castRange };
+}
+
+function lightHealParams(player) {
+  const lvl = (player.runSkills?.lightHeal || 0) | 0;
+  if (lvl <= 0) return null;
+  const rMult = getTotalRangeMult(player);
+  const cooldown = Math.max(4.0, 8.0 - (lvl - 1) * 0.55);
+  const radius = (220 + (lvl - 1) * 18) * (0.95 + (rMult - 1) * 0.35);
+  const heal = 12 + (lvl - 1) * 5;
+  return { level: lvl, cooldown, radius, heal };
 }
 
 function laserParams(player) {
@@ -476,4 +551,41 @@ function _updateSkillsImpl(player, state, dt, { aimDir, firing } = {}) {
 
   const su = summonParams(player);
   updateSummonTanks(player, state, dt, su);
+
+  // --- Biome actives (floor shop) ---
+  // Fireball (auto-target projectile)
+  const fb = fireballParams(player);
+  if (fb && firing) {
+    updateFireball(player, state, dt, fb);
+  }
+
+  // Ice Wall (creates barrier segments)
+  const iw = iceWallParams(player);
+  if (iw && firing) {
+    player.iceWallCooldown = (player.iceWallCooldown || 0) - dt;
+    if (player.iceWallCooldown <= 0) {
+      spawnIceWall(player, state, iw, aimDir || null);
+      player.iceWallCooldown = iw.cooldown;
+    }
+  }
+
+  // Blackhole
+  const bh = blackholeParams(player);
+  if (bh && firing) {
+    player.blackholeCooldown = (player.blackholeCooldown || 0) - dt;
+    if (player.blackholeCooldown <= 0) {
+      spawnBlackhole(player, state, bh);
+      player.blackholeCooldown = bh.cooldown;
+    }
+  }
+
+  // Light Heal (does not require firing)
+  const lh = lightHealParams(player);
+  if (lh) {
+    player.lightHealCooldown = (player.lightHealCooldown || 0) - dt;
+    if (player.lightHealCooldown <= 0) {
+      emitHealPulse(player, state, lh);
+      player.lightHealCooldown = lh.cooldown;
+    }
+  }
 }
