@@ -46,11 +46,11 @@ function makeFallback({ roomIndex = 0, biomeKey = '', side = 1200, centerX = 0, 
   };
 }
 
-export function buildArenaSpec({ roomIndex = 0, biomeKey = '', side = 1200, centerX = 0, centerY = 0 } = {}) {
+export function buildArenaSpec({ roomIndex = 0, biomeKey = '', templateKey = '', encounterType = '', roomOrdinal = 0, totalRooms = 0, side = 1200, centerX = 0, centerY = 0, entrySocket = '', exitSocket = '', portalSocket = '', templateRole = '', routeStyle = '', lateralOffset = 0 } = {}) {
   const profile = getArenaProfile(roomIndex, biomeKey);
   const selectedLayoutId = pickLayoutId(profile, roomIndex);
   try {
-    const generated = runArenaGenerator(profile, { roomIndex, biomeKey, side, centerX, centerY, selectedLayoutId });
+    const generated = runArenaGenerator(profile, { roomIndex, biomeKey, templateKey, encounterType, roomOrdinal, totalRooms, side, centerX, centerY, selectedLayoutId, entrySocket, exitSocket, portalSocket, templateRole, routeStyle, lateralOffset });
     const arenaSpec = {
       biome: String(biomeKey || ''),
       roomIndex: roomIndex | 0,

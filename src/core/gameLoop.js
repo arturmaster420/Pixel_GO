@@ -2470,6 +2470,33 @@ function serializeSnapshot(state) {
       bossAlive: !!state._roomBossAlive,
       isBoss: !!state._roomIsBoss,
       isMiniBoss: !!state._roomIsMiniBoss,
+      floorNumber: (state._floorNumber | 0) || 0,
+      roomOrdinal: (state._floorRoomOrdinal | 0) || 0,
+      totalRooms: (state._floorRoomsTotal | 0) || 0,
+      encounterType: String(state._roomEncounter || ''),
+      encounterLabel: String(state._roomEncounterLabel || ''),
+      templateKey: String(state._roomTemplateKey || ''),
+      templateRole: String(state._roomTemplateRole || ''),
+      entrySocket: String(state._roomEntrySocket || ''),
+      exitSocket: String(state._roomExitSocket || ''),
+      portalSocket: String(state._roomPortalSocket || ''),
+      routeStyle: String(state._roomRouteStyle || ''),
+      lateralOffset: (typeof state._roomLateralOffset === 'number' ? Math.round(state._roomLateralOffset * 1000) / 1000 : 0),
+      centerX: (typeof state._roomCenterX === 'number' ? q(state._roomCenterX) : 0),
+      centerY: (typeof state._roomCenterY === 'number' ? q(state._roomCenterY) : 0),
+      bridgeFromSocket: String(state._bridgeFromSocket || ''),
+      bridgeToSocket: String(state._bridgeToSocket || ''),
+      bridgeFromPoint: state._bridgeFromPoint ? { x: q(state._bridgeFromPoint.x || 0), y: q(state._bridgeFromPoint.y || 0) } : null,
+      bridgeToPoint: state._bridgeToPoint ? { x: q(state._bridgeToPoint.x || 0), y: q(state._bridgeToPoint.y || 0) } : null,
+      nextTemplateKey: String(state._nextRoomTemplateKey || ''),
+      nextTemplateRole: String(state._nextRoomTemplateRole || ''),
+      nextEntrySocket: String(state._nextRoomEntrySocket || ''),
+      nextRouteStyle: String(state._nextRoomRouteStyle || ''),
+      nextLateralOffset: (typeof state._nextRoomLateralOffset === 'number' ? Math.round(state._nextRoomLateralOffset * 1000) / 1000 : 0),
+      nextCenterX: (typeof state._nextRoomCenterX === 'number' ? q(state._nextRoomCenterX) : 0),
+      nextCenterY: (typeof state._nextRoomCenterY === 'number' ? q(state._nextRoomCenterY) : 0),
+      nextEncounterType: String(state._nextRoomEncounter || ''),
+      nextEncounterLabel: String(state._nextRoomEncounterLabel || ''),
     },
     flags: {
       resGuardianKilledThisRun: !!(state.flags && state.flags.resGuardianKilledThisRun),
@@ -2969,6 +2996,31 @@ function applySnapshotToClient(state, snap) {
     state._roomBossAlive = !!r.bossAlive;
     state._roomIsBoss = !!r.isBoss;
     state._roomIsMiniBoss = !!r.isMiniBoss;
+    state._floorNumber = (r.floorNumber | 0) || state._floorNumber || 0;
+    state._floorRoomOrdinal = (r.roomOrdinal | 0) || state._floorRoomOrdinal || 0;
+    state._floorRoomsTotal = (r.totalRooms | 0) || state._floorRoomsTotal || 0;
+    state._roomTemplateKey = String(r.templateKey || state._roomTemplateKey || '');
+    state._roomTemplateRole = String(r.templateRole || state._roomTemplateRole || '');
+    state._roomEntrySocket = String(r.entrySocket || state._roomEntrySocket || '');
+    state._roomExitSocket = String(r.exitSocket || state._roomExitSocket || '');
+    state._roomPortalSocket = String(r.portalSocket || state._roomPortalSocket || '');
+    state._roomRouteStyle = String(r.routeStyle || state._roomRouteStyle || '');
+    state._roomLateralOffset = (typeof r.lateralOffset === 'number') ? r.lateralOffset : (state._roomLateralOffset || 0);
+    state._roomCenterX = (typeof r.centerX === 'number') ? r.centerX : (state._roomCenterX || 0);
+    state._roomCenterY = (typeof r.centerY === 'number') ? r.centerY : (state._roomCenterY || 0);
+    state._bridgeFromSocket = String(r.bridgeFromSocket || state._bridgeFromSocket || '');
+    state._bridgeToSocket = String(r.bridgeToSocket || state._bridgeToSocket || '');
+    state._bridgeFromPoint = (r.bridgeFromPoint && typeof r.bridgeFromPoint === 'object') ? r.bridgeFromPoint : (state._bridgeFromPoint || null);
+    state._bridgeToPoint = (r.bridgeToPoint && typeof r.bridgeToPoint === 'object') ? r.bridgeToPoint : (state._bridgeToPoint || null);
+    state._nextRoomTemplateKey = String(r.nextTemplateKey || state._nextRoomTemplateKey || '');
+    state._nextRoomTemplateRole = String(r.nextTemplateRole || state._nextRoomTemplateRole || '');
+    state._nextRoomEntrySocket = String(r.nextEntrySocket || state._nextRoomEntrySocket || '');
+    state._nextRoomRouteStyle = String(r.nextRouteStyle || state._nextRoomRouteStyle || '');
+    state._nextRoomLateralOffset = (typeof r.nextLateralOffset === 'number') ? r.nextLateralOffset : (state._nextRoomLateralOffset || 0);
+    state._nextRoomCenterX = (typeof r.nextCenterX === 'number') ? r.nextCenterX : (state._nextRoomCenterX || 0);
+    state._nextRoomCenterY = (typeof r.nextCenterY === 'number') ? r.nextCenterY : (state._nextRoomCenterY || 0);
+    state._nextRoomEncounter = String(r.nextEncounterType || state._nextRoomEncounter || '');
+    state._nextRoomEncounterLabel = String(r.nextEncounterLabel || state._nextRoomEncounterLabel || '');
     if (state.roomDirector && typeof state.roomDirector.forceSetCurrent === 'function') {
       try {
         state.roomDirector.forceSetCurrent(state.currentRoomIndex, {
@@ -2990,7 +3042,30 @@ function applySnapshotToClient(state, snap) {
           prevCollapsing: !!r.prevC,
           bridgeFrom: (r.bridgeFrom | 0) || 0,
           bridgeTo: (r.bridgeTo | 0) || 0,
-          waitForParty: !!r.wait
+          waitForParty: !!r.wait,
+          floorNumber: (r.floorNumber | 0) || 0,
+          roomOrdinal: (r.roomOrdinal | 0) || 0,
+          totalRooms: (r.totalRooms | 0) || 0,
+          encounterType: String(r.encounterType || ''),
+          encounterLabel: String(r.encounterLabel || ''),
+          templateKey: String(r.templateKey || ''),
+          templateRole: String(r.templateRole || ''),
+          entrySocket: String(r.entrySocket || ''),
+          exitSocket: String(r.exitSocket || ''),
+          portalSocket: String(r.portalSocket || ''),
+          routeStyle: String(r.routeStyle || ''),
+          lateralOffset: (typeof r.lateralOffset === 'number' ? r.lateralOffset : 0),
+          centerX: (typeof r.centerX === 'number' ? r.centerX : 0),
+          centerY: (typeof r.centerY === 'number' ? r.centerY : 0),
+          nextTemplateKey: String(r.nextTemplateKey || ''),
+          nextTemplateRole: String(r.nextTemplateRole || ''),
+          nextEntrySocket: String(r.nextEntrySocket || ''),
+          nextRouteStyle: String(r.nextRouteStyle || ''),
+          nextLateralOffset: (typeof r.nextLateralOffset === 'number' ? r.nextLateralOffset : 0),
+          nextCenterX: (typeof r.nextCenterX === 'number' ? r.nextCenterX : 0),
+          nextCenterY: (typeof r.nextCenterY === 'number' ? r.nextCenterY : 0),
+          nextEncounterType: String(r.nextEncounterType || ''),
+          nextEncounterLabel: String(r.nextEncounterLabel || '')
 
         });
       } catch {}

@@ -1,35 +1,20 @@
-import { HUB_HALF } from "./zoneController.js";
-import { setDynamicWorldBounds } from "./mapGenerator.js";
-import { rollFloorShopOffers } from "../core/floorShop.js";
-import { biomeForFloorIndex } from "./biomes.js";
-import { buildArenaSpec } from "./arenaSpecBuilder.js";
-import { getRoomGeometryBounds, getRoomWalkRects, clampPointToRects, pointInRoomWalkable } from "./floorCollision.js";
+import { HUB_HALF } from './zoneController.js';
+import { setDynamicWorldBounds } from './mapGenerator.js';
+import { rollFloorShopOffers } from '../core/floorShop.js';
+import { buildArenaSpec } from './arenaSpecBuilder.js';
+import { buildFloorPlan, getRoomTemplatePreset } from './floorPlanBuilder.js';
+import { getRoomGeometryBounds, getRoomWalkRects, clampPointToRects } from './floorCollision.js';
+import { resolveSocketPoint, oppositeSocket, primaryEdgeForSocket, socketVector } from './roomRoute.js';
 
-// Pixel_GO: infinite rooms in a chain.
-// Forward direction = UP on screen = negative Y in world coords.
-
-const GAP = 160; // gap between rooms (world units)
-const COLLAPSE_DUR = 1.35; // seconds
-const BRIDGE_BUILD_DUR = 1.15; // seconds
-
-// Gates (SAS-like): portals on the platform edge.
-// - Gates start OPEN (broken). Mobs come from outside.
-// - Player can REPAIR a gate to seal it (needs 2s safe: no hits to player and gate).
-// - Mobs attack sealed gates and break them.
-// - After clearing waves and the bridge opens, player can do a reward seal (green, 10s) to get XP orbs.
-const GATE_INTERACT_R = 170;
-const GATE_REPAIR_SAFE_SEC = 2.0;
-const GATE_REPAIR_TIME_SEC = 2.0;
-// After clearing waves (bridge built) player can do a longer "reward fix".
-// It takes 10s to complete, then becomes green for a short time and drops XP.
-const GATE_REWARD_REPAIR_TIME_SEC = 5.0;
-const GATE_REWARD_SEAL_DUR = 10.0;
+const GAP = 120;
+const CONNECTOR_BUILD_DUR = 0.55;
+const COLLAPSE_DUR = 0.55;
+const FLOOR_EXIT_RADIUS = 70;
 
 function clamp(n, a, b) {
   return n < a ? a : (n > b ? b : n);
 }
 
-// Gate opening length along edge (must match renderer + collision)
 export function getGateLenForRoomSide(roomSide) {
   return clamp(roomSide * 0.10, 72, 112);
 }
@@ -38,202 +23,39 @@ export function getGateHalfLenForRoomSide(roomSide) {
   return getGateLenForRoomSide(roomSide) * 0.5;
 }
 
-// Room side length
-export function getRoomSide(roomIndex) {
-  const hubSide = HUB_HALF * 2;
-  const idx = (roomIndex | 0);
-
-  // Hub stays compact/readable.
-  // Floors must be noticeably larger than the player's starting range.
-  if (idx <= 0) return hubSide;
-  if (idx === 1) return 1180;
-  if (idx === 2) return 1320;
-
-  const base = 1320;
-  const growth = 170;
-  const L = base + growth * Math.sqrt(Math.max(0, idx - 2));
-  return Math.round(L);
+export function getRoomSide(roomIndex = 0, templateKey = 'cross_room', floorNumber = 1) {
+  const idx = roomIndex | 0;
+  if (idx <= 0) return HUB_HALF * 2;
+  const floorNo = Math.max(1, floorNumber | 0);
+  const base = 820 + Math.min(380, Math.round(floorNo * 38));
+  const scaleByTemplate = (
+    templateKey === 'entry_square' ? 0.82 :
+    templateKey === 'wide_hall' ? 1.02 :
+    templateKey === 'side_pocket' ? 0.90 :
+    templateKey === 'ring_path' ? 0.98 :
+    templateKey === 'arena_court' ? 1.08 :
+    templateKey === 'shrine_node' ? 0.94 :
+    templateKey === 'bridge_span' ? 0.88 :
+    templateKey === 'crucible_chamber' ? 1.00 :
+    templateKey === 'final_room' ? 1.10 :
+    0.96
+  );
+  return Math.round(base * scaleByTemplate);
 }
 
-function makeRoom(index, centerX, centerY, biomeKey = "") {
-  const side = getRoomSide(index);
-  const half = side * 0.5;
-  const containerBounds = {
-    minX: centerX - half,
-    maxX: centerX + half,
-    minY: centerY - half,
-    maxY: centerY + half,
-  };
-  const arenaSpec = buildArenaSpec({ roomIndex: index, biomeKey, side, centerX, centerY });
-  const geometryBounds = getRoomGeometryBounds({ arenaSpec }, 0);
-  const bounds = geometryBounds || containerBounds;
-
-  const gates = makeGates(index, bounds, side, arenaSpec);
-  const shopAnchor = arenaSpec?.anchors?.shopAnchor;
-  return {
-    id: `room_${index}`,
-    index,
-    biomeKey: String(biomeKey || ""),
-    hue: (() => {
-      if ((index | 0) <= 0) return 210;
-      const biome = Math.floor(((index | 0) - 1) / 10);
-      return (210 + biome * 55 + (index | 0) * 7) % 360;
-    })(),
-    side,
-    centerX,
-    centerY,
-    bounds,
-    containerBounds,
-    breaches: gates, // keep legacy field name used elsewhere
-    arenaSpec,
-    // Floor terminal position (visible after clear). Always deterministic for joiners.
-    shopNpc: index > 0 ? { x: Number(shopAnchor?.x) || centerX, y: Number(shopAnchor?.y) || (centerY + side * 0.18), r: 20 } : null,
-    cleared: index === 0,
-    collapsing: false,
-    collapseT: 0,
-    removed: false,
-  };
+function getConnectorWidth(fromRoom, toRoom) {
+  const minSide = Math.min(Number(fromRoom?.side) || 0, Number(toRoom?.side) || 0) || HUB_HALF;
+  let width = Math.max(108, Math.min(220, Math.round(minSide * 0.17)));
+  const connectorA = String(fromRoom?.connectorSize || 'standard');
+  const connectorB = String(toRoom?.connectorSize || 'standard');
+  if (connectorA === 'wide' || connectorB === 'wide') width = Math.round(width * 1.18);
+  if (connectorA === 'narrow' || connectorB === 'narrow') width = Math.round(width * 0.82);
+  return clamp(width, 96, 240);
 }
 
-function makeRng(seed) {
-  let s = (seed >>> 0) || 1;
-  return () => {
-    // xorshift32
-    s ^= (s << 13);
-    s ^= (s >>> 17);
-    s ^= (s << 5);
-    return ((s >>> 0) / 4294967295);
-  };
-}
-
-function makeGates(index, bounds, side, arenaSpec = null) {
-  const idx = index | 0;
-  if (idx <= 0) return [];
-
-  // Gates spawn on the edge of the platform in random places.
-  // Rules:
-  // - Do NOT spawn on the forward edge (north / minY) because the room->next bridge builds there.
-  // - Do NOT spawn on the entry segment where the bridge brought us into this room (south / maxY, centered).
-  const sides = ["S", "W", "E"]; // south/back, west/left, east/right
-  const rnd = makeRng((0xBEE7CA0 ^ Math.imul(idx, 2654435761)) >>> 0);
-
-  // Gate count progression:
-  // room1->1, room2->1, room3->2 ... capped.
-  const count = Math.max(1, Math.min(6, 1 + Math.floor(Math.max(0, idx - 1) / 2)));
-
-  const sideLen = (bounds.maxX - bounds.minX);
-  const margin = Math.max(110, Math.min(240, sideLen * 0.18));
-
-  // Entry bridge lands on SOUTH edge, centered.
-  const entryForbidden = Math.max(220, Math.min(520, sideLen * 0.28));
-  const entryX0 = (bounds.minX + bounds.maxX) * 0.5 - entryForbidden * 0.5;
-  const entryX1 = (bounds.minX + bounds.maxX) * 0.5 + entryForbidden * 0.5;
-
-  const used = [];
-  const minSep = Math.max(120, Math.min(260, sideLen * 0.22));
-
-  const anchorGates = Array.isArray(arenaSpec?.anchors?.gateAnchors) ? arenaSpec.anchors.gateAnchors : [];
-  if (anchorGates.length) {
-    const sealMax = Math.round(160 + idx * 18);
-    return anchorGates.slice(0, 6).map((g, i) => ({
-      id: `g_${idx}_${i}` ,
-      side: String(g.side || 'S').toUpperCase(),
-      x: Number(g.x) || (((bounds.minX + bounds.maxX) * 0.5)),
-      y: Number(g.y) || (((bounds.minY + bounds.maxY) * 0.5)),
-      sealHp: 0,
-      sealMax,
-      lastHitAt: -Infinity,
-      pressure: 0,
-      repairActive: false,
-      repairBy: '',
-      repairT: 0,
-      repairMode: '',
-      rewardSealed: false,
-      rewardSealLeft: 0,
-      rewardUsed: false,
-    }));
-  }
-
-  const tryPick = (sideChar) => {
-    let x = 0;
-    let y = 0;
-    if (sideChar === "S") {
-      // Avoid the entry bridge segment.
-      let tries = 16;
-      while (tries-- > 0) {
-        const tx = bounds.minX + margin + rnd() * ((bounds.maxX - bounds.minX) - margin * 2);
-        if (tx >= entryX0 && tx <= entryX1) continue;
-        x = tx;
-        y = bounds.maxY;
-        break;
-      }
-      if (x === 0 && y === 0) {
-        const left = rnd() < 0.5;
-        x = left ? (bounds.minX + margin) : (bounds.maxX - margin);
-        y = bounds.maxY;
-      }
-    } else if (sideChar === "W") {
-      x = bounds.minX;
-      y = bounds.minY + margin + rnd() * ((bounds.maxY - bounds.minY) - margin * 2);
-    } else {
-      x = bounds.maxX;
-      y = bounds.minY + margin + rnd() * ((bounds.maxY - bounds.minY) - margin * 2);
-    }
-    return { x, y };
-  };
-
-  const gates = [];
-  for (let i = 0; i < count; i++) {
-    let sideChar = sides[Math.floor(rnd() * sides.length)];
-    let pos = tryPick(sideChar);
-
-    // De-cluster: try a few times to keep gates separated.
-    let ok = false;
-    for (let t = 0; t < 18 && !ok; t++) {
-      ok = true;
-      for (const u of used) {
-        const dx = pos.x - u.x;
-        const dy = pos.y - u.y;
-        if (dx * dx + dy * dy < minSep * minSep) { ok = false; break; }
-      }
-      if (!ok) {
-        sideChar = sides[Math.floor(rnd() * sides.length)];
-        pos = tryPick(sideChar);
-      }
-    }
-
-    used.push(pos);
-
-    const sealMax = Math.round(160 + idx * 18);
-
-    gates.push({
-      id: `g_${idx}_${i}`,
-      side: sideChar,
-      x: pos.x,
-      y: pos.y,
-
-      // Seal HP: 0 means OPEN.
-      sealHp: 0,
-      sealMax,
-
-      // Combat pressure/FX
-      lastHitAt: -Infinity,
-      pressure: 0,
-
-      // Repair channel
-      repairActive: false,
-      repairBy: "",
-      repairT: 0,
-      repairMode: "",
-
-      // Reward seal after clear
-      rewardSealed: false,
-      rewardSealLeft: 0, // legacy; kept for compatibility
-      rewardUsed: false,
-    });
-  }
-
-  return gates;
+function pointInAabb(x, y, b, pad = 0) {
+  if (!b) return false;
+  return x >= b.minX - pad && x <= b.maxX + pad && y >= b.minY - pad && y <= b.maxY + pad;
 }
 
 function unionAabb(a, b, pad = 0) {
@@ -247,57 +69,278 @@ function unionAabb(a, b, pad = 0) {
   };
 }
 
-function pointInAabb(x, y, b, pad = 0) {
-  if (!b) return false;
-  return (
-    x >= b.minX - pad && x <= b.maxX + pad &&
-    y >= b.minY - pad && y <= b.maxY + pad
-  );
+function expandLineAabb(a, b, halfWidth = 18, pad = 8) {
+  const hw = Math.max(8, Number(halfWidth) || 18);
+  return {
+    minX: Math.min(Number(a?.x) || 0, Number(b?.x) || 0) - hw - pad,
+    maxX: Math.max(Number(a?.x) || 0, Number(b?.x) || 0) + hw + pad,
+    minY: Math.min(Number(a?.y) || 0, Number(b?.y) || 0) - hw - pad,
+    maxY: Math.max(Number(a?.y) || 0, Number(b?.y) || 0) + hw + pad,
+  };
 }
 
-function findPlayerById(state, pid) {
-  if (!state || !pid) return null;
-  const ps = (state.players && state.players.length) ? state.players : (state.player ? [state.player] : []);
-  const sid = String(pid);
-  for (const p of ps) {
-    if (p && String(p.id || "") === sid) return p;
+function roomAnchorPoint(room, socket = 'N', outside = 0) {
+  const key = String(socket || 'N');
+  const anchors = Array.isArray(room?.arenaSpec?.anchors?.gateAnchors) ? room.arenaSpec.anchors.gateAnchors : [];
+  if (anchors.length) {
+    const exact = anchors.find((a) => String(a?.socket || '') === key);
+    if (exact && Number.isFinite(Number(exact.x)) && Number.isFinite(Number(exact.y))) {
+      return { x: Number(exact.x), y: Number(exact.y) };
+    }
+    const side = primaryEdgeForSocket(key, 'N');
+    const sameSide = anchors.find((a) => String(a?.side || '') === side);
+    if (sameSide && Number.isFinite(Number(sameSide.x)) && Number.isFinite(Number(sameSide.y))) {
+      return { x: Number(sameSide.x), y: Number(sameSide.y) };
+    }
   }
-  return null;
+  if (!room?.bounds) return { x: Number(room?.centerX) || 0, y: Number(room?.centerY) || 0 };
+  return resolveSocketPoint(room.bounds, room.centerX, room.centerY, key, { outside, offsetScale: 0.22 });
 }
 
-function gateIsRewardSealed(g) {
-  if (!g) return false;
-  if (g.rewardSealed) return true;
-  // legacy timed variant
-  return (g.rewardSealLeft || 0) > 0.02;
+function resolvePortalPoint(room) {
+  const rects = getRoomWalkRects(room);
+  const desiredSocket = String(room?.portalSocket || room?.exitSocket || oppositeSocket(room?.entrySocket || 'S', 'N') || 'N');
+  const desired = roomAnchorPoint(room, desiredSocket, -24);
+  const fallback = { x: room.centerX, y: room.centerY };
+  if (!rects.length) return desired || fallback;
+  return clampPointToRects(desired.x, desired.y, rects, {
+    edgePad: 16,
+    coverRadius: 0,
+    covers: [],
+    prefer: { x: room.centerX, y: room.centerY },
+  });
 }
 
-function gateIsSealed(g) {
-  if (!g) return false;
-  if (gateIsRewardSealed(g)) return true;
-  return (g.sealHp || 0) > 0.02;
+
+function resolveTransitionRole(anchor, room) {
+  const tag = String(anchor?.tag || '').toLowerCase();
+  const socket = String(anchor?.socket || '');
+  if (tag.includes('portal') || (socket && socket === String(room?.portalSocket || ''))) return 'portal';
+  if (tag.includes('exit') || (socket && socket === String(room?.exitSocket || ''))) return 'exit';
+  if (tag.includes('entry') || (socket && socket === String(room?.entrySocket || ''))) return 'entry';
+  return 'route';
+}
+
+function buildTransitionBreaches(room, director, relation = 'current') {
+  const anchors = Array.isArray(room?.arenaSpec?.anchors?.gateAnchors) ? room.arenaSpec.anchors.gateAnchors : [];
+  if (!anchors.length) return [];
+  const br = director?.bridge || null;
+  const bridgeFromHere = !!(br && ((br.fromIndex | 0) === (room?.index | 0)));
+  const bridgeToHere = !!(br && ((br.toIndex | 0) === (room?.index | 0)));
+  const bridgeProgress = clamp(Number(br?.progress) || 0, 0, 1);
+  const bridgeBuilt = !!(br && br.built);
+  const out = [];
+  for (let i = 0; i < anchors.length; i++) {
+    const a = anchors[i];
+    if (!a) continue;
+    const role = resolveTransitionRole(a, room);
+    let state = 'idle';
+    let label = 'ROUTE';
+    if (role === 'entry') {
+      if (relation === 'next') {
+        if (bridgeBuilt && bridgeToHere) { state = 'incoming_open'; label = 'ENTER'; }
+        else if (bridgeProgress > 0.02 && bridgeToHere) { state = 'incoming_link'; label = 'LINK'; }
+        else { state = 'incoming_locked'; label = 'NEXT'; }
+      } else if (relation === 'prev') {
+        state = 'spent';
+        label = 'PREV';
+      } else {
+        state = room?.index > 0 ? 'entry' : 'hub';
+        label = room?.index > 0 ? 'ENTRY' : 'START';
+      }
+    } else if (role === 'exit') {
+      if (relation === 'prev') {
+        state = 'spent';
+        label = 'CLEARED';
+      } else if (room?.isFloorFinal) {
+        state = room?.cleared ? 'spent' : 'locked';
+        label = room?.cleared ? 'DONE' : 'BOSS';
+      } else if (!room?.cleared) {
+        state = 'locked';
+        label = 'CLEAR';
+      } else if (bridgeFromHere && !bridgeBuilt) {
+        state = 'linking';
+        label = 'LINK';
+      } else if (bridgeFromHere && bridgeBuilt) {
+        state = 'open';
+        label = 'NEXT';
+      } else {
+        state = 'ready';
+        label = 'READY';
+      }
+    } else if (role === 'portal') {
+      if (!room?.cleared) {
+        state = 'locked';
+        label = room?.isFloorFinal ? 'CROWN' : 'LOCKED';
+      } else {
+        state = 'portal_ready';
+        label = room?.isFloorFinal ? 'NEXT FLOOR' : 'EXIT';
+      }
+    } else {
+      if (room?.cleared && bridgeFromHere && bridgeBuilt) {
+        state = 'open';
+        label = 'ROUTE';
+      } else if (room?.cleared) {
+        state = 'ready';
+        label = 'PATH';
+      } else {
+        state = 'locked';
+        label = 'SEALED';
+      }
+    }
+    out.push({
+      id: `transition_${room?.index || 0}_${role}_${i}`,
+      kind: 'transition',
+      role,
+      state,
+      label,
+      side: String(a.side || primaryEdgeForSocket(a.socket || 'N', 'N')),
+      socket: String(a.socket || ''),
+      x: Number(a.x) || 0,
+      y: Number(a.y) || 0,
+      progress: bridgeProgress,
+      active: !!(relation === 'current' || relation === 'next'),
+    });
+  }
+  return out;
+}
+
+function describeRoomObjective(room, director) {
+  if (!room) return '';
+  if ((room.index | 0) <= 0) return director?.next ? 'START RUN' : 'HUB';
+  if (room.isFloorFinal) return room.cleared ? 'ENTER PORTAL' : 'CLEAR CROWN';
+  if (!room.cleared) return 'CLEAR ROOM TO OPEN PATH';
+  if (director?.bridge && ((director.bridge.fromIndex | 0) === (room.index | 0)) && !director.bridge.built) return 'PATH FORMING';
+  if (director?.bridge?.built && director?.next) return 'ENTER NEXT ROOM';
+  return 'PATH READY';
+}
+
+function computePlacedCenter(fromRoom, roomMeta, nextSide) {
+  if (!fromRoom) return { x: 0, y: 0 };
+  const step = roomMeta?.placementStep || { dx: 0, dy: -1 };
+  let dx = Number(step?.dx) || 0;
+  let dy = Number(step?.dy) || 0;
+  if (!dx && !dy) dy = -1;
+  const curHalf = (Number(fromRoom.side) || HUB_HALF * 2) * 0.5;
+  const nextHalf = (Number(nextSide) || HUB_HALF * 2) * 0.5;
+  const base = curHalf + GAP + nextHalf;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = dx / len;
+  const ny = dy / len;
+  const perpX = -ny;
+  const perpY = nx;
+  const lateral = (Number(roomMeta?.lateralOffset) || 0) * Math.min(Number(fromRoom.side) || 0, Number(nextSide) || 0, 980);
+  return {
+    x: (Number(fromRoom.centerX) || 0) + dx * base + perpX * lateral,
+    y: (Number(fromRoom.centerY) || 0) + dy * base + perpY * lateral,
+  };
+}
+
+function makeRoom({
+  serial = 0,
+  floorNumber = 0,
+  roomOrdinal = 0,
+  totalRooms = 0,
+  biomeKey = '',
+  templateKey = '',
+  templateRole = '',
+  encounterType = '',
+  encounterLabel = '',
+  difficultyScale = 1,
+  connectorSize = 'standard',
+  entrySocket = '',
+  exitSocket = '',
+  portalSocket = '',
+  routeStyle = '',
+  lateralOffset = 0,
+  centerX = 0,
+  centerY = 0,
+} = {}) {
+  const preset = getRoomTemplatePreset(templateKey);
+  const side = getRoomSide(serial, templateKey, floorNumber);
+  const half = side * 0.5;
+  const containerBounds = {
+    minX: centerX - half,
+    maxX: centerX + half,
+    minY: centerY - half,
+    maxY: centerY + half,
+  };
+  const arenaSpec = buildArenaSpec({
+    roomIndex: serial,
+    biomeKey,
+    templateKey,
+    encounterType,
+    roomOrdinal,
+    totalRooms,
+    side,
+    centerX,
+    centerY,
+    entrySocket,
+    exitSocket,
+    portalSocket,
+    templateRole,
+    routeStyle,
+    lateralOffset,
+  });
+  const geometryBounds = getRoomGeometryBounds({ arenaSpec }, 0);
+  const bounds = geometryBounds || containerBounds;
+
+  return {
+    id: serial <= 0 ? 'hub' : `room_${serial}`,
+    index: serial | 0,
+    floorNumber: floorNumber | 0,
+    roomOrdinal: roomOrdinal | 0,
+    totalRooms: totalRooms | 0,
+    isFloorFinal: !!(roomOrdinal > 0 && roomOrdinal === totalRooms),
+    biomeKey: String(biomeKey || ''),
+    templateKey: String(templateKey || ''),
+    templateRole: String(templateRole || preset.role || ''),
+    encounterType: String(encounterType || preset.encounterType || ''),
+    encounterLabel: String(encounterLabel || ''),
+    difficultyScale: Math.max(0.6, Number(difficultyScale) || Number(preset.difficultyScale) || 1),
+    connectorSize: String(connectorSize || preset.connectorSize || 'standard'),
+    entrySocket: String(entrySocket || ''),
+    exitSocket: String(exitSocket || ''),
+    portalSocket: String(portalSocket || ''),
+    routeStyle: String(routeStyle || ''),
+    lateralOffset: Number(lateralOffset) || 0,
+    side,
+    centerX,
+    centerY,
+    bounds,
+    containerBounds,
+    breaches: [],
+    arenaSpec,
+    shopNpc: null,
+    exitPortal: null,
+    cleared: serial <= 0,
+    collapsing: false,
+    collapseT: 0,
+    removed: false,
+  };
+}
+
+function makeHubRoom() {
+  const room = makeRoom({ serial: 0, floorNumber: 0, roomOrdinal: 0, totalRooms: 0, biomeKey: '', templateKey: 'hub', centerX: 0, centerY: 0, exitSocket: 'N' });
+  room.cleared = true;
+  return room;
 }
 
 export class RoomDirector {
   constructor(state) {
     this.state = state;
-
     this.prev = null;
-    this.current = makeRoom(0, 0, 0, "");
+    this.current = makeHubRoom();
     this.next = null;
-
-    // Biome tracking (host chooses randomly; joiners receive via snapshot)
-    this._lastBiomeKey = "";
-
-    // Bridge connects rooms after clear.
     this.bridge = null;
-
-    // When the host steps into the next floor, we keep the previous floor + bridge
-    // until ALL alive players enter the new floor.
     this._waitForParty = false;
-    this._pendingPrevCollapse = false;
+
+    this._lastBiomeKey = '';
+    this._serial = 0;
+    this._activeFloorPlan = null;
 
     this._ensureNextSpawned();
+    this._ensureBridge();
     this._applyDynamicBounds();
   }
 
@@ -306,815 +349,484 @@ export class RoomDirector {
   }
 
   markCurrentCleared() {
-    if (!this.current) return;
-    if (this.current.cleared) return;
-    this.current.cleared = true;
+    const room = this.current;
+    if (!room || room.cleared) return;
+    room.cleared = true;
 
-    // Pixel_GO v0.4: award +1 Skill Point for completing this floor.
-    // Host/offline only (joiners receive via snapshot).
-    try {
+    if (room.isFloorFinal) {
       const st = this.state;
-      const online = !!(st && st.net && st.net.status === 'connected' && st.net.roomCode);
-      const isHost = !online || !!st.net.isHost;
-      if (isHost) {
-        const ps = (st && st.players && st.players.length) ? st.players : (st && st.player ? [st.player] : []);
-        for (const p of ps) {
-          if (!p) continue;
-          p.skillPoints = ((p.skillPoints | 0) + 1) | 0;
-        }
+      const ps = (st?.players && st.players.length) ? st.players : (st?.player ? [st.player] : []);
+      for (const p of ps) {
+        if (!p) continue;
+        p.skillPoints = ((p.skillPoints | 0) + 1) | 0;
       }
-    } catch {}
+      room.exitPortal = resolvePortalPoint(room);
+      try { this._ensureFloorShop(); } catch {}
+      this.next = null;
+      this.bridge = null;
+    } else {
+      this._ensureNextSpawned();
+      this._ensureBridge();
+    }
 
-    // Spawn the floor terminal (NPC) and generate per-player offers.
-    try { this._ensureFloorShop(); } catch {}
-
-    this._ensureNextSpawned();
-    this._ensureBridge();
     this._applyDynamicBounds();
   }
 
   _ensureFloorShop() {
     const st = this.state;
     const room = this.current;
-    if (!st || !room || (room.index | 0) <= 0) return;
+    if (!st || !room || !room.isFloorFinal || !room.cleared) return;
 
-    // Only host/offline generates offers.
-    const online = !!(st.net && st.net.status === 'connected' && st.net.roomCode);
-    const isHost = !online || !!st.net.isHost;
-    if (!isHost) return;
-
-    // Keep the anchor-driven terminal placement from the arena spec when available.
-    const shopAnchor = room?.arenaSpec?.anchors?.shopAnchor || room.shopNpc || null;
-    const side = room.side || 600;
-    room.shopNpc = {
-      x: Number(shopAnchor?.x) || room.centerX,
-      y: Number(shopAnchor?.y) || (room.centerY + side * 0.18),
-      r: Number(room?.shopNpc?.r) || 20,
-    };
+    const anchor = room?.arenaSpec?.anchors?.shopAnchor || { x: room.centerX, y: room.centerY + room.side * 0.18 };
+    room.shopNpc = { x: Number(anchor.x) || room.centerX, y: Number(anchor.y) || room.centerY, r: 20 };
 
     const ps = (st.players && st.players.length) ? st.players : (st.player ? [st.player] : []);
     for (const p of ps) {
       if (!p) continue;
-      // Generate offers once per floor.
       const fs = p.floorShop;
       if (fs && (fs.floor | 0) === (room.index | 0) && Array.isArray(fs.offers) && fs.offers.length) continue;
-      const offers = rollFloorShopOffers(p, room.index, room.biomeKey || "", 3);
-      p.floorShop = {
-        floor: room.index | 0,
-        offers,
-        sold: offers.map(() => false),
-      };
+      const offers = rollFloorShopOffers(p, room.index, room.biomeKey || '', 3);
+      p.floorShop = { floor: room.index | 0, offers, sold: offers.map(() => false) };
     }
   }
 
   update(dt) {
-    const st = this.state;
-
-    // If a player joined mid-floor and this floor is already cleared, ensure they get offers.
-    if (this.current && this.current.cleared) {
-      try { this._ensureFloorShop(); } catch {}
-    }
-
-    // Update collapse animation and remove collapsed rooms.
     if (this.prev && this.prev.collapsing) {
       this.prev.collapseT += dt / COLLAPSE_DUR;
       if (this.prev.collapseT >= 1) {
-        this.prev.collapseT = 1;
         this.prev.removed = true;
-        // Once removed, drop reference and also drop the old bridge.
         this.prev = null;
-        this.bridge = null;
       }
     }
 
-    // Bridge building
     if (this.bridge && !this.bridge.built) {
-      this.bridge.t += dt / BRIDGE_BUILD_DUR;
-      if (this.bridge.t >= 1) {
-        this.bridge.t = 1;
-        this.bridge.progress = 1;
-        this.bridge.built = true;
-      } else {
-        this.bridge.progress = this.bridge.t;
-      }
+      this.bridge.t += dt / CONNECTOR_BUILD_DUR;
+      this.bridge.progress = clamp(this.bridge.t, 0, 1);
+      if (this.bridge.progress >= 0.999) this.bridge.built = true;
     }
 
-    // Party transition: keep previous floor until everyone is in.
-    if (this._waitForParty && this.prev && !this.prev.removed && !this.prev.collapsing) {
-      if (this._areAllAlivePlayersInCurrent()) {
-        // Start collapsing the previous floor now.
-        this.prev.collapsing = true;
-        this.prev.collapseT = 0;
-        try { this._cleanupRoomEntities(this.prev); } catch {}
-        this._waitForParty = false;
-        // Kick downed players that were left behind on the previous floor.
-        try { this._kickLeftBehindDownedPlayers(); } catch {}
-      }
-    }
-
-    // Gate timers + repair channels
-    const room = this.current;
-    if (room && Array.isArray(room.breaches)) {
-      const now = (st && typeof st.time === 'number') ? st.time : 0;
-      for (const g of room.breaches) {
-        if (!g) continue;
-        // Reward-sealed gates stay green until the room collapses (no timer).
-        // (Legacy: if rewardSealLeft is used, keep it from going negative.)
-        if (!g.rewardSealed && (g.rewardSealLeft || 0) > 0) {
-          g.rewardSealLeft -= dt;
-          if (g.rewardSealLeft < 0) g.rewardSealLeft = 0;
-        }
-
-        // Pressure decay
-        if ((g.pressure || 0) > 0) {
-          // fast decay; gets refreshed by hits
-          g.pressure = Math.max(0, g.pressure - dt * 2.6);
-        }
-
-        // Repair channel (normal or reward)
-        if (g.repairActive) {
-          const p = findPlayerById(st, g.repairBy);
-          if (!p || p.hp <= 0 || !this.canPlayerInteractGate(p, g)) {
-            g.repairActive = false;
-            g.repairBy = "";
-            g.repairT = 0;
-            g.repairMode = "";
-            continue;
-          }
-
-          const safePlayer = (now - (typeof p._lastDamagedAt === 'number' ? p._lastDamagedAt : -Infinity)) >= GATE_REPAIR_SAFE_SEC;
-          const safeGate = (now - (typeof g.lastHitAt === 'number' ? g.lastHitAt : -Infinity)) >= GATE_REPAIR_SAFE_SEC;
-
-          const mode = String(g.repairMode || "normal").toLowerCase();
-          const need = (mode === "reward") ? GATE_REWARD_REPAIR_TIME_SEC : GATE_REPAIR_TIME_SEC;
-
-          if (safePlayer && safeGate) {
-            g.repairT += dt;
-            if (g.repairT >= need) {
-              // Completed
-              g.repairT = 0;
-              g.repairActive = false;
-              g.repairBy = "";
-              g.repairMode = "";
-              g.sealHp = g.sealMax;
-              g.pressure = 0;
-              g.lastHitAt = -Infinity;
-
-              if (mode === "reward") {
-                // Only now: turn green and drop XP.
-                if (!g.rewardUsed) {
-                  g.rewardUsed = true;
-                  g.rewardSealed = true;
-                  g.rewardSealLeft = 0;
-                  this._spawnGateRewardOrbs(room, g);
-                }
-              }
-            }
-          } else {
-            // Must be 2 seconds of no pressure.
-            g.repairT = 0;
-          }
-        } else {
-          g.repairT = 0;
-          g.repairMode = g.repairMode || "";
-        }
-
-        // Keep seal hp sane
-        if (!Number.isFinite(g.sealHp)) g.sealHp = 0;
-        if (!Number.isFinite(g.sealMax) || g.sealMax <= 1) g.sealMax = 200;
-        if (g.sealHp < 0) g.sealHp = 0;
-        if (g.sealHp > g.sealMax) g.sealHp = g.sealMax;
-      }
-    }
-
-    // Ensure dynamic bounds are correct (union during transitions).
-    this._applyDynamicBounds();
-
-    // Auto-enter next when player steps into next room.
-    const p = st && st.player;
-    if (!p) return;
-
-    if (this.current && this.current.cleared && this.next && !this.next.removed) {
-      // Allow entering only after bridge is built.
-      if (this.bridge && this.bridge.built) {
-        if (pointInAabb(p.x, p.y, this.next.bounds, 10)) {
-          this._enterNextRoom();
-        }
-      }
-    }
-  }
-
-  // ---- Gate helpers -------------------------------------------------------
-
-  _getGateInwardDir(gate) {
-    const side = String(gate?.side || 'S').toUpperCase();
-    if (side === 'W') return { x: 1, y: 0 };
-    if (side === 'E') return { x: -1, y: 0 };
-    if (side === 'N') return { x: 0, y: 1 };
-    return { x: 0, y: -1 };
-  }
-
-  _makeGateWalkProbe(gate, inward, inset = 24, lateral = 0) {
-    const gx = Number(gate?.x) || 0;
-    const gy = Number(gate?.y) || 0;
-    const side = String(gate?.side || 'S').toUpperCase();
-    if (side === 'W' || side === 'E') {
-      return { x: gx + inward.x * inset, y: gy + lateral };
-    }
-    return { x: gx + lateral, y: gy + inward.y * inset };
-  }
-
-  _resolveGateWalkPoint(room, gate, inset = 24, lateral = 0) {
-    const desiredInset = Math.max(10, Number(inset) || 24);
-    const baseLateral = Number(lateral) || 0;
-    const inward = this._getGateInwardDir(gate);
-    const nominal = this._makeGateWalkProbe(gate, inward, desiredInset, baseLateral);
-    if (!room) return nominal;
-    if (pointInRoomWalkable(room, nominal.x, nominal.y, 2)) return nominal;
-
-    const rects = getRoomWalkRects(room);
-    if (!rects.length) return nominal;
-
-    const lateralOffsets = [];
-    for (const v of [baseLateral, 0, -20, 20, -44, 44, -72, 72, -108, 108, -144, 144, -188, 188]) {
-      if (!Number.isFinite(v)) continue;
-      if (!lateralOffsets.some((x) => Math.abs(x - v) < 0.001)) lateralOffsets.push(v);
-    }
-
-    const maxInset = Math.max(desiredInset, Math.min(460, Math.max(180, (room.side || 600) * 0.34)));
-    for (let curInset = desiredInset; curInset <= maxInset; curInset += 16) {
-      for (const lat of lateralOffsets) {
-        const probe = this._makeGateWalkProbe(gate, inward, curInset, lat);
-        if (pointInRoomWalkable(room, probe.x, probe.y, 2)) return probe;
-      }
-    }
-
-    const projected = clampPointToRects(nominal.x, nominal.y, rects, {
-      edgePad: 2,
-      coverRadius: 0,
-      covers: [],
-      prefer: nominal,
-    });
-    return projected || nominal;
-  }
-
-  getGateById(gateId) {
-    const room = this.current;
-    if (!room || !Array.isArray(room.breaches)) return null;
-    return room.breaches.find((g) => g && g.id === gateId) || null;
-  }
-
-  isGateSealed(gate) {
-    return gateIsSealed(gate);
-  }
-
-  canPlayerInteractGate(player, gate) {
-    if (!player || !gate || !this.current) return false;
-    const ip = this.getGateInnerPoint(this.current, gate, 34);
-    const dx = player.x - ip.x;
-    const dy = player.y - ip.y;
-    return (dx * dx + dy * dy) <= (GATE_INTERACT_R * GATE_INTERACT_R);
-  }
-
-  getGateInnerPoint(room, gate, inset = 24) {
-    return this._resolveGateWalkPoint(room, gate, inset, 0);
-  }
-
-  // Backwards-compatible aliases (older code used "breach" naming).
-  getBreachInnerPoint(room, gate, inset = 24) {
-    return this.getGateInnerPoint(room, gate, inset);
-  }
-
-  // Point just OUTSIDE the edge (used for spawning/approach)
-  getGateOuterPoint(room, gate, out = 220) {
-    const side = String(gate?.side || 'S').toUpperCase();
-    const inner = this._resolveGateWalkPoint(room, gate, 26, 0);
-    const dist = Math.max(40, Number(out) || 220);
-    if (side === "W") return { x: Number(gate?.x) - dist, y: inner.y };
-    if (side === "E") return { x: Number(gate?.x) + dist, y: inner.y };
-    if (side === "N") return { x: inner.x, y: Number(gate?.y) - dist };
-    return { x: inner.x, y: Number(gate?.y) + dist };
-  }
-
-  getBreachOuterPoint(room, gate, out = 220) {
-    return this.getGateOuterPoint(room, gate, out);
-  }
-
-  // Point right at the gate face OUTSIDE (used so mobs "push" the closed gate)
-  getGateContactPoint(room, gate, enemyRadius = 20, pad = 2) {
-    const r = Math.max(6, (enemyRadius || 20) + pad);
-    const side = String(gate?.side || 'S').toUpperCase();
-    const inner = this._resolveGateWalkPoint(room, gate, Math.max(20, r + 8), 0);
-    if (side === "W") return { x: Number(gate?.x) - r, y: inner.y };
-    if (side === "E") return { x: Number(gate?.x) + r, y: inner.y };
-    if (side === "N") return { x: inner.x, y: Number(gate?.y) - r };
-    return { x: inner.x, y: Number(gate?.y) + r };
-  }
-
-  // Apply damage to a sealed gate (host-authoritative).
-  applyGateDamage(gateId, amount, sourceEnemy = null) {
-    const g = this.getGateById(gateId);
-    if (!g) return false;
-
-    // Reward-sealed gates are invulnerable.
-    if (gateIsRewardSealed(g)) return false;
-
-    if (!Number.isFinite(amount) || amount <= 0) return false;
-    if ((g.sealHp || 0) <= 0) {
-      // Already open.
-      return false;
-    }
-
-    const now = (this.state && typeof this.state.time === 'number') ? this.state.time : 0;
-    g.lastHitAt = now;
-    g.pressure = Math.min(1, (g.pressure || 0) + 0.55);
-
-    g.sealHp -= amount;
-    if (g.sealHp < 0) g.sealHp = 0;
-    // If gate breaks, cancel any repair channel.
-    if (g.sealHp <= 0.01) {
-      g.sealHp = 0;
-      g.repairActive = false;
-      g.repairBy = "";
-      g.repairT = 0;
-      g.repairMode = "";
-    }
-
-    return true;
-  }
-
-  // Start a repair channel on a gate.
-  startRepairGateById(gateId, player) {
-    const g = this.getGateById(gateId);
-    if (!g) return false;
-    if (!player || !this.canPlayerInteractGate(player, g)) return false;
-
-    if (g.repairActive) return false;
-
-    // Can't repair if already reward-sealed.
-    if (gateIsRewardSealed(g)) return false;
-
-    // Only allow if the gate is open/broken or damaged.
-    if ((g.sealHp || 0) >= (g.sealMax || 1) * 0.999) return false;
-
-    g.repairActive = true;
-    g.repairBy = String(player.id || "local");
-    g.repairT = 0;
-    g.repairMode = "normal";
-    return true;
-  }
-
-  // Start a reward fix channel (10s). Only on completion it becomes green and spawns XP.
-  startRewardFixGateById(gateId, player) {
-    const room = this.current;
-    const g = this.getGateById(gateId);
-    if (!room || !g) return false;
-    if (!player || !this.canPlayerInteractGate(player, g)) return false;
-
-    // Require bridge open (matches "opened bridge" request).
-    if (!(room.cleared && this.bridge && this.bridge.built)) return false;
-
-    if (g.rewardUsed) return false;
-    if (g.repairActive) return false;
-
-    g.repairActive = true;
-    g.repairBy = String(player.id || "local");
-    g.repairT = 0;
-    g.repairMode = "reward";
-    return true;
-  }
-
-  // Unified gate action entry point (used by click/tap + net inputs).
-  performGateAction(gateId, action, player) {
-    const a = String(action || "").toLowerCase();
-    if (a === "reward" || a === "rewardseal" || a === "seal") {
-      return this.startRewardFixGateById(gateId, player);
-    }
-    // default: repair
-    return this.startRepairGateById(gateId, player);
-  }
-
-  _spawnGateRewardOrbs(room, gate) {
-    const st = this.state;
-    if (!st || !Array.isArray(st.xpOrbs)) return;
-
-    const n = room.index | 0;
-    const bracket = Math.floor(Math.max(0, n - 1) / 10);
-    const maxOrbs = 2 + bracket; // 1-10 => 2, 11-20 => 3, etc.
-    const count = 1 + Math.floor(Math.random() * maxOrbs);
-
-    const zone = this._virtualZoneFromRoom(n);
-    const baseXp = 10 * Math.max(1, zone);
-
-    const ip = this.getGateInnerPoint(room, gate, 44);
-    for (let i = 0; i < count; i++) {
-      const ang = Math.random() * Math.PI * 2;
-      const rad = 10 + Math.random() * 22;
-      st.xpOrbs.push({
-        x: ip.x + Math.cos(ang) * rad,
-        y: ip.y + Math.sin(ang) * rad,
-        radius: 8,
-        kind: "xp",
-        xp: baseXp,
-        age: 0,
-      });
-    }
-
-    // Small floating text feedback
-    if (Array.isArray(st.floatingTexts)) {
-      st.floatingTexts.push({
-        x: ip.x,
-        y: ip.y - 24,
-        text: `+XP x${count}`,
-        time: 1.2,
-      });
-    }
-  }
-
-  // ---- Joiner sync --------------------------------------------------------
-
-  forceSetCurrent(roomIndex, opts = null) {
-    const o = opts || {};
-    const idx = roomIndex | 0;
-    let cx = 0;
-    let cy = 0;
-
-    // Walk the chain deterministically to compute centerY for idx.
-    let prevSide = getRoomSide(0);
-    for (let i = 1; i <= idx; i++) {
-      const side = getRoomSide(i);
-      const prevHalf = prevSide * 0.5;
-      const half = side * 0.5;
-      cy = cy - (prevHalf + GAP + half);
-      prevSide = side;
-    }
-
-    // Optionally compute previous floor center if host kept it.
-    const prevIdx = (typeof o.prevI === 'number') ? (o.prevI | 0) : 0;
-    let pcy = 0;
-    if (prevIdx > 0 && prevIdx < idx) {
-      let pPrevSide = getRoomSide(0);
-      for (let i = 1; i <= prevIdx; i++) {
-        const side = getRoomSide(i);
-        const prevHalf = pPrevSide * 0.5;
-        const half = side * 0.5;
-        pcy = pcy - (prevHalf + GAP + half);
-        pPrevSide = side;
-      }
-    }
-
-    this.prev = (prevIdx > 0 && prevIdx < idx) ? makeRoom(prevIdx, cx, pcy, (o.prevBiome || "")) : null;
-    if (this.prev) {
-      this.prev.cleared = true;
-      this.prev.collapsing = !!o.prevCollapsing;
-      this.prev.collapseT = typeof o.prevT === 'number' ? clamp(o.prevT, 0, 1) : 0;
-      this.prev.removed = false;
-    }
-    this.current = makeRoom(idx, cx, cy, (o.biome || ""));
-    this.current.cleared = idx === 0 ? true : !!o.cleared;
-
-    this._waitForParty = !!o.waitForParty;
-
-    // Apply gate states from host snapshot.
-    const gates = Array.isArray(this.current.breaches) ? this.current.breaches : [];
-    const hpArr = Array.isArray(o.gateHp) ? o.gateHp : null;
-    const maxArr = Array.isArray(o.gateMax) ? o.gateMax : null;
-    const rewardArr = Array.isArray(o.gateReward) ? o.gateReward : null;
-    const repairArr = Array.isArray(o.gateRepair) ? o.gateRepair : null;
-    const repairModeArr = Array.isArray(o.gateRepairMode) ? o.gateRepairMode : null;
-    const pressArr = Array.isArray(o.gatePressure) ? o.gatePressure : null;
-    const usedArr = Array.isArray(o.gateUsed) ? o.gateUsed : null;
-
-    for (let i = 0; i < gates.length; i++) {
-      const g = gates[i];
-      if (!g) continue;
-      if (hpArr && typeof hpArr[i] === 'number') g.sealHp = Math.max(0, hpArr[i]);
-      if (maxArr && typeof maxArr[i] === 'number') g.sealMax = Math.max(1, maxArr[i]);
-      if (rewardArr && typeof rewardArr[i] === 'number') {
-        const rv = rewardArr[i];
-        g.rewardSealed = rv > 0.5;
-        g.rewardSealLeft = 0;
-      }
-      if (repairArr && typeof repairArr[i] === 'number') {
-        const v = Math.max(0, repairArr[i]);
-        g.repairActive = v > 0.001;
-        g.repairT = v;
-      }
-      if (repairModeArr && typeof repairModeArr[i] === 'number') {
-        const m = (repairModeArr[i] | 0);
-        if (g.repairActive) g.repairMode = (m === 1) ? 'reward' : 'normal';
-      } else {
-        if (g.repairActive) g.repairMode = 'normal';
-      }
-      if (pressArr && typeof pressArr[i] === 'number') g.pressure = clamp(pressArr[i], 0, 1);
-      if (usedArr && typeof usedArr[i] === 'number') g.rewardUsed = usedArr[i] > 0;
-    }
-
-    this.next = null;
-
-    // If host kept a bridge from previous floor to current, reconstruct it.
-    const bFrom = (typeof o.bridgeFrom === 'number') ? (o.bridgeFrom | 0) : 0;
-    const bTo = (typeof o.bridgeTo === 'number') ? (o.bridgeTo | 0) : 0;
-    if (bFrom > 0 && bTo === idx && this.prev && (this.prev.index | 0) === bFrom) {
-      // Build a full bridge between prev -> current.
-      const from = this.prev;
-      const to = this.current;
-      const width = Math.max(140, Math.min(240, Math.round(Math.min(from.side, to.side) * 0.16)));
-      const startY = from.bounds.minY;
-      const endY = to.bounds.maxY;
-      const minY = Math.min(startY, endY);
-      const maxY = Math.max(startY, endY);
-      const bx = from.centerX;
-      const bounds = { minX: bx - width * 0.5, maxX: bx + width * 0.5, minY, maxY };
-      this.bridge = { fromIndex: from.index | 0, toIndex: to.index | 0, width, bounds, startY, endY, t: 1, progress: 1, built: true };
-    } else {
-      this.bridge = null;
-    }
-
-    const wantNext = idx === 0 ? true : !!o.hasNext;
-    if (wantNext && this.current.cleared) {
-      this._ensureNextSpawned(String(o.nextBiome || ""));
-      this._ensureBridge();
-      if (this.bridge && typeof o.bridgeP === 'number') {
-        const p = Math.max(0, Math.min(1, o.bridgeP));
-        this.bridge.t = p;
-        this.bridge.progress = p;
-        this.bridge.built = p >= 0.999;
-      } else if (this.bridge) {
-        this.bridge.t = 1;
-        this.bridge.progress = 1;
-        this.bridge.built = true;
-      }
-    }
-
-    this._applyDynamicBounds();
-  }
-
-  // ---- Room chain ---------------------------------------------------------
-
-  _ensureNextSpawned(overrideBiomeKey = "") {
-    if (!this.current) return;
-    if (!this.current.cleared) return;
-    if (this.next && !this.next.removed) return;
-
-    const nextIndex = (this.current.index | 0) + 1;
-    const nextSide = getRoomSide(nextIndex);
-    const curHalf = this.current.side * 0.5;
-    const nextHalf = nextSide * 0.5;
-
-    // Forward is negative Y.
-    const nextCenterX = this.current.centerX;
-    const nextCenterY = this.current.centerY - (curHalf + GAP + nextHalf);
-
-    // Pick biome for the next floor (floors 1–5 are neutral). Anti-repeat from current biome.
-    const forced = String(overrideBiomeKey || "");
-    const nextBiome = forced || biomeForFloorIndex(nextIndex, this.current ? (this.current.biomeKey || "") : this._lastBiomeKey);
-    this.next = makeRoom(nextIndex, nextCenterX, nextCenterY, nextBiome);
-  }
-
-  _ensureBridge() {
-    if (!this.current || !this.current.cleared) return;
-    if (!this.next || this.next.removed) return;
-    const from = this.current;
-    const to = this.next;
-
-    if (this.bridge && (this.bridge.fromIndex | 0) === (from.index | 0) && (this.bridge.toIndex | 0) === (to.index | 0)) {
+    const p = this.state?.player;
+    if (!p || !this.current) {
+      this._applyDynamicBounds();
       return;
     }
 
-    const width = Math.max(140, Math.min(240, Math.round(Math.min(from.side, to.side) * 0.16)));
+    if (this.current.cleared && this.next && this.bridge?.built) {
+      if (pointInAabb(p.x, p.y, this.next.bounds, 12)) {
+        this._enterNextRoom();
+      }
+    } else if (this.current.cleared && this.current.isFloorFinal && this.current.exitPortal) {
+      const dx = p.x - this.current.exitPortal.x;
+      const dy = p.y - this.current.exitPortal.y;
+      if (dx * dx + dy * dy <= FLOOR_EXIT_RADIUS * FLOOR_EXIT_RADIUS) {
+        this._enterNextFloor();
+      }
+    }
 
-    const startY = from.bounds.minY;
-    const endY = to.bounds.maxY;
-    const minY = Math.min(startY, endY);
-    const maxY = Math.max(startY, endY);
+    this._applyDynamicBounds();
+  }
 
-    const bx = from.centerX;
-    const bounds = {
-      minX: bx - width * 0.5,
-      maxX: bx + width * 0.5,
-      minY,
-      maxY,
-    };
+  getGateById() { return null; }
+  isGateSealed() { return false; }
+  canPlayerInteractGate() { return false; }
+  getGateInnerPoint(room, gate) { return { x: Number(gate?.x) || room?.centerX || 0, y: Number(gate?.y) || room?.centerY || 0 }; }
+  getBreachInnerPoint(room, gate, inset = 24) { return this.getGateInnerPoint(room, gate, inset); }
+  getGateOuterPoint(room, gate) { return { x: Number(gate?.x) || room?.centerX || 0, y: Number(gate?.y) || room?.centerY || 0 }; }
+  getBreachOuterPoint(room, gate, out = 220) { return this.getGateOuterPoint(room, gate, out); }
+  getGateContactPoint(room, gate) { return this.getGateInnerPoint(room, gate, 0); }
+  applyGateDamage() {}
+  tryStartGateRepair() { return false; }
+  tryStartGateRewardRepair() { return false; }
+  isWaitingForParty() { return false; }
 
+  _makeNextRoomFromPlan(plan, roomMeta, centerX, centerY) {
+    const serial = ++this._serial;
+    return makeRoom({
+      serial,
+      floorNumber: plan.floorNumber,
+      roomOrdinal: roomMeta.roomOrdinal,
+      totalRooms: roomMeta.totalRooms,
+      biomeKey: plan.biomeKey,
+      templateKey: roomMeta.templateKey,
+      templateRole: roomMeta.templateRole,
+      encounterType: roomMeta.encounterType,
+      encounterLabel: roomMeta.encounterLabel,
+      difficultyScale: roomMeta.difficultyScale,
+      connectorSize: roomMeta.connectorSize,
+      entrySocket: roomMeta.entrySocket,
+      exitSocket: roomMeta.exitSocket,
+      portalSocket: roomMeta.portalSocket,
+      routeStyle: roomMeta.routeStyle,
+      lateralOffset: roomMeta.lateralOffset,
+      centerX,
+      centerY,
+    });
+  }
+
+  _spawnRoomFromMeta(fromRoom, plan, roomMeta, serialHint = 1) {
+    const nextSide = getRoomSide(serialHint, roomMeta.templateKey, plan.floorNumber);
+    const placed = computePlacedCenter(fromRoom, roomMeta, nextSide);
+    return this._makeNextRoomFromPlan(plan, roomMeta, placed.x, placed.y);
+  }
+
+  _ensureNextSpawned() {
+    if (!this.current || !this.current.cleared) return;
+    if (this.next && !this.next.removed) return;
+
+    if ((this.current.index | 0) <= 0) {
+      if (!this._activeFloorPlan) {
+        this._activeFloorPlan = buildFloorPlan(1, this._lastBiomeKey);
+        this._lastBiomeKey = this._activeFloorPlan.biomeKey || this._lastBiomeKey;
+      }
+      const meta = this._activeFloorPlan.rooms[0];
+      this.current.exitSocket = oppositeSocket(meta?.entrySocket || 'S', 'N');
+      this.next = this._spawnRoomFromMeta(this.current, this._activeFloorPlan, meta, 1);
+      return;
+    }
+
+    if (this.current.isFloorFinal) return;
+    const plan = this._activeFloorPlan;
+    if (!plan) return;
+    const nextMeta = plan.rooms[(this.current.roomOrdinal | 0)] || null;
+    if (!nextMeta) return;
+    this.next = this._spawnRoomFromMeta(this.current, plan, nextMeta, this._serial + 1);
+  }
+
+  _ensureBridge() {
+    if (!this.current || !this.current.cleared || !this.next || this.current.isFloorFinal) return;
+    if (this.bridge && (this.bridge.fromIndex | 0) === (this.current.index | 0) && (this.bridge.toIndex | 0) === (this.next.index | 0)) return;
+
+    const width = getConnectorWidth(this.current, this.next);
+    const fromSocket = String(this.current.exitSocket || this.next.entrySocket || 'N');
+    const toSocket = String(this.next.entrySocket || oppositeSocket(fromSocket, 'S'));
+    const fromPoint = roomAnchorPoint(this.current, fromSocket, 0);
+    const toPoint = roomAnchorPoint(this.next, toSocket, 0);
+    const instant = (this.current.index | 0) <= 0;
     this.bridge = {
-      fromIndex: from.index | 0,
-      toIndex: to.index | 0,
+      fromIndex: this.current.index | 0,
+      toIndex: this.next.index | 0,
       width,
-      bounds,
-      startY,
-      endY,
-      t: 0,
-      progress: 0,
-      built: false,
+      fromSocket,
+      toSocket,
+      fromEdge: primaryEdgeForSocket(fromSocket, 'N'),
+      toEdge: primaryEdgeForSocket(toSocket, 'S'),
+      fromPoint,
+      toPoint,
+      bounds: expandLineAabb(fromPoint, toPoint, width * 0.5, 8),
+      t: instant ? 1 : 0,
+      progress: instant ? 1 : 0,
+      built: instant,
     };
   }
 
   _getBridgeBuiltBounds() {
     const br = this.bridge;
-    if (!br || !this.current || !this.next) return null;
-    const p = Math.max(0, Math.min(1, br.progress || 0));
+    if (!br) return null;
+    const p = clamp(br.progress || 0, 0, 1);
     if (p <= 0.001) return null;
-    const startY = br.startY;
-    const endY = br.endY;
-    const builtY = startY + (endY - startY) * p;
-    return {
-      minX: br.bounds.minX,
-      maxX: br.bounds.maxX,
-      minY: Math.min(startY, builtY),
-      maxY: Math.max(startY, builtY),
+    const fromX = Number(br.fromPoint?.x) || 0;
+    const fromY = Number(br.fromPoint?.y) || 0;
+    const toX = Number(br.toPoint?.x) || 0;
+    const toY = Number(br.toPoint?.y) || 0;
+    const builtPoint = {
+      x: fromX + (toX - fromX) * p,
+      y: fromY + (toY - fromY) * p,
     };
+    return expandLineAabb(br.fromPoint, builtPoint, (Number(br.width) || 120) * 0.5, 8);
   }
 
   _enterNextRoom() {
-    if (!this.next || !this.current) return;
-
-    // Transition: move current -> next, but keep the previous floor + bridge
-    // until ALL alive players enter the new floor.
-    this.prev = this.current;
-    this.prev.collapsing = false;
-    this.prev.collapseT = 0;
-    this.prev.removed = false;
+    if (!this.current || !this.next) return;
+    const old = this.current;
+    old.collapsing = true;
+    old.collapseT = 0;
+    old.removed = false;
+    this.prev = old;
 
     this.current = this.next;
     this.next = null;
-
-    // Track last biome for anti-repeat.
-    this._lastBiomeKey = this.current ? (this.current.biomeKey || "") : this._lastBiomeKey;
-
-    // Now we are "waiting for party" on the new floor.
-    this._waitForParty = true;
-
-
-    // Notify systems.
-    try {
-      if (this.state) {
-        this.state.currentRoomIndex = this.current.index | 0;
-        this.state.currentZone = this._virtualZoneFromRoom(this.current.index | 0);
-      }
-    } catch {}
+    this.bridge = null;
 
     try {
-      const ss = this.state && this.state.spawnSystem;
-      if (ss && typeof ss.onRoomChanged === "function") ss.onRoomChanged(this.current);
+      const ss = this.state?.spawnSystem;
+      if (ss && typeof ss.onRoomChanged === 'function') ss.onRoomChanged(this.current);
     } catch {}
 
     this._applyDynamicBounds();
   }
 
-  isWaitingForParty() {
-    return !!this._waitForParty;
-  }
+  _enterNextFloor() {
+    if (!this.current || !this.current.isFloorFinal) return;
+    const old = this.current;
+    const nextFloorNo = Math.max(1, (old.floorNumber | 0) + 1);
+    this._activeFloorPlan = buildFloorPlan(nextFloorNo, this._lastBiomeKey || old.biomeKey || '');
+    this._lastBiomeKey = this._activeFloorPlan.biomeKey || this._lastBiomeKey;
 
-  _areAllAlivePlayersInCurrent(pad = 26) {
-    const st = this.state;
-    const b = this.current && this.current.bounds;
-    if (!st || !b) return true;
-    const ps = (st.players && st.players.length) ? st.players : (st.player ? [st.player] : []);
+    const firstMeta = this._activeFloorPlan.rooms[0];
+    const nextRoom = this._spawnRoomFromMeta(old, this._activeFloorPlan, firstMeta, this._serial + 1);
+
+    old.collapsing = true;
+    old.collapseT = 0;
+    old.removed = false;
+    this.prev = old;
+    this.current = nextRoom;
+    this.next = null;
+    this.bridge = null;
+
+    const start = this.current?.arenaSpec?.anchors?.playerStart;
+    const ps = (this.state?.players && this.state.players.length) ? this.state.players : (this.state?.player ? [this.state.player] : []);
     for (const p of ps) {
-      if (!p) continue;
-      if (p._kicked) continue;
-      if ((p.hp || 0) <= 0) continue; // alive players only
-      if (!pointInAabb(p.x, p.y, b, pad)) return false;
-    }
-    return true;
-  }
-
-  _kickLeftBehindDownedPlayers() {
-    const st = this.state;
-    if (!st) return;
-    const curIdx = this.current ? (this.current.index | 0) : 0;
-    const curB = this.current ? this.current.bounds : null;
-
-    const ps = (st.players && st.players.length) ? st.players : (st.player ? [st.player] : []);
-    const kick = [];
-    for (const p of ps) {
-      if (!p) continue;
-      if ((p.hp || 0) > 0) continue; // only downed/dead
-      // If their corpse is not in the current floor bounds, they were left behind.
-      if (!curB || !pointInAabb(p.x, p.y, curB, 28)) {
-        kick.push(String(p.id || ""));
-        p._kicked = true;
+      if (!p || (p.hp || 0) <= 0) continue;
+      if (start && Number.isFinite(Number(start.x)) && Number.isFinite(Number(start.y))) {
+        p.x = Number(start.x);
+        p.y = Number(start.y);
+      } else {
+        p.x = this.current.centerX;
+        p.y = this.current.centerY;
       }
     }
 
-    if (kick.length) {
-      st._kickIds = kick;
-      st._kickIdsUntil = (typeof st.time === 'number' ? st.time : 0) + 2.0;
-    }
+    try {
+      const ss = this.state?.spawnSystem;
+      if (ss && typeof ss.onRoomChanged === 'function') ss.onRoomChanged(this.current);
+    } catch {}
+
+    this._applyDynamicBounds();
   }
 
-  _applyDynamicBounds() {
-    if (!this.current) return;
-
-    const base = this.current.bounds;
-
-    // Dynamic bounds should include any active floors + bridge parts.
-    let union = base;
-
-    // If we are waiting for party (host entered next), keep previous floor + bridge in bounds.
-    if (this.prev && !this.prev.removed) {
-      union = unionAabb(union, this.prev.bounds, 20);
+  forceSetCurrent(roomIndex, opts = null) {
+    const idx = roomIndex | 0;
+    if (idx <= 0) {
+      this.prev = null;
+      this.current = makeHubRoom();
+      this.next = null;
+      this.bridge = null;
+      this._activeFloorPlan = null;
+      this._applyDynamicBounds();
+      return;
     }
-    if (this.bridge && this.prev && !this.prev.removed) {
-      union = unionAabb(union, this.bridge.bounds, 22);
+    const floorNumber = Math.max(1, Number(opts?.floorNumber) || Number(this.state?._floorNumber) || 1);
+    const biomeKey = String(opts?.biomeKey || opts?.biome || this.state?._roomBiome || '');
+    const roomOrdinal = Math.max(1, Number(opts?.roomOrdinal) || Number(this.state?._floorRoomOrdinal) || 1);
+    const totalRooms = Math.max(roomOrdinal, Number(opts?.totalRooms) || Number(this.state?._floorRoomsTotal) || 4);
+    const templateKey = String(opts?.templateKey || this.state?._roomTemplateKey || (roomOrdinal >= totalRooms ? 'final_room' : 'cross_room'));
+    const templateRole = String(opts?.templateRole || this.state?._roomTemplateRole || '');
+    const entrySocket = String(opts?.entrySocket || this.state?._roomEntrySocket || 'S');
+    const exitSocket = String(opts?.exitSocket || this.state?._roomExitSocket || '');
+    const portalSocket = String(opts?.portalSocket || this.state?._roomPortalSocket || '');
+    const routeStyle = String(opts?.routeStyle || this.state?._roomRouteStyle || '');
+    const lateralOffset = Number(opts?.lateralOffset ?? this.state?._roomLateralOffset ?? 0) || 0;
+    const centerX = Number(opts?.centerX ?? this.state?._roomCenterX ?? 0) || 0;
+    const centerY = Number(opts?.centerY ?? this.state?._roomCenterY ?? 0) || 0;
+    this._serial = Math.max(this._serial, idx);
+    this.current = makeRoom({
+      serial: idx,
+      floorNumber,
+      roomOrdinal,
+      totalRooms,
+      biomeKey,
+      templateKey,
+      templateRole,
+      encounterType: String(opts?.encounterType || this.state?._roomEncounter || 'gauntlet'),
+      encounterLabel: String(opts?.encounterLabel || this.state?._roomEncounterLabel || 'ВОЛНЫ'),
+      difficultyScale: Number(opts?.difficultyScale || 1) || 1,
+      connectorSize: String(opts?.connectorSize || 'standard'),
+      entrySocket,
+      exitSocket,
+      portalSocket,
+      routeStyle,
+      lateralOffset,
+      centerX,
+      centerY,
+    });
+    this.current.cleared = !!opts?.cleared;
+    if (this.current.cleared && roomOrdinal >= totalRooms) this.current.exitPortal = resolvePortalPoint(this.current);
+    this.prev = null;
+    this.next = null;
+    this.bridge = null;
+    if (!!opts?.hasNext && roomOrdinal < totalRooms) {
+      const nextOrdinal = roomOrdinal + 1;
+      const nextTemplateKey = String(opts?.nextTemplateKey || (nextOrdinal >= totalRooms ? 'final_room' : 'cross_room'));
+      const nextTemplateRole = String(opts?.nextTemplateRole || (nextOrdinal >= totalRooms ? 'crown' : 'split'));
+      const nextEntrySocket = String(opts?.nextEntrySocket || oppositeSocket(exitSocket || 'N', 'S'));
+      const nextRouteStyle = String(opts?.nextRouteStyle || routeStyle || '');
+      const nextLateralOffset = Number(opts?.nextLateralOffset ?? lateralOffset ?? 0) || 0;
+      const nextMeta = {
+        roomOrdinal: nextOrdinal,
+        totalRooms,
+        templateKey: nextTemplateKey,
+        templateRole: nextTemplateRole,
+        entrySocket: nextEntrySocket,
+        exitSocket: '',
+        portalSocket: '',
+        routeStyle: nextRouteStyle,
+        lateralOffset: nextLateralOffset,
+        placementStep: socketVector(exitSocket || 'N', 'N'),
+      };
+      const hasPlacedCenter = Number.isFinite(Number(opts?.nextCenterX)) && Number.isFinite(Number(opts?.nextCenterY));
+      const placed = hasPlacedCenter
+        ? { x: Number(opts?.nextCenterX) || 0, y: Number(opts?.nextCenterY) || 0 }
+        : computePlacedCenter(this.current, nextMeta, getRoomSide(idx + 1, nextTemplateKey, floorNumber));
+      this.next = makeRoom({
+        serial: idx + 1,
+        floorNumber,
+        roomOrdinal: nextOrdinal,
+        totalRooms,
+        biomeKey: String(opts?.nextBiome || opts?.nextBiomeKey || biomeKey || ''),
+        templateKey: nextTemplateKey,
+        templateRole: nextTemplateRole,
+        encounterType: String(opts?.nextEncounterType || (nextOrdinal >= totalRooms ? 'boss' : 'gauntlet')),
+        encounterLabel: String(opts?.nextEncounterLabel || (nextOrdinal >= totalRooms ? 'БОСС' : 'ВОЛНЫ')),
+        difficultyScale: 1,
+        connectorSize: 'standard',
+        entrySocket: nextEntrySocket,
+        exitSocket: '',
+        portalSocket: '',
+        routeStyle: nextRouteStyle,
+        lateralOffset: nextLateralOffset,
+        centerX: placed.x,
+        centerY: placed.y,
+      });
+      const width = getConnectorWidth(this.current, this.next);
+      const fromPoint = (opts?.bridgeFromPoint && typeof opts.bridgeFromPoint === 'object') ? opts.bridgeFromPoint : roomAnchorPoint(this.current, exitSocket || 'N', 0);
+      const toPoint = (opts?.bridgeToPoint && typeof opts.bridgeToPoint === 'object') ? opts.bridgeToPoint : roomAnchorPoint(this.next, this.next.entrySocket || 'S', 0);
+      this.bridge = {
+        fromIndex: idx,
+        toIndex: this.next.index | 0,
+        width,
+        fromSocket: String(opts?.bridgeFromSocket || exitSocket || 'N'),
+        toSocket: String(opts?.bridgeToSocket || this.next.entrySocket || 'S'),
+        fromEdge: primaryEdgeForSocket(String(opts?.bridgeFromSocket || exitSocket || 'N'), 'N'),
+        toEdge: primaryEdgeForSocket(String(opts?.bridgeToSocket || this.next.entrySocket || 'S'), 'S'),
+        fromPoint: { x: Number(fromPoint?.x) || 0, y: Number(fromPoint?.y) || 0 },
+        toPoint: { x: Number(toPoint?.x) || 0, y: Number(toPoint?.y) || 0 },
+        bounds: expandLineAabb(fromPoint, toPoint, width * 0.5, 8),
+        t: Number(opts?.bridgeP) || 0,
+        progress: Number(opts?.bridgeP) || 0,
+        built: !!opts?.bridgeBuilt,
+      };
     }
-
-    // During "clear -> build bridge -> enter next" phase: allow moving onto the built bridge and into next.
-    const hasNext = !!(this.current.cleared && this.next && !this.next.removed);
-    if (hasNext) {
-      this._ensureBridge();
-
-      const builtPart = this._getBridgeBuiltBounds();
-      if (builtPart) union = unionAabb(union, builtPart, 16);
-
-      if (this.bridge && this.bridge.built) {
-        union = unionAabb(union, this.bridge.bounds, 20);
-        union = unionAabb(union, this.next.bounds, 20);
-      }
-    }
-
-    setDynamicWorldBounds(union);
-
-    // Keep state helper fields for HUD/snapshots.
-    if (this.state) {
-      this.state.currentRoomIndex = this.current.index | 0;
-      this.state._roomSide = this.current.side | 0;
-      this.state._hubSide = getRoomSide(0) | 0;
-      this.state._roomCleared = !!this.current.cleared;
-      this.state._roomHasNext = !!(this.next && !this.next.removed);
-
-      // Biomes (floors 1–5 are neutral, 6+ randomized by host)
-      this.state._roomBiome = String(this.current.biomeKey || "");
-      this.state._nextRoomBiome = String((this.next && !this.next.removed) ? (this.next.biomeKey || "") : "");
-      this.state._prevRoomBiome = String((this.prev && !this.prev.removed) ? (this.prev.biomeKey || "") : "");
-      this.state._arenaLayoutId = String(this.current?.arenaSpec?.layoutId || "");
-      this.state._arenaProfileId = String(this.current?.arenaSpec?.profileId || "");
-      this.state._arenaVisualPreset = String(this.current?.arenaSpec?.visualPreset || "");
-      this.state._arenaValidationIssues = Array.isArray(this.current?.arenaSpec?.validation?.issues) ? this.current.arenaSpec.validation.issues.slice(0, 8) : [];
-      this.state._arenaValidationOk = !!this.current?.arenaSpec?.validation?.ok;
-      this.state._arenaUsedFallback = !!this.current?.arenaSpec?.validation?.usedFallback;
-      this.state._arenaValidationStats = this.current?.arenaSpec?.validation?.stats || null;
-
-      this.state._bridgeP = this.bridge ? (this.bridge.progress || 0) : 0;
-      this.state._bridgeBuilt = !!(this.bridge && this.bridge.built);
-
-
-      this.state._prevRoomIndex = this.prev && !this.prev.removed ? (this.prev.index | 0) : 0;
-      this.state._prevRoomCollapsing = !!(this.prev && this.prev.collapsing);
-      this.state._prevRoomCollapseT = this.prev ? (this.prev.collapseT || 0) : 0;
-      this.state._bridgeFrom = this.bridge ? (this.bridge.fromIndex | 0) : 0;
-      this.state._bridgeTo = this.bridge ? (this.bridge.toIndex | 0) : 0;
-      this.state._waitForParty = !!this._waitForParty;
-
-      const gs = this.current && Array.isArray(this.current.breaches) ? this.current.breaches : [];
-      this.state._gateHp = gs.map((g) => (g && typeof g.sealHp === 'number') ? g.sealHp : 0);
-      this.state._gateMax = gs.map((g) => (g && typeof g.sealMax === 'number') ? g.sealMax : 0);
-      this.state._gateReward = gs.map((g) => (g && (g.rewardSealed || ((g.rewardSealLeft || 0) > 0.02))) ? 1 : 0);
-      this.state._gateRepair = gs.map((g) => (g && g.repairActive) ? (g.repairT || 0) : 0);
-      this.state._gateRepairMode = gs.map((g) => (g && g.repairActive && String(g.repairMode || '').toLowerCase() === 'reward') ? 1 : 0);
-      this.state._gatePressure = gs.map((g) => (g && typeof g.pressure === 'number') ? g.pressure : 0);
-      this.state._gateUsed = gs.map((g) => (g && g.rewardUsed) ? 1 : 0);
-    }
+    this._activeFloorPlan = {
+      floorNumber,
+      biomeKey,
+      rooms: Array.from({ length: totalRooms }, (_, i) => ({
+        roomOrdinal: i + 1,
+        totalRooms,
+        templateKey: i + 1 === totalRooms ? 'final_room' : 'cross_room',
+        templateRole: i + 1 === totalRooms ? 'crown' : 'split',
+        entrySocket: i + 1 === roomOrdinal ? entrySocket : 'S',
+        exitSocket: i + 1 === roomOrdinal ? exitSocket : 'N',
+        portalSocket: i + 1 === totalRooms ? portalSocket : '',
+        isFinal: i + 1 === totalRooms,
+      })),
+    };
+    this._applyDynamicBounds();
   }
 
   _cleanupRoomEntities(room) {
     if (!room || !this.state) return;
     const st = this.state;
-    const b = room.bounds;
-
-    // Enemies: force-remove without rewards.
-    const es = Array.isArray(st.enemies) ? st.enemies : [];
-    for (const e of es) {
-      if (!e) continue;
-      if ((e._roomIndex | 0) !== (room.index | 0)) continue;
-      e._roomCleanup = true;
-      e._noScore = true;
-      e.onDeath = null;
-      e.hp = 0;
-      e._remove = true;
-    }
-
-    const inRoom = (o) => o && typeof o.x === 'number' && typeof o.y === 'number' && (o.x >= b.minX && o.x <= b.maxX && o.y >= b.minY && o.y <= b.maxY);
-
-    const clearArr = (arrName) => {
-      const arr = Array.isArray(st[arrName]) ? st[arrName] : null;
+    const idx = room.index | 0;
+    const killInArr = (name) => {
+      const arr = Array.isArray(st[name]) ? st[name] : null;
       if (!arr) return;
       for (let i = arr.length - 1; i >= 0; i--) {
         const o = arr[i];
-        if (inRoom(o)) arr.splice(i, 1);
+        if (!o) continue;
+        if ((o._roomIndex | 0) === idx) arr.splice(i, 1);
       }
     };
-
-    clearArr('projectiles');
-    clearArr('rockets');
-    clearArr('xpOrbs');
-    clearArr('summons');
+    for (const e of (st.enemies || [])) {
+      if (!e) continue;
+      if ((e._roomIndex | 0) !== idx) continue;
+      e._roomCleanup = true;
+      e._remove = true;
+      e.hp = 0;
+    }
+    killInArr('projectiles');
+    killInArr('rockets');
+    killInArr('xpOrbs');
+    killInArr('summons');
   }
 
   _virtualZoneFromRoom(roomIndex) {
-    const n = roomIndex | 0;
-    if (n <= 0) return 0;
-    return 1 + Math.floor((n - 1) / 10);
+    const room = this.current;
+    const floorNo = room?.floorNumber || 1;
+    return 1 + Math.floor(Math.max(0, floorNo - 1) / 3);
+  }
+
+  _applyDynamicBounds() {
+    if (!this.current) return;
+    if (this.prev && !this.prev.removed) this.prev.breaches = buildTransitionBreaches(this.prev, this, 'prev');
+    if (this.current) this.current.breaches = buildTransitionBreaches(this.current, this, 'current');
+    if (this.next && !this.next.removed) this.next.breaches = buildTransitionBreaches(this.next, this, 'next');
+    let union = this.current.bounds;
+    if (this.prev && !this.prev.removed) union = unionAabb(union, this.prev.bounds, 20);
+    if (this.bridge) {
+      const built = this.bridge.built ? this.bridge.bounds : this._getBridgeBuiltBounds();
+      if (built) union = unionAabb(union, built, 16);
+    }
+    if (this.current.cleared && this.next && this.bridge?.built) union = unionAabb(union, this.next.bounds, 20);
+    setDynamicWorldBounds(union);
+
+    const st = this.state;
+    if (!st) return;
+    st.currentRoomIndex = this.current.index | 0;
+    st.currentZone = this._virtualZoneFromRoom(this.current.index | 0);
+    st._roomSide = this.current.side | 0;
+    st._hubSide = getRoomSide(0) | 0;
+    st._roomCleared = !!this.current.cleared;
+    st._roomHasNext = !!(this.next && !this.next.removed);
+    st._roomBiome = String(this.current.biomeKey || '');
+    st._nextRoomBiome = String((this.next && !this.next.removed) ? (this.next.biomeKey || '') : '');
+    st._bridgeP = this.bridge ? (this.bridge.progress || 0) : 0;
+    st._bridgeBuilt = !!(this.bridge && this.bridge.built);
+    st._bridgeFrom = this.bridge ? (this.bridge.fromIndex | 0) : 0;
+    st._bridgeTo = this.bridge ? (this.bridge.toIndex | 0) : 0;
+    st._bridgeFromSocket = this.bridge ? String(this.bridge.fromSocket || '') : '';
+    st._bridgeToSocket = this.bridge ? String(this.bridge.toSocket || '') : '';
+    st._bridgeFromPoint = this.bridge?.fromPoint ? { ...this.bridge.fromPoint } : null;
+    st._bridgeToPoint = this.bridge?.toPoint ? { ...this.bridge.toPoint } : null;
+    st._waitForParty = false;
+    st._gateButtons = [];
+    st._gateHp = [];
+    st._gateMax = [];
+    st._gateReward = [];
+    st._gateRepair = [];
+    st._gateRepairMode = [];
+    st._gatePressure = [];
+    st._gateUsed = [];
+
+    st._floorNumber = this.current.floorNumber | 0;
+    st._floorRoomOrdinal = this.current.roomOrdinal | 0;
+    st._floorRoomsTotal = this.current.totalRooms | 0;
+    st._floorBiome = String(this.current.biomeKey || '');
+    st._roomEncounter = String(this.current.encounterType || '');
+    st._roomEncounterLabel = String(this.current.encounterLabel || '');
+    st._roomTemplateKey = String(this.current.templateKey || '');
+    st._roomTemplateRole = String(this.current.templateRole || '');
+    st._roomEntrySocket = String(this.current.entrySocket || '');
+    st._roomExitSocket = String(this.current.exitSocket || '');
+    st._roomPortalSocket = String(this.current.portalSocket || '');
+    st._roomRouteStyle = String(this.current.routeStyle || '');
+    st._roomLateralOffset = Number(this.current.lateralOffset) || 0;
+    st._roomCenterX = Number(this.current.centerX) || 0;
+    st._roomCenterY = Number(this.current.centerY) || 0;
+    st._nextRoomTemplateKey = String((this.next && !this.next.removed) ? (this.next.templateKey || '') : '');
+    st._nextRoomTemplateRole = String((this.next && !this.next.removed) ? (this.next.templateRole || '') : '');
+    st._nextRoomEntrySocket = String((this.next && !this.next.removed) ? (this.next.entrySocket || '') : '');
+    st._nextRoomRouteStyle = String((this.next && !this.next.removed) ? (this.next.routeStyle || '') : '');
+    st._nextRoomLateralOffset = Number((this.next && !this.next.removed) ? (this.next.lateralOffset || 0) : 0) || 0;
+    st._nextRoomCenterX = Number((this.next && !this.next.removed) ? (this.next.centerX || 0) : 0) || 0;
+    st._nextRoomCenterY = Number((this.next && !this.next.removed) ? (this.next.centerY || 0) : 0) || 0;
+    st._nextRoomEncounter = String((this.next && !this.next.removed) ? (this.next.encounterType || '') : '');
+    st._nextRoomEncounterLabel = String((this.next && !this.next.removed) ? (this.next.encounterLabel || '') : '');
+    st._floorExitActive = !!(this.current.cleared && this.current.isFloorFinal && this.current.exitPortal);
+    st._floorExitPortal = this.current.exitPortal ? { ...this.current.exitPortal } : null;
+    st._roomObjective = describeRoomObjective(this.current, this);
+    st._roomNextHint = (this.next && !this.next.removed) ? `${String(this.next.templateRole || this.next.encounterLabel || this.next.encounterType || 'NEXT').toUpperCase()} • ${String(this.next.biomeKey || this.current.biomeKey || '').toUpperCase()}` : '';
+    st._roomLabel = this.current.index <= 0 ? 'HUB' : `FLOOR ${this.current.floorNumber} • ROOM ${this.current.roomOrdinal}/${this.current.totalRooms} • ${this.current.encounterLabel || this.current.encounterType || 'WAVES'}`;
+    st._roomIsBoss = !!this.current.isFloorFinal;
+    st._roomIsMiniBoss = false;
   }
 }

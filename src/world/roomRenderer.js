@@ -1,6 +1,7 @@
 // Pixel_GO room-based background renderer (floating tiles + bridge in space).
 
 import { biomeByKey } from "./biomes.js";
+import { primaryEdgeForSocket } from "./roomRoute.js";
 
 function clamp(n, a, b) {
   return n < a ? a : (n > b ? b : n);
@@ -148,6 +149,107 @@ function rectPath(ctx, r) {
   return true;
 }
 
+function drawStationLuxuryTrim(ctx, x, y, w, h, { isBridge = false, isHub = false, pid = '', time = 0 } = {}) {
+  if (!(w > 0 && h > 0)) return;
+  const majorX = w >= h;
+  const rail = Math.max(4, Math.min(12, (majorX ? h : w) * 0.12));
+  const ex = isBridge ? 6 : 10;
+  const ey = isBridge ? 6 : 10;
+  const hull = isHub ? 'rgba(16,36,72,0.92)' : 'rgba(16,30,62,0.88)';
+  const insetDark = isHub ? 'rgba(14,24,46,0.32)' : 'rgba(10,18,38,0.28)';
+  const railGlow = isHub ? 'rgba(255,238,178,0.18)' : 'rgba(234,244,255,0.12)';
+  const glassA = isHub ? 'rgba(168,238,255,0.30)' : 'rgba(176,218,255,0.22)';
+  const glassB = isHub ? 'rgba(250,244,214,0.24)' : 'rgba(208,232,255,0.16)';
+  const windowCol = isHub ? 'rgba(255,236,174,0.42)' : 'rgba(164,220,255,0.28)';
+  const lineCol = isHub ? 'rgba(188,244,255,0.26)' : 'rgba(188,222,255,0.18)';
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'destination-over';
+  ctx.fillStyle = hull;
+  ctx.fillRect(x - ex, y - ey, w + ex * 2, h + ey * 2);
+  ctx.restore();
+
+  ctx.fillStyle = insetDark;
+  ctx.fillRect(x + 4, y + 4, Math.max(0, w - 8), Math.max(0, h - 8));
+
+  ctx.fillStyle = railGlow;
+  if (majorX) {
+    ctx.fillRect(x + 6, y + 6, Math.max(0, w - 12), rail);
+    ctx.fillRect(x + 6, y + h - rail - 6, Math.max(0, w - 12), rail);
+  } else {
+    ctx.fillRect(x + 6, y + 6, rail, Math.max(0, h - 12));
+    ctx.fillRect(x + w - rail - 6, y + 6, rail, Math.max(0, h - 12));
+  }
+
+  const glass = ctx.createLinearGradient(majorX ? x : x + w * 0.5, majorX ? y + h * 0.5 : y, majorX ? x + w : x + w * 0.5, majorX ? y + h * 0.5 : y + h);
+  glass.addColorStop(0, 'rgba(255,255,255,0.02)');
+  glass.addColorStop(0.18, glassA);
+  glass.addColorStop(0.50, glassB);
+  glass.addColorStop(0.82, glassA);
+  glass.addColorStop(1, 'rgba(255,255,255,0.02)');
+  ctx.fillStyle = glass;
+  if (majorX) ctx.fillRect(x + 12, y + h * 0.36, Math.max(0, w - 24), Math.max(10, h * 0.18));
+  else ctx.fillRect(x + w * 0.36, y + 12, Math.max(10, w * 0.18), Math.max(0, h - 24));
+
+  ctx.strokeStyle = lineCol;
+  ctx.lineWidth = 1.5;
+  if (majorX) {
+    const yy1 = y + h * 0.32;
+    const yy2 = y + h * 0.68;
+    ctx.beginPath(); ctx.moveTo(x + 10, yy1); ctx.lineTo(x + w - 10, yy1); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x + 10, yy2); ctx.lineTo(x + w - 10, yy2); ctx.stroke();
+  } else {
+    const xx1 = x + w * 0.32;
+    const xx2 = x + w * 0.68;
+    ctx.beginPath(); ctx.moveTo(xx1, y + 10); ctx.lineTo(xx1, y + h - 10); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(xx2, y + 10); ctx.lineTo(xx2, y + h - 10); ctx.stroke();
+  }
+
+  const slots = Math.max(3, Math.min(12, Math.floor((majorX ? w : h) / 54)));
+  for (let i = 0; i < slots; i++) {
+    const t = (i + 0.5) / slots;
+    const wx = majorX ? x + w * t - 7 : x + (isBridge ? 8 : w - 16);
+    const wy = majorX ? y + h - rail - 8 : y + h * t - 7;
+    ctx.fillStyle = windowCol;
+    if (majorX) ctx.fillRect(wx, wy, 14, 4);
+    else ctx.fillRect(wx, wy, 4, 14);
+  }
+
+  if (majorX && isBridge) {
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    ctx.fillRect(x - 10, y + h * 0.20, 8, h * 0.60);
+    ctx.fillRect(x + w + 2, y + h * 0.20, 8, h * 0.60);
+    ctx.strokeStyle = lineCol;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x + 8, y + h * 0.22); ctx.lineTo(x + w - 8, y + h * 0.22); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x + 8, y + h * 0.78); ctx.lineTo(x + w - 8, y + h * 0.78); ctx.stroke();
+  } else if (!majorX && isBridge) {
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    ctx.fillRect(x + w * 0.20, y - 10, w * 0.60, 8);
+    ctx.fillRect(x + w * 0.20, y + h + 2, w * 0.60, 8);
+  }
+
+  if (!isBridge && w > 84 && h > 84) {
+    const cx = x + w * 0.5;
+    const cy = y + h * 0.5;
+    ctx.strokeStyle = isHub ? 'rgba(164,244,255,0.34)' : 'rgba(180,226,255,0.24)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(cx, cy, w * 0.22, h * 0.22, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = isHub ? 'rgba(255,244,196,0.18)' : 'rgba(255,255,255,0.14)';
+    ctx.beginPath(); ctx.ellipse(cx, cy, w * 0.12, h * 0.12, 0, 0, Math.PI * 2); ctx.stroke();
+    const spokes = /core|rotunda|arena|crown|dais|split|ring|plaza/.test(pid) ? 4 : 2;
+    ctx.strokeStyle = lineCol;
+    ctx.lineWidth = 1.2;
+    for (let i = 0; i < spokes; i++) {
+      const a = ((Math.PI * 2) / spokes) * i + time * 0.03;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * Math.min(w, h) * 0.07, cy + Math.sin(a) * Math.min(w, h) * 0.07);
+      ctx.lineTo(cx + Math.cos(a) * Math.min(w, h) * 0.20, cy + Math.sin(a) * Math.min(w, h) * 0.20);
+      ctx.stroke();
+    }
+  }
+}
+
 
 function getArenaParts(arenaSpec) {
   const geometry = arenaSpec?.geometry || null;
@@ -173,13 +275,24 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
   if (!parts.length || !bounds) return false;
 
   const biomeKey = String(room?.biomeKey || '').toLowerCase();
+  const visualPreset = String(arenaSpec?.visualPreset || '').toLowerCase();
+  const isHubShape = !!arenaSpec?.rules?.isHub || visualPreset === 'hub_core_station';
+  const isNeutralShape = biomeKey === 'neutral' || visualPreset.includes('neutral_') || isHubShape;
   let coreA = 'rgba(84,100,126,0.96)';
   let coreB = 'rgba(32,40,58,0.96)';
   let bridgeA = 'rgba(106,126,154,0.90)';
   let bridgeB = 'rgba(42,54,78,0.92)';
   let edge = 'rgba(210,230,255,0.20)';
   let glow = 'rgba(120,180,255,0.18)';
-  if (biomeKey === 'electric') {
+  if (isHubShape) {
+    coreA = 'rgba(244,250,255,1)'; coreB = 'rgba(64,102,168,1)';
+    bridgeA = 'rgba(252,252,255,1)'; bridgeB = 'rgba(102,154,224,1)';
+    edge = 'rgba(250,252,255,0.56)'; glow = 'rgba(162,240,255,0.44)';
+  } else if (isNeutralShape) {
+    coreA = 'rgba(240,247,255,1)'; coreB = 'rgba(86,126,192,1)';
+    bridgeA = 'rgba(248,250,255,1)'; bridgeB = 'rgba(112,162,226,1)';
+    edge = 'rgba(248,250,255,0.46)'; glow = 'rgba(184,228,255,0.36)';
+  } else if (biomeKey === 'electric') {
     coreA = 'rgba(168,252,255,0.98)'; coreB = 'rgba(34,112,146,0.96)';
     bridgeA = 'rgba(118,244,255,0.92)'; bridgeB = 'rgba(26,94,124,0.96)';
     edge = 'rgba(188,252,255,0.28)'; glow = 'rgba(74,226,255,0.22)';
@@ -225,6 +338,39 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
     ctx.strokeStyle = edge;
     ctx.lineWidth = isBridge ? 2 : 3;
     ctx.strokeRect(x + 1.5, y + 1.5, Math.max(0, w - 3), Math.max(0, h - 3));
+
+    if (isNeutralShape) {
+      const pid = String(part?.id || '').toLowerCase();
+      const majorX = w >= h;
+      drawStationLuxuryTrim(ctx, x, y, w, h, { isBridge, isHub: isHubShape, pid, time });
+      const strip = ctx.createLinearGradient(x, y, majorX ? x + w : x, majorX ? y : y + h);
+      strip.addColorStop(0, 'rgba(255,255,255,0.02)');
+      strip.addColorStop(0.22, isHubShape ? 'rgba(170,236,255,0.18)' : 'rgba(164,214,255,0.14)');
+      strip.addColorStop(0.50, isHubShape ? 'rgba(255,246,206,0.18)' : 'rgba(222,240,255,0.12)');
+      strip.addColorStop(0.78, isHubShape ? 'rgba(170,236,255,0.16)' : 'rgba(164,214,255,0.12)');
+      strip.addColorStop(1, 'rgba(255,255,255,0.02)');
+      ctx.fillStyle = strip;
+      if (majorX) ctx.fillRect(x + 10, y + h * 0.36, Math.max(0, w - 20), Math.max(8, h * 0.18));
+      else ctx.fillRect(x + w * 0.36, y + 10, Math.max(8, w * 0.18), Math.max(0, h - 20));
+
+      ctx.strokeStyle = isHubShape ? 'rgba(255,240,184,0.18)' : 'rgba(214,232,255,0.16)';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(x + 9, y + 9, Math.max(0, w - 18), Math.max(0, h - 18));
+
+      if (!isBridge && /core|plaza|dais|mid|center|ring|split|arena|crown|vest/.test(pid) && w > 54 && h > 54) {
+        const cx = x + w * 0.5;
+        const cy = y + h * 0.5;
+        ctx.strokeStyle = isHubShape ? 'rgba(168,240,255,0.30)' : 'rgba(176,220,255,0.26)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, w * 0.22, h * 0.22, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(255,245,214,0.16)';
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, w * 0.12, h * 0.12, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
   }
   ctx.restore();
   return true;
@@ -238,10 +384,21 @@ function drawArenaShapeOverlay(ctx, room, arenaSpec, time = 0) {
   if (!platforms.length && !bridges.length) return;
 
   const biomeKey = String(room?.biomeKey || '').toLowerCase();
+  const visualPreset = String(arenaSpec?.visualPreset || '').toLowerCase();
+  const isHubShape = !!arenaSpec?.rules?.isHub || visualPreset === 'hub_core_station';
+  const isNeutralShape = biomeKey === 'neutral' || visualPreset.includes('neutral_') || isHubShape;
   let panelStroke = 'rgba(255,255,255,0.08)';
   let fillCore = 'rgba(16,18,28,0.16)';
   let fillBridge = 'rgba(160,200,255,0.06)';
-  if (biomeKey === 'electric') {
+  if (isHubShape) {
+    panelStroke = 'rgba(224,248,255,0.34)';
+    fillCore = 'rgba(26,44,82,0.24)';
+    fillBridge = 'rgba(148,222,255,0.18)';
+  } else if (isNeutralShape) {
+    panelStroke = 'rgba(216,236,255,0.28)';
+    fillCore = 'rgba(34,52,92,0.22)';
+    fillBridge = 'rgba(164,202,255,0.14)';
+  } else if (biomeKey === 'electric') {
     panelStroke = 'rgba(130,240,255,0.22)';
     fillCore = 'rgba(8,20,32,0.28)';
     fillBridge = 'rgba(70,210,255,0.10)';
@@ -279,6 +436,29 @@ function drawArenaShapeOverlay(ctx, room, arenaSpec, time = 0) {
 
   for (const p of platforms) drawRectLike(p, fillCore, panelStroke, 3);
   for (const b of bridges) drawRectLike(b, fillBridge, panelStroke, 2);
+
+  if (isNeutralShape) {
+    ctx.strokeStyle = isHubShape ? 'rgba(172,242,255,0.24)' : 'rgba(188,220,255,0.18)';
+    ctx.lineWidth = 1.5;
+    for (const p of platforms) {
+      const x = Number(p?.x) || 0; const y = Number(p?.y) || 0; const w = Number(p?.w) || 0; const h = Number(p?.h) || 0;
+      if (w <= 0 || h <= 0) continue;
+      if (w > 80 && h > 80) {
+        ctx.beginPath();
+        ctx.ellipse(x + w * 0.5, y + h * 0.5, w * 0.20, h * 0.20, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      if (w >= h) {
+        ctx.moveTo(x + 14, y + h * 0.5);
+        ctx.lineTo(x + w - 14, y + h * 0.5);
+      } else {
+        ctx.moveTo(x + w * 0.5, y + 14);
+        ctx.lineTo(x + w * 0.5, y + h - 14);
+      }
+      ctx.stroke();
+    }
+  }
 
   if (biomeKey === 'electric' || biomeKey === 'dark' || biomeKey === 'light') {
     ctx.strokeStyle = biomeKey === 'electric'
@@ -422,11 +602,40 @@ function drawArenaSpecDecor(ctx, room, arenaSpec, time = 0) {
     const isShadowSpire = kind === 'shadow_spire';
     const isRift = kind === 'rift';
     const isRadiantPylon = kind === 'radiant_pylon';
-    const isLightPrism = kind === 'prism' || kind === 'light_prism';
+    const isLightPrism = kind === 'prism' || kind === 'light_prism' || kind === 'storm_prism';
     const isAltar = kind === 'altar' || kind === 'sun_dais';
     const isSunLens = kind === 'sun_lens';
-    if (isVoidObelisk || isShadowSpire || isRift) {
-      if (isRift) {
+    const isGardenPod = kind === 'garden_pod';
+    const isGravityWell = kind === 'gravity_well';
+    const isObservationDeck = kind === 'observation_deck';
+    const isHologridPylon = kind === 'hologrid_pylon';
+    const isTransitRail = kind === 'transit_rail';
+    const isRelayBalcony = kind === 'relay_balcony';
+    const isLightningRod = kind === 'lightning_rod';
+    const isCapacitorPetal = kind === 'capacitor_petal';
+    const isEmberBrazier = kind === 'ember_brazier';
+    const isObsidianRib = kind === 'obsidian_rib';
+    const isCrystalRib = kind === 'crystal_rib';
+    const isAuroraNode = kind === 'aurora_node';
+    const isFrostMirror = kind === 'frost_mirror';
+    const isDeadLantern = kind === 'dead_lantern';
+    if (isVoidObelisk || isShadowSpire || isRift || isDeadLantern) {
+      if (isDeadLantern) {
+        ctx.strokeStyle = 'rgba(198,170,120,0.20)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x, y - size * 0.90);
+        ctx.lineTo(x, y - size * 0.18);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(18,14,16,0.76)';
+        ctx.beginPath();
+        ctx.arc(x, y + size * 0.12, size * 0.32, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,220,160,0.08)';
+        ctx.beginPath();
+        ctx.arc(x, y + size * 0.12, size * 0.40, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (isRift) {
         ctx.strokeStyle = 'rgba(198,146,255,0.40)';
         ctx.lineWidth = 2.5;
         ctx.beginPath();
@@ -470,8 +679,139 @@ function drawArenaSpecDecor(ctx, room, arenaSpec, time = 0) {
       }
       continue;
     }
-    if (isRadiantPylon || isLightPrism || isAltar || isSunLens) {
-      if (isSunLens) {
+    if (isRadiantPylon || isLightPrism || isAltar || isSunLens || isGardenPod || isGravityWell || isObservationDeck || isHologridPylon || isTransitRail || isRelayBalcony || isLightningRod || isCapacitorPetal || isEmberBrazier || isObsidianRib || isCrystalRib || isAuroraNode || isFrostMirror) {
+      if (isObservationDeck) {
+        ctx.strokeStyle = 'rgba(214,246,255,0.34)';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.arc(x, y, size * 0.78, Math.PI, 0);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x - size * 0.66, y);
+        ctx.lineTo(x + size * 0.66, y);
+        ctx.stroke();
+      } else if (isHologridPylon) {
+        ctx.fillStyle = 'rgba(110,220,255,0.18)';
+        ctx.strokeStyle = 'rgba(204,246,255,0.40)';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(x, y - size * 0.92);
+        ctx.lineTo(x + size * 0.32, y + size * 0.86);
+        ctx.lineTo(x - size * 0.32, y + size * 0.86);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else if (isTransitRail) {
+        ctx.strokeStyle = 'rgba(198,226,255,0.34)';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.moveTo(x - size * 0.90, y - size * 0.18);
+        ctx.lineTo(x + size * 0.90, y - size * 0.18);
+        ctx.moveTo(x - size * 0.90, y + size * 0.18);
+        ctx.lineTo(x + size * 0.90, y + size * 0.18);
+        ctx.stroke();
+      } else if (isRelayBalcony) {
+        ctx.fillStyle = 'rgba(188,228,255,0.12)';
+        ctx.strokeStyle = 'rgba(220,246,255,0.30)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(x - size * 0.84, y - size * 0.42, size * 1.68, size * 0.84, size * 0.20);
+        ctx.fill();
+        ctx.stroke();
+      } else if (isGardenPod) {
+        ctx.fillStyle = 'rgba(150,236,214,0.14)';
+        ctx.strokeStyle = 'rgba(200,255,240,0.34)';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.ellipse(x, y, size * 0.86, size * 0.62, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x - size * 0.60, y);
+        ctx.lineTo(x + size * 0.60, y);
+        ctx.stroke();
+      } else if (isGravityWell) {
+        ctx.strokeStyle = 'rgba(180,224,255,0.30)';
+        ctx.lineWidth = 2.2;
+        for (let i = 0; i < 2; i++) {
+          ctx.beginPath();
+          ctx.ellipse(x, y, size * (0.44 + i * 0.20), size * (0.20 + i * 0.10), time * 0.25, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      } else if (isLightningRod) {
+        ctx.strokeStyle = 'rgba(174,246,255,0.38)';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(x, y - size * 0.96);
+        ctx.lineTo(x, y + size * 0.90);
+        ctx.moveTo(x - size * 0.22, y - size * 0.42);
+        ctx.lineTo(x + size * 0.22, y - size * 0.56);
+        ctx.lineTo(x - size * 0.12, y - size * 0.08);
+        ctx.lineTo(x + size * 0.16, y - size * 0.18);
+        ctx.stroke();
+      } else if (isCapacitorPetal) {
+        ctx.fillStyle = 'rgba(130,232,255,0.16)';
+        ctx.strokeStyle = 'rgba(188,248,255,0.34)';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 4; i++) {
+          const a = i * Math.PI * 0.5;
+          ctx.beginPath();
+          ctx.ellipse(x + Math.cos(a) * size * 0.24, y + Math.sin(a) * size * 0.24, size * 0.36, size * 0.16, a, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      } else if (isEmberBrazier) {
+        ctx.fillStyle = 'rgba(255,170,106,0.18)';
+        ctx.strokeStyle = 'rgba(255,204,154,0.34)';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.arc(x, y, size * 0.54, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x, y - size * 0.42);
+        ctx.lineTo(x + size * 0.18, y + size * 0.10);
+        ctx.lineTo(x - size * 0.12, y + size * 0.16);
+        ctx.closePath();
+        ctx.stroke();
+      } else if (isObsidianRib) {
+        ctx.strokeStyle = 'rgba(255,190,140,0.24)';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.moveTo(x - size * 0.60, y + size * 0.48);
+        ctx.quadraticCurveTo(x, y - size * 0.90, x + size * 0.60, y + size * 0.48);
+        ctx.stroke();
+      } else if (isCrystalRib) {
+        ctx.strokeStyle = 'rgba(224,245,255,0.34)';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(x - size * 0.56, y + size * 0.46);
+        ctx.lineTo(x, y - size * 0.88);
+        ctx.lineTo(x + size * 0.56, y + size * 0.46);
+        ctx.stroke();
+      } else if (isAuroraNode) {
+        ctx.strokeStyle = 'rgba(202,255,250,0.34)';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.arc(x, y, size * 0.54, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x - size * 0.42, y);
+        ctx.lineTo(x + size * 0.42, y);
+        ctx.stroke();
+      } else if (isFrostMirror) {
+        ctx.fillStyle = 'rgba(224,246,255,0.12)';
+        ctx.strokeStyle = 'rgba(242,252,255,0.34)';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(x, y - size * 0.86);
+        ctx.lineTo(x + size * 0.68, y);
+        ctx.lineTo(x, y + size * 0.86);
+        ctx.lineTo(x - size * 0.68, y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else if (isSunLens) {
         ctx.strokeStyle = 'rgba(255,246,190,0.44)';
         ctx.lineWidth = 2.6;
         for (let i = 0; i < 2; i++) {
@@ -661,11 +1001,12 @@ function drawArenaHazards(ctx, room, arenaSpec, time = 0) {
     const cooldownP = clamp(phase / interval, 0, 1);
     const activeP = active ? clamp(phase / duration, 0, 1) : 0;
     const type = String(z.type || z.kind || '').toLowerCase();
-    const isVoid = type.includes('void') || type.includes('phase') || type.includes('dark');
-    const isLight = type.includes('radiant') || type.includes('prism') || type.includes('blessing') || type.includes('solar') || type.includes('light');
-    const isElectric = type.includes('electric') || type.includes('pulse') || type.includes('arc');
-    const isIce = type.includes('frost') || type.includes('slip') || type.includes('ice');
-    const isFire = type.includes('heat') || type.includes('fire') || type.includes('vent');
+    const isVoid = type.includes('void') || type.includes('phase') || type.includes('dark') || type.includes('null') || type.includes('blackout') || type.includes('mist');
+    const isLight = type.includes('radiant') || type.includes('prism') || type.includes('blessing') || type.includes('solar') || type.includes('light') || type.includes('ray') || type.includes('beam');
+    const isElectric = type.includes('electric') || type.includes('pulse') || type.includes('arc') || type.includes('lightning') || type.includes('overload') || type.includes('storm') || type.includes('conductor');
+    const isIce = type.includes('frost') || type.includes('slip') || type.includes('ice') || type.includes('whiteout') || type.includes('crystal') || type.includes('mirror');
+    const isFire = type.includes('heat') || type.includes('fire') || type.includes('vent') || type.includes('ember') || type.includes('molten') || type.includes('lava');
+    const isNeutral = type.includes('scanner') || type.includes('vacuum') || type.includes('gravity') || type.includes('shutter') || type.includes('rail');
     let fill = active ? 'rgba(255,140,90,0.16)' : 'rgba(150,200,255,0.05)';
     let stroke = active ? 'rgba(255,185,140,0.34)' : 'rgba(180,220,255,0.16)';
     let glowInner = 'rgba(255,170,120,0.20)';
@@ -673,6 +1014,10 @@ function drawArenaHazards(ctx, room, arenaSpec, time = 0) {
       fill = active ? 'rgba(90,236,255,0.18)' : 'rgba(86,176,210,0.06)';
       stroke = active ? 'rgba(168,248,255,0.38)' : 'rgba(132,220,246,0.18)';
       glowInner = active ? 'rgba(120,236,255,0.24)' : 'rgba(92,180,220,0.10)';
+    } else if (isNeutral) {
+      fill = active ? 'rgba(176,220,255,0.14)' : 'rgba(130,166,214,0.05)';
+      stroke = active ? 'rgba(220,240,255,0.34)' : 'rgba(176,204,236,0.16)';
+      glowInner = active ? 'rgba(196,230,255,0.20)' : 'rgba(140,172,210,0.10)';
     } else if (isIce) {
       fill = active ? 'rgba(196,236,255,0.18)' : 'rgba(170,214,255,0.06)';
       stroke = active ? 'rgba(244,251,255,0.38)' : 'rgba(214,234,255,0.18)';
@@ -725,6 +1070,16 @@ function drawArenaHazards(ctx, room, arenaSpec, time = 0) {
         ctx.lineTo(Math.cos(ang) * r * 0.44, Math.sin(ang) * r * 0.44);
         ctx.stroke();
       }
+    } else if (isNeutral) {
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.18, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.34, 0);
+      ctx.lineTo(r * 0.34, 0);
+      ctx.moveTo(0, -r * 0.34);
+      ctx.lineTo(0, r * 0.34);
+      ctx.stroke();
     } else if (isIce) {
       for (let a = 0; a < 3; a++) {
         const ang = a * Math.PI / 3;
@@ -776,6 +1131,10 @@ function drawArenaHazards(ctx, room, arenaSpec, time = 0) {
 function drawBiomeSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { biomeKey, hue, time }) {
   const key = String(biomeKey || "").toLowerCase();
   if (!key) return;
+  if (key === 'neutral') {
+    drawNeutralSpaceSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { hue, time });
+    return;
+  }
 
   const seed = ((room.index || 0) * 2654435761) ^ ((hue | 0) * 1013904223) ^ 0x5bd1e995;
   const rnd = makeRng(seed >>> 0);
@@ -945,20 +1304,20 @@ function drawNeutralSpaceSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { hue, t
   const g = ctx.createLinearGradient(x0, y0, x1, y1);
 
   if (isHub) {
-    g.addColorStop(0, 'rgba(92,115,160,0.98)');
-    g.addColorStop(0.5, 'rgba(56,75,116,0.98)');
-    g.addColorStop(1, 'rgba(30,42,72,0.99)');
+    g.addColorStop(0, 'rgba(190,214,246,0.96)');
+    g.addColorStop(0.38, 'rgba(88,126,188,0.92)');
+    g.addColorStop(1, 'rgba(28,46,82,0.98)');
   } else {
-    g.addColorStop(0, 'rgba(78,94,124,0.98)');
-    g.addColorStop(0.5, 'rgba(42,52,78,0.99)');
-    g.addColorStop(1, 'rgba(24,30,46,0.99)');
+    g.addColorStop(0, 'rgba(206,222,244,0.92)');
+    g.addColorStop(0.44, 'rgba(82,112,166,0.88)');
+    g.addColorStop(1, 'rgba(20,32,58,0.98)');
   }
   ctx.fillStyle = g;
   ctx.fillRect(x0, y0, w, h);
 
   // Orbital rings / lane marks so neutral tiles still feel like station platforms in open space.
-  ctx.strokeStyle = isHub ? 'rgba(120,210,255,0.22)' : 'rgba(160,190,255,0.16)';
-  ctx.lineWidth = isHub ? 4 : 3;
+  ctx.strokeStyle = isHub ? 'rgba(176,242,255,0.34)' : 'rgba(196,224,255,0.24)';
+  ctx.lineWidth = isHub ? 5 : 3.5;
   for (let i = 0; i < (isHub ? 4 : 3); i++) {
     ctx.beginPath();
     ctx.ellipse(cx, cy, w * (0.18 + i * 0.12), h * (0.14 + i * 0.09), 0, 0, Math.PI * 2);
@@ -977,6 +1336,21 @@ function drawNeutralSpaceSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { hue, t
     ctx.fillStyle = gg;
     ctx.fillRect(x0 + 30, yy - 5, w - 60, 10);
   }
+
+  const spine = ctx.createLinearGradient(x0, cy, x1, cy);
+  spine.addColorStop(0, 'rgba(255,255,255,0)');
+  spine.addColorStop(0.20, isHub ? 'rgba(184,242,255,0.22)' : 'rgba(196,228,255,0.16)');
+  spine.addColorStop(0.50, isHub ? 'rgba(255,246,214,0.34)' : 'rgba(232,242,255,0.22)');
+  spine.addColorStop(0.80, isHub ? 'rgba(184,242,255,0.22)' : 'rgba(196,228,255,0.16)');
+  spine.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = spine;
+  ctx.fillRect(x0 + 20, cy - 24, w - 40, 48);
+  const spineV = ctx.createLinearGradient(cx, y0, cx, y1);
+  spineV.addColorStop(0, 'rgba(255,255,255,0)');
+  spineV.addColorStop(0.50, isHub ? 'rgba(190,240,255,0.24)' : 'rgba(192,228,255,0.16)');
+  spineV.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = spineV;
+  ctx.fillRect(cx - 16, y0 + 20, 32, h - 40);
 
   // Docking modules / reactors
   const moduleCount = isHub ? 8 : 5;
@@ -1261,6 +1635,117 @@ function drawRoundedRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+
+function drawTransitionGate(ctx, state, room, gate, fall, time) {
+  const pulse = 0.5 + 0.5 * Math.sin(time * 3.0 + (room?.index || 0) * 0.3);
+  const len = clamp((room?.side || 820) * 0.10, 72, 112) + 12;
+  const depthIn = clamp((room?.side || 820) * 0.012, 7, 11);
+  const depthOut = clamp((room?.side || 820) * 0.018, 10, 16);
+  const ax = Number(gate?.x) || Number(room?.centerX) || 0;
+  const ay = (Number(gate?.y) || Number(room?.centerY) || 0) + (Number(fall) || 0);
+  let nx = 0, ny = 0, tx = 0, ty = 0;
+  if (gate?.side === 'W') { nx = -1; ny = 0; tx = 0; ty = 1; }
+  else if (gate?.side === 'E') { nx = 1; ny = 0; tx = 0; ty = 1; }
+  else if (gate?.side === 'N') { nx = 0; ny = -1; tx = 1; ty = 0; }
+  else { nx = 0; ny = 1; tx = 1; ty = 0; }
+
+  const stateKey = String(gate?.state || 'idle');
+  let hue = 205;
+  let alphaA = 0.16;
+  let alphaB = 0.48;
+  if (stateKey === 'locked') { hue = 24; alphaA = 0.18; alphaB = 0.62; }
+  else if (stateKey === 'linking' || stateKey === 'incoming_link') { hue = 192; alphaA = 0.18; alphaB = 0.70; }
+  else if (stateKey === 'open' || stateKey === 'incoming_open' || stateKey === 'ready') { hue = 138; alphaA = 0.16; alphaB = 0.64; }
+  else if (stateKey === 'portal_ready') { hue = 48; alphaA = 0.22; alphaB = 0.78; }
+  else if (stateKey === 'spent') { hue = 210; alphaA = 0.08; alphaB = 0.20; }
+  else if (stateKey === 'entry' || stateKey === 'incoming_locked') { hue = 216; alphaA = 0.12; alphaB = 0.36; }
+
+  const hx = tx * (len * 0.5);
+  const hy = ty * (len * 0.5);
+  const inx = -nx * depthIn;
+  const iny = -ny * depthIn;
+  const outx = nx * depthOut;
+  const outy = ny * depthOut;
+  const p0 = { x: ax - hx + inx, y: ay - hy + iny };
+  const p1 = { x: ax + hx + inx, y: ay + hy + iny };
+  const p2 = { x: ax + hx + outx, y: ay + hy + outy };
+  const p3 = { x: ax - hx + outx, y: ay - hy + outy };
+
+  const glowLen = clamp((room?.side || 820) * 0.26, 160, 360);
+  const glowFar = { x: ax + nx * glowLen, y: ay + ny * glowLen };
+  const gg = ctx.createLinearGradient(ax, ay, glowFar.x, glowFar.y);
+  gg.addColorStop(0, hsla(hue, 95, 64, alphaB * (0.72 + pulse * 0.22)));
+  gg.addColorStop(0.5, hsla(hue, 95, 58, alphaA * (0.8 + pulse * 0.12)));
+  gg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = gg;
+  ctx.beginPath();
+  ctx.moveTo(p0.x, p0.y);
+  ctx.lineTo(p1.x, p1.y);
+  ctx.lineTo(glowFar.x + tx * len * 0.72, glowFar.y + ty * len * 0.72);
+  ctx.lineTo(glowFar.x - tx * len * 0.72, glowFar.y - ty * len * 0.72);
+  ctx.closePath();
+  ctx.fill();
+
+  const fill = ctx.createLinearGradient(p0.x, p0.y, p2.x, p2.y);
+  fill.addColorStop(0, 'rgba(10,14,20,0.92)');
+  fill.addColorStop(1, hsla(hue, 95, 60, 0.16 + pulse * 0.08));
+  ctx.fillStyle = fill;
+  ctx.beginPath();
+  ctx.moveTo(p0.x, p0.y);
+  ctx.lineTo(p1.x, p1.y);
+  ctx.lineTo(p2.x, p2.y);
+  ctx.lineTo(p3.x, p3.y);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = hsla(hue, 95, 68, 0.34 + pulse * 0.14);
+  ctx.lineWidth = 2.8;
+  ctx.stroke();
+
+  const chevronCount = stateKey === 'portal_ready' ? 4 : 3;
+  const chevronStep = len * 0.18;
+  const chevronW = Math.max(10, len * 0.10);
+  ctx.fillStyle = hsla(hue, 95, 72, 0.18 + pulse * 0.12);
+  for (let i = 0; i < chevronCount; i++) {
+    const dist = 18 + i * chevronStep + (stateKey === 'linking' || stateKey === 'incoming_link' ? pulse * 10 : 0);
+    const cx = ax + nx * dist;
+    const cy = ay + ny * dist;
+    ctx.beginPath();
+    ctx.moveTo(cx + nx * 12, cy + ny * 12);
+    ctx.lineTo(cx - nx * 8 + tx * chevronW, cy - ny * 8 + ty * chevronW);
+    ctx.lineTo(cx - nx * 2, cy - ny * 2);
+    ctx.lineTo(cx - nx * 8 - tx * chevronW, cy - ny * 8 - ty * chevronW);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  const player = (state && (state.currentRoomIndex | 0) === (room?.index | 0)) ? state.player : null;
+  if (!player) return;
+  const hintX = ax - nx * 42;
+  const hintY = ay - ny * 42;
+  const dx = player.x - hintX;
+  const dy = player.y - hintY;
+  if ((dx * dx + dy * dy) > (220 * 220)) return;
+  const text = String(gate?.label || '').trim();
+  if (!text) return;
+  const bw = Math.max(88, text.length * 8 + 30);
+  const bh = 30;
+  const bx = hintX;
+  const by = hintY - 20;
+  ctx.save();
+  drawRoundedRect(ctx, bx - bw * 0.5, by - bh * 0.5, bw, bh, 9);
+  ctx.fillStyle = 'rgba(8,12,18,0.76)';
+  ctx.fill();
+  ctx.strokeStyle = hsla(hue, 95, 68, 0.44);
+  ctx.lineWidth = 2.2;
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, bx, by);
+  ctx.restore();
+}
+
 function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
   const gates = room && Array.isArray(room.breaches) ? room.breaches : null;
   if (!gates || !gates.length) return;
@@ -1295,6 +1780,10 @@ function drawGates(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
 
   for (const g of gates) {
     if (!g) continue;
+    if (String(g.kind || '') === 'transition') {
+      drawTransitionGate(ctx, state, room, g, fall, time);
+      continue;
+    }
 
     const sealHp = (typeof g.sealHp === 'number') ? g.sealHp : 0;
     const sealMax = (typeof g.sealMax === 'number' && g.sealMax > 0) ? g.sealMax : 1;
@@ -1806,13 +2295,18 @@ function drawPerimeterBarrier(ctx, state, room, { hue = 210, time = 0, fall = 0 
     if (g.side === 'S') gapsS.push([g.x - half - gapPad, g.x + half + gapPad]);
   }
 
-  // Optional: leave a gap for the bridge on the north edge (purely visual).
+  // Optional: leave a gap where the live transition actually leaves the room.
   const gapsN = [];
   const rd = state && state.roomDirector;
   const br = rd && rd.bridge;
   if (br && (br.fromIndex | 0) === (room.index | 0)) {
     const w = (br.width || 160) * 0.62;
-    gapsN.push([room.centerX - w * 0.5, room.centerX + w * 0.5]);
+    const anchor = br.fromPoint || { x: room.centerX, y: room.bounds.minY };
+    const edge = primaryEdgeForSocket(br.fromSocket || br.fromEdge || 'N', 'N');
+    if (edge === 'N') gapsN.push([anchor.x - w * 0.5, anchor.x + w * 0.5]);
+    else if (edge === 'S') gapsS.push([anchor.x - w * 0.5, anchor.x + w * 0.5]);
+    else if (edge === 'W') gapsW.push([anchor.y - w * 0.5, anchor.y + w * 0.5]);
+    else if (edge === 'E') gapsE.push([anchor.y - w * 0.5, anchor.y + w * 0.5]);
   }
 
   const merge = (arr) => {
@@ -2126,7 +2620,7 @@ function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, s
 
     // Biome-specific surface accents (neon / frost / runes / etc.)
     drawBiomeSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { biomeKey: (room && room.biomeKey) || "", hue, time });
-    if (!((room && room.biomeKey) || '')) {
+    if (!String((room && room.biomeKey) || '').toLowerCase() || arenaSpec?.rules?.isHub) {
       drawNeutralSpaceSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { hue, time });
     }
     drawArenaHazards(ctx, room, arenaSpec, time);
@@ -2213,16 +2707,33 @@ function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, s
   // Label
   if (label) {
     const parts = String(label).split(' • ');
-    ctx.globalAlpha = alpha * 0.55;
-    ctx.fillStyle = "rgba(0,0,0,0.60)";
-    ctx.textAlign = "center";
+    const compactLabel = useGeometryBody || !!arenaSpec?.rules?.isHub;
+    ctx.globalAlpha = alpha * (compactLabel ? 0.18 : 0.32);
+    ctx.fillStyle = compactLabel ? "rgba(6,10,18,0.34)" : "rgba(0,0,0,0.46)";
+    ctx.textAlign = compactLabel ? "left" : "center";
     ctx.textBaseline = "middle";
-    ctx.font = "46px sans-serif";
-    ctx.fillText(parts[0] || '', room.centerX, room.centerY + fall - (parts.length > 1 ? 10 : 0));
+    const lx = compactLabel ? (x0 + 34) : room.centerX;
+    const ly = compactLabel ? (y0 + 32) : (room.centerY + fall - (parts.length > 1 ? 10 : 0));
+    ctx.font = compactLabel ? "16px sans-serif" : "28px sans-serif";
+    ctx.fillText(parts[0] || '', lx, ly);
     if (parts.length > 1) {
-      ctx.font = "18px sans-serif";
-      ctx.fillStyle = "rgba(255,255,255,0.24)";
-      ctx.fillText(parts.slice(1).join(' • '), room.centerX, room.centerY + fall + 26);
+      ctx.font = compactLabel ? "11px sans-serif" : "16px sans-serif";
+      ctx.fillStyle = compactLabel ? "rgba(230,242,255,0.18)" : "rgba(255,255,255,0.22)";
+      ctx.fillText(parts.slice(1).join(' • '), compactLabel ? lx : room.centerX, compactLabel ? (ly + 16) : (room.centerY + fall + 22));
+    }
+    if (state && (state.currentRoomIndex | 0) === (room.index | 0)) {
+      const objective = String(state._roomObjective || '').trim();
+      const nextHint = String(state._roomNextHint || '').trim();
+      if (objective) {
+        ctx.font = compactLabel ? "11px sans-serif" : "13px sans-serif";
+        ctx.fillStyle = compactLabel ? "rgba(180,240,255,0.22)" : "rgba(180,240,255,0.42)";
+        ctx.fillText(objective, compactLabel ? lx : room.centerX, compactLabel ? (ly + 30) : (room.centerY + fall + 44));
+      }
+      if (nextHint && room.cleared && !room.isFloorFinal) {
+        ctx.font = compactLabel ? "10px sans-serif" : "12px sans-serif";
+        ctx.fillStyle = compactLabel ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.28)";
+        ctx.fillText(nextHint, compactLabel ? lx : room.centerX, compactLabel ? (ly + 44) : (room.centerY + fall + 62));
+      }
     }
   }
 
@@ -2232,175 +2743,195 @@ function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, s
 function drawBridge(ctx, rd, from, to, { alpha = 1 } = {}) {
   if (!rd || !rd.bridge || !from || !to) return;
   const br = rd.bridge;
-
-  // Bridge spans from current top edge (minY) to next bottom edge (maxY).
-  const startY = from.bounds.minY;
-  const endY = to.bounds.maxY;
   const t = clamp(br.progress || 0, 0, 1);
-
-  // Built part grows from startY -> endY.
-  const builtY = startY + (endY - startY) * t;
-
-  const x0 = br.bounds.minX;
-  const x1 = br.bounds.maxX;
-  const y0 = Math.min(startY, builtY);
-  const y1 = Math.max(startY, builtY);
-
-  // When not built at all, show only a small "construction pad".
+  const start = br.fromPoint || { x: from.centerX, y: from.bounds.minY };
+  const end = br.toPoint || { x: to.centerX, y: to.bounds.maxY };
+  const built = {
+    x: start.x + (end.x - start.x) * t,
+    y: start.y + (end.y - start.y) * t,
+  };
   const hasSome = t > 0.02;
+
   const fromBiome = biomeByKey(from && from.biomeKey);
   const toBiome = biomeByKey(to && to.biomeKey);
   const hue = fromBiome ? (fromBiome.hue | 0) : ((from.hue | 0) || 210);
   const toHue = toBiome ? (toBiome.hue | 0) : ((to.hue | 0) || hue);
-  const pitch = (rd && rd._pitch) ? rd._pitch : 1;
-  const thickness = clamp(Math.min(from.side, to.side) * 0.025, 14, 48);
-  const tx = thickness * 0.65;
-  const ty = (thickness * 0.85) / (pitch || 1);
+  const thickness = Math.max(16, (br.width || 140) * 0.22);
+  const nx = built.x - start.x;
+  const ny = built.y - start.y;
+  const len = Math.hypot(nx, ny) || 1;
+  const ux = nx / len;
+  const uy = ny / len;
+  const px = -uy;
+  const py = ux;
+  const hw = thickness * 0.5;
+
+  const q0 = { x: start.x + px * hw, y: start.y + py * hw };
+  const q1 = { x: start.x - px * hw, y: start.y - py * hw };
+  const q2 = { x: built.x - px * hw, y: built.y - py * hw };
+  const q3 = { x: built.x + px * hw, y: built.y + py * hw };
+
+  const padDepth = 28;
+  const padLen = Math.max(30, thickness * 1.2);
+  const padA = { x: start.x - ux * padLen + px * (thickness * 0.72), y: start.y - uy * padLen + py * (thickness * 0.72) };
+  const padB = { x: start.x - ux * padLen - px * (thickness * 0.72), y: start.y - uy * padLen - py * (thickness * 0.72) };
+  const padC = { x: start.x - px * (thickness * 0.72), y: start.y - py * (thickness * 0.72) };
+  const padD = { x: start.x + px * (thickness * 0.72), y: start.y + py * (thickness * 0.72) };
 
   ctx.save();
   ctx.globalAlpha = alpha;
-  // Clip bridge rendering so its shadow/thickness never bleeds onto the current tile surface.
-  ctx.beginPath();
-  ctx.rect(x0 - 10000, -100000, 20000, (startY - 2) - (-100000));
-  ctx.clip();
 
-  // Base pad (3D slab)
-  const padW = (x1 - x0);
-  const padH = 32;
-  const padX = x0;
-  const padY = startY - padH - ty;
-  // Top
-  const padGrad = ctx.createLinearGradient(padX, padY, padX + padW, padY + padH);
+  const bodyGrad = ctx.createLinearGradient(start.x, start.y, built.x, built.y);
+  bodyGrad.addColorStop(0, hsla(hue, 28, 72, 1));
+  bodyGrad.addColorStop(0.45, hsla(((hue + toHue) * 0.5) % 360, 18, 42, 1));
+  bodyGrad.addColorStop(1, hsla(toHue, 28, 34, 1));
+
+  const padGrad = ctx.createLinearGradient(padA.x, padA.y, padB.x, padB.y);
   padGrad.addColorStop(0, hsla(hue, 24, 78, 1));
   padGrad.addColorStop(0.55, hsla(hue, 18, 42, 1));
   padGrad.addColorStop(1, hsla(hue, 18, 22, 1));
+
   ctx.fillStyle = padGrad;
-  ctx.fillRect(padX, padY, padW, padH);
-  // Front thickness
-  ctx.fillStyle = hsla(hue, 26, 12, 0.95);
   ctx.beginPath();
-  ctx.moveTo(padX, padY + padH);
-  ctx.lineTo(padX + padW, padY + padH);
-  ctx.lineTo(padX + padW + tx, padY + padH + ty);
-  ctx.lineTo(padX + tx, padY + padH + ty);
+  ctx.moveTo(padA.x, padA.y);
+  ctx.lineTo(padB.x, padB.y);
+  ctx.lineTo(padC.x, padC.y);
+  ctx.lineTo(padD.x, padD.y);
   ctx.closePath();
   ctx.fill();
   ctx.strokeStyle = hsla(hue, 95, 62, 0.25);
-  ctx.lineWidth = 6;
-  ctx.strokeRect(padX + 4, padY + 4, padW - 8, padH - 8);
+  ctx.lineWidth = 4;
+  ctx.stroke();
 
   if (hasSome) {
-    // Shadow under bridge
-    {
-      const cx = (x0 + x1) * 0.5 + tx * 0.35;
-      let cy = (y0 + y1) * 0.5 + ty * 0.35;
-      // Don't let the bridge shadow bleed onto the current tile surface.
-      const shadowLimitY = startY - 18;
-      if (cy > shadowLimitY) cy = shadowLimitY;
-      ctx.fillStyle = "rgba(0,0,0,0.22)";
-      ctx.beginPath();
-      ctx.ellipse(cx, cy, (x1 - x0) * 0.52, (y1 - y0) * 0.34, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Right face
-    ctx.fillStyle = hsla(hue, 26, 14, 0.95);
+    const shadowCx = (start.x + built.x) * 0.5 + px * 4;
+    const shadowCy = (start.y + built.y) * 0.5 + py * 4 + 8;
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
     ctx.beginPath();
-    ctx.moveTo(x1, y0);
-    ctx.lineTo(x1, y1);
-    ctx.lineTo(x1 + tx, y1 + ty);
-    ctx.lineTo(x1 + tx, y0 + ty);
+    ctx.ellipse(shadowCx, shadowCy, Math.max(18, len * 0.42), Math.max(10, thickness * 0.48), Math.atan2(uy, ux), 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = bodyGrad;
+    ctx.beginPath();
+    ctx.moveTo(q0.x, q0.y);
+    ctx.lineTo(q1.x, q1.y);
+    ctx.lineTo(q2.x, q2.y);
+    ctx.lineTo(q3.x, q3.y);
     ctx.closePath();
     ctx.fill();
 
-    // Front face
-    ctx.fillStyle = hsla(hue, 28, 11, 0.96);
-    ctx.beginPath();
-    ctx.moveTo(x0, y1);
-    ctx.lineTo(x1, y1);
-    ctx.lineTo(x1 + tx, y1 + ty);
-    ctx.lineTo(x0 + tx, y1 + ty);
-    ctx.closePath();
-    ctx.fill();
+    ctx.strokeStyle = hsla(toHue, 95, 68, 0.28);
+    ctx.lineWidth = 5;
+    ctx.stroke();
 
-    // Top
-    const topGrad = ctx.createLinearGradient((x0 + x1) * 0.5, y1, (x0 + x1) * 0.5, y0);
-    topGrad.addColorStop(0, hsla(hue, 24, 72, 1));
-    topGrad.addColorStop(0.45, hsla(((hue + toHue) * 0.5) % 360, 18, 42, 1));
-    topGrad.addColorStop(1, hsla(toHue, 28, 34, 1));
-    ctx.fillStyle = topGrad;
-    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-
-    const laneW = Math.max(18, (x1 - x0) * 0.24);
-    const laneX = (x0 + x1) * 0.5 - laneW * 0.5;
-    const laneGrad = ctx.createLinearGradient(0, y1, 0, y0);
-    laneGrad.addColorStop(0, hsla(hue, 95, 74, 0.10));
-    laneGrad.addColorStop(1, hsla(toHue, 95, 70, 0.18));
-    ctx.fillStyle = laneGrad;
-    ctx.fillRect(laneX, y0 + 8, laneW, Math.max(0, (y1 - y0) - 16));
-
-    // Planks / segments
     ctx.strokeStyle = hsla(hue, 30, 20, 0.18);
-    ctx.lineWidth = 3;
-    const seg = 90;
-    let yy = Math.ceil(y0 / seg) * seg;
-    for (; yy < y1; yy += seg) {
+    ctx.lineWidth = 2;
+    const segStep = 92;
+    for (let d = segStep; d < len; d += segStep) {
+      const mx = start.x + ux * d;
+      const my = start.y + uy * d;
       ctx.beginPath();
-      ctx.moveTo(x0, yy);
-      ctx.lineTo(x1, yy);
+      ctx.moveTo(mx - px * hw, my - py * hw);
+      ctx.lineTo(mx + px * hw, my + py * hw);
       ctx.stroke();
     }
 
-    // Guidance chevrons toward the next floor
+    const laneW = hw * 0.48;
+    ctx.strokeStyle = hsla(toHue, 95, 70, 0.22);
+    ctx.lineWidth = Math.max(4, laneW);
+    ctx.beginPath();
+    ctx.moveTo(start.x + px * 0, start.y + py * 0);
+    ctx.lineTo(built.x + px * 0, built.y + py * 0);
+    ctx.stroke();
+
     const chevronPulse = 0.45 + 0.55 * Math.sin((rd?.state?.time || 0) * 4.0);
     const chevronStep = 96;
-    const chevronW = Math.max(16, (x1 - x0) * 0.18);
+    const chevronW = Math.max(12, thickness * 0.5);
     ctx.fillStyle = hsla(toHue, 95, 72, 0.16 + chevronPulse * 0.10);
-    for (let cy = y1 - 34; cy > y0 + 30; cy -= chevronStep) {
+    for (let d = len - 34; d > 34; d -= chevronStep) {
+      const cx = start.x + ux * d;
+      const cy = start.y + uy * d;
       ctx.beginPath();
-      ctx.moveTo((x0 + x1) * 0.5, cy - 14);
-      ctx.lineTo((x0 + x1) * 0.5 + chevronW, cy + 12);
-      ctx.lineTo((x0 + x1) * 0.5, cy + 4);
-      ctx.lineTo((x0 + x1) * 0.5 - chevronW, cy + 12);
+      ctx.moveTo(cx + ux * 14, cy + uy * 14);
+      ctx.lineTo(cx - ux * 8 + px * chevronW, cy - uy * 8 + py * chevronW);
+      ctx.lineTo(cx - ux * 2, cy - uy * 2);
+      ctx.lineTo(cx - ux * 8 - px * chevronW, cy - uy * 8 - py * chevronW);
       ctx.closePath();
       ctx.fill();
     }
 
-    // Glow
-    const glowStroke = ctx.createLinearGradient(0, y1, 0, y0);
-    glowStroke.addColorStop(0, hsla(hue, 95, 62, 0.18));
-    glowStroke.addColorStop(1, hsla(toHue, 95, 68, 0.28));
-    ctx.strokeStyle = glowStroke;
-    ctx.lineWidth = 7;
-    ctx.strokeRect(x0 + 4, y0 + 4, (x1 - x0) - 8, (y1 - y0) - 8);
-
-    const endGlow = ctx.createRadialGradient((x0 + x1) * 0.5, y0 + 8, 0, (x0 + x1) * 0.5, y0 + 8, Math.max(24, (x1 - x0) * 0.7));
+    const endGlow = ctx.createRadialGradient(built.x, built.y, 0, built.x, built.y, Math.max(24, thickness * 1.8));
     endGlow.addColorStop(0, hsla(toHue, 95, 72, 0.34));
     endGlow.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = endGlow;
     ctx.beginPath();
-    ctx.arc((x0 + x1) * 0.5, y0 + 8, Math.max(24, (x1 - x0) * 0.7), 0, Math.PI * 2);
+    ctx.arc(built.x, built.y, Math.max(24, thickness * 1.8), 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Construction spark at the front
   if (!br.built) {
-    const fx = (x0 + x1) * 0.5;
-    const fy = builtY;
-    const g = ctx.createRadialGradient(fx, fy, 0, fx, fy, 40);
+    const g = ctx.createRadialGradient(built.x, built.y, 0, built.x, built.y, 40);
     g.addColorStop(0, hsla((hue + 40) % 360, 95, 68, 0.65));
     g.addColorStop(0.45, hsla((hue + 40) % 360, 95, 60, 0.25));
-    g.addColorStop(1, "rgba(255,255,255,0)");
+    g.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(fx, fy, 40, 0, Math.PI * 2);
+    ctx.arc(built.x, built.y, 40, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.40)";
+    ctx.fillStyle = 'rgba(255,255,255,0.40)';
     ctx.beginPath();
-    ctx.arc(fx + 10, fy - 8, 7, 0, Math.PI * 2);
+    ctx.arc(built.x + px * 6, built.y + py * 6, 7, 0, Math.PI * 2);
     ctx.fill();
   }
 
+  ctx.restore();
+}
+
+
+function drawFloorExitPortal(ctx, room, state) {
+  const portal = room?.exitPortal || null;
+  if (!portal || !room?.cleared || !room?.isFloorFinal) return;
+  const time = Number(state?.time) || 0;
+  const pulse = 0.5 + 0.5 * Math.sin(time * 3.1);
+  const r = 46 + pulse * 8;
+  const gate = Array.isArray(room?.breaches) ? room.breaches.find((g) => g && g.role === 'portal') : null;
+  ctx.save();
+  if (gate) {
+    const guide = ctx.createLinearGradient(gate.x, gate.y, portal.x, portal.y);
+    guide.addColorStop(0, 'rgba(255,230,150,0.10)');
+    guide.addColorStop(0.5, 'rgba(160,220,255,0.20)');
+    guide.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.strokeStyle = guide;
+    ctx.lineWidth = 10;
+    ctx.beginPath();
+    ctx.moveTo(gate.x, gate.y);
+    ctx.lineTo(portal.x, portal.y);
+    ctx.stroke();
+  }
+  const g = ctx.createRadialGradient(portal.x, portal.y, 0, portal.x, portal.y, r * 1.8);
+  g.addColorStop(0, 'rgba(255,255,255,0.95)');
+  g.addColorStop(0.24, 'rgba(120,220,255,0.82)');
+  g.addColorStop(0.62, 'rgba(80,120,255,0.28)');
+  g.addColorStop(1, 'rgba(80,120,255,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(portal.x, portal.y, r * 1.8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(220,245,255,0.95)';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(portal.x, portal.y, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(160,210,255,0.75)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(portal.x, portal.y, r * 0.62, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,248,220,0.82)';
+  ctx.font = '13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('NEXT FLOOR', portal.x, portal.y - r - 18);
   ctx.restore();
 }
 
@@ -2430,7 +2961,9 @@ export function renderRoomsBackground(ctx, state) {
     const fall = (r.collapsing ? (clamp(r.collapseT, 0, 1) * (r.side * 0.25 + 640)) : 0);
     const a = (r.collapsing ? (1 - clamp(r.collapseT, 0, 1)) : 1);
     const rb = biomeByKey(r && r.biomeKey);
-    const label = (r.index === 0 ? "HUB" : `FLOOR ${r.index}${rb ? ` • ${String(rb.name || '').toUpperCase()}` : ''}`);
+    const label = (r.index === 0
+      ? "HUB"
+      : `FLOOR ${(r.floorNumber | 0) || 1} • ROOM ${(r.roomOrdinal | 0) || 1}/${(r.totalRooms | 0) || 1}${rb ? ` • ${String(rb.name || '').toUpperCase()}` : ''}`);
     drawTile(ctx, r, cam, { alpha: a, fall, label, time: state.time || 0, state });
   }
 
@@ -2454,5 +2987,9 @@ export function renderRoomsBackground(ctx, state) {
       rd._pitch = cam && cam.pitch ? cam.pitch : 1;
       drawBridge(ctx, rd, from, to, { alpha: 1 });
     }
+  }
+
+  if (rd.current && !rd.current.removed) {
+    drawFloorExitPortal(ctx, rd.current, state);
   }
 }

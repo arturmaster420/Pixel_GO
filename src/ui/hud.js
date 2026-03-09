@@ -1,5 +1,5 @@
 import { getControlMode } from "../core/mouseController.js";
-import { biomeByKey, biomeForFloorIndex } from "../world/biomes.js";
+import { biomeByKey } from "../world/biomes.js";
 
 function clamp01(n) {
   return n < 0 ? 0 : (n > 1 ? 1 : n);
@@ -15,24 +15,30 @@ function biomeNameUpper(key, fallback = "NEUTRAL") {
   return biome ? String(biome.name || fallback).toUpperCase() : fallback;
 }
 
+function encounterLabelUpper(state) {
+  return String(state?._roomEncounterLabel || '').toUpperCase();
+}
+
 function ensureRoomBannerState(state) {
   if (!state) return null;
   const roomIdx = (state.currentRoomIndex != null ? (state.currentRoomIndex | 0) : 0);
+  const floorNo = (state._floorNumber | 0) || 0;
+  const roomOrd = (state._floorRoomOrdinal | 0) || 0;
+  const roomsTot = (state._floorRoomsTotal | 0) || 0;
   const rd = state.roomDirector || null;
-  const currentBiomeKey = String(state._roomBiome || rd?.current?.biomeKey || "").toLowerCase();
-  const key = `${roomIdx}:${currentBiomeKey}`;
+  const currentBiomeKey = String(state._floorBiome || state._roomBiome || rd?.current?.biomeKey || "").toLowerCase();
+  const key = `${roomIdx}:${floorNo}:${roomOrd}:${currentBiomeKey}`;
   if (state._hudRoomBannerKey !== key) {
     state._hudRoomBannerKey = key;
-    const nextBiomeKey = roomIdx <= 0
-      ? ""
-      : String(rd?.next?.biomeKey || biomeForFloorIndex((roomIdx | 0) + 1, currentBiomeKey) || "").toLowerCase();
-    state._hudRoomBannerUntil = (state.time || 0) + (roomIdx <= 0 ? 2.0 : 2.5);
+    const nextBiomeKey = String(state._nextRoomBiome || rd?.next?.biomeKey || currentBiomeKey || "").toLowerCase();
+    const isHub = roomIdx <= 0 || floorNo <= 0;
+    state._hudRoomBannerUntil = (state.time || 0) + (isHub ? 2.0 : 2.4);
     state._hudRoomBanner = {
-      title: roomIdx <= 0 ? "HUB" : `ЭТАЖ ${roomIdx}`,
-      subtitle: roomIdx <= 0 ? "CENTRAL STATION" : `${biomeNameUpper(currentBiomeKey)} SECTOR`,
-      detail: roomIdx <= 0
-        ? "Portal Deck → Floor 1"
-        : (nextBiomeKey ? `ДАЛЬШЕ → ${biomeNameUpper(nextBiomeKey)}` : ""),
+      title: isHub ? "HUB" : `ЭТАЖ ${floorNo}`,
+      subtitle: isHub ? "CENTRAL STATION" : `${biomeNameUpper(currentBiomeKey)} • ${encounterLabelUpper(state) || 'ВОЛНЫ'} • КОМНАТА ${roomOrd}/${Math.max(roomOrd, roomsTot)}`,
+      detail: isHub
+        ? "Портал запускает новый ран"
+        : (state._floorExitActive ? "ПЕРЕХОД НА СЛЕДУЮЩИЙ ЭТАЖ ОТКРЫТ" : (nextBiomeKey ? `ДАЛЬШЕ → ${Math.min((roomOrd || 1) + 1, Math.max(roomOrd, roomsTot))}/${Math.max(roomOrd, roomsTot)} • ${biomeNameUpper(nextBiomeKey, 'NEUTRAL')}` : "")),
       accent: biomeAccentColor(currentBiomeKey),
     };
   }
@@ -175,16 +181,19 @@ if (infoX1 > infoX0 + 40) {
   // Floor (Pixel_GO) + Lobby state
   const roomIdx = (state.currentRoomIndex != null ? (state.currentRoomIndex | 0) : 0);
   const rd = state.roomDirector || null;
-  const currentBiomeKey = String(state._roomBiome || rd?.current?.biomeKey || "").toLowerCase();
+  const floorNo = (state._floorNumber | 0) || 0;
+  const roomOrd = (state._floorRoomOrdinal | 0) || 0;
+  const roomsTot = (state._floorRoomsTotal | 0) || 0;
+  const currentBiomeKey = String(state._floorBiome || state._roomBiome || rd?.current?.biomeKey || "").toLowerCase();
   const currentBiome = biomeByKey(currentBiomeKey);
-  const nextBiomeKey = roomIdx <= 0
-    ? ""
-    : String(rd?.next?.biomeKey || biomeForFloorIndex((roomIdx | 0) + 1, currentBiomeKey) || "").toLowerCase();
+  const nextBiomeKey = String(state._nextRoomBiome || rd?.next?.biomeKey || currentBiomeKey || "").toLowerCase();
   const nextBiome = biomeByKey(nextBiomeKey);
-  const floorBase = roomIdx <= 0 ? "HUB" : ("ЭТАЖ " + roomIdx);
-  const floorTag = state._roomIsBoss ? "BOSS" : (state._roomIsMiniBoss ? "MINI" : "");
-  const biomeTag = roomIdx <= 0 ? "" : (currentBiome ? (" • " + String(currentBiome.name || "").toUpperCase()) : " • NEUTRAL");
-  const floorText = floorTag ? (floorBase + biomeTag + " • " + floorTag) : (floorBase + biomeTag);
+  const floorBase = roomIdx <= 0 || floorNo <= 0 ? "HUB" : ("ЭТАЖ " + floorNo);
+  const roomProg = (roomIdx <= 0 || floorNo <= 0) ? "" : (` • КОМНАТА ${roomOrd}/${Math.max(roomOrd, roomsTot)}`);
+  const floorTag = state._roomIsBoss ? "FINAL" : "";
+  const encounterTag = roomIdx <= 0 || floorNo <= 0 ? "" : ((state._roomEncounterLabel || '').toUpperCase() ? (" • " + String(state._roomEncounterLabel || '').toUpperCase()) : "");
+  const biomeTag = roomIdx <= 0 || floorNo <= 0 ? "" : (currentBiome ? (" • " + String(currentBiome.name || "").toUpperCase()) : " • NEUTRAL");
+  const floorText = floorTag ? (floorBase + biomeTag + roomProg + encounterTag + " • " + floorTag) : (floorBase + biomeTag + roomProg + encounterTag);
   const rk = (state._roomKilled | 0) || 0;
   const rq = (state._roomQuota | 0) || 0;
   const progText = (roomIdx > 0 && rq > 0) ? (rk + "/" + rq) : "";
@@ -197,7 +206,9 @@ if (infoX1 > infoX0 + 40) {
 
   const bridgeBuilding = (roomIdx > 0) && !!state._roomCleared && !!state._roomHasNext && !state._bridgeBuilt;
   const bridgeP = typeof state._bridgeP === 'number' ? state._bridgeP : 0;
-  const bridgeTxt = bridgeBuilding ? ("Bridge " + Math.round(clamp01(bridgeP) * 100) + "%" + (nextBiome ? (" → " + String(nextBiome.name || "").toUpperCase()) : "")) : "";
+  const bridgeTxt = state._floorExitActive
+    ? 'EXIT READY'
+    : (bridgeBuilding ? ("DOOR " + Math.round(clamp01(bridgeP) * 100) + "%" + (nextBiome ? (" → " + String(nextBiome.name || "").toUpperCase()) : "")) : (state._roomCleared && state._roomHasNext ? 'ДАЛЬШЕ ОТКРЫТО' : ''));
 
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
