@@ -1,0 +1,87 @@
+function num(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+const ART_REL = {
+  core:        { x:  0.0000, y:  0.0000 },
+  portal:      { x:  0.0000, y: -0.4212 },
+  merchant:    { x: -0.3478, y: -0.3389 },
+  tierMaster:  { x:  0.3478, y: -0.3389 },
+  left:        { x: -0.4146, y: -0.0879 },
+  right:       { x:  0.4146, y: -0.0879 },
+  leftBottom:  { x: -0.3480, y:  0.2235 },
+  rightBottom: { x:  0.3480, y:  0.2235 },
+  start:       { x:  0.0030, y:  0.2774 },
+};
+
+function relNode(cx, cy, artSize, rel) {
+  return { x: cx + artSize * rel.x, y: cy + artSize * rel.y };
+}
+
+function fallbackNodePositions(cx, cy, artSize) {
+  return {
+    portal: relNode(cx, cy, artSize, ART_REL.portal),
+    merchant: relNode(cx, cy, artSize, ART_REL.merchant),
+    tierMaster: relNode(cx, cy, artSize, ART_REL.tierMaster),
+    left: relNode(cx, cy, artSize, ART_REL.left),
+    right: relNode(cx, cy, artSize, ART_REL.right),
+    leftBottom: relNode(cx, cy, artSize, ART_REL.leftBottom),
+    rightBottom: relNode(cx, cy, artSize, ART_REL.rightBottom),
+    start: relNode(cx, cy, artSize, ART_REL.start),
+  };
+}
+
+export function getHubSceneLayout(arenaSpec) {
+  const hv = arenaSpec?.geometry?.hubVisual || null;
+  const cx = num(hv?.cx, 0);
+  const cy = num(hv?.cy, 0);
+  const side = Math.max(520, num(hv?.side, 600));
+  const artSize = Math.max(980, side * 1.80);
+  const bgSize = artSize * 1.9;
+  const corePos = hv?.core || relNode(cx, cy, artSize, ART_REL.core);
+  const fallbackNodes = fallbackNodePositions(cx, cy, artSize);
+  const nodes = {
+    portal: hv?.nodes?.portal || fallbackNodes.portal,
+    merchant: hv?.nodes?.merchant || fallbackNodes.merchant,
+    tierMaster: hv?.nodes?.tierMaster || fallbackNodes.tierMaster,
+    left: hv?.nodes?.left || fallbackNodes.left,
+    right: hv?.nodes?.right || fallbackNodes.right,
+    leftBottom: hv?.nodes?.leftBottom || fallbackNodes.leftBottom,
+    rightBottom: hv?.nodes?.rightBottom || fallbackNodes.rightBottom,
+    start: hv?.nodes?.start || fallbackNodes.start,
+  };
+  const coreSize = artSize * 0.148;
+  const coreSparkSize = artSize * 0.048;
+  const portalBeamH = artSize * 0.90;
+  const portalBeamW = artSize * 0.118;
+  const portalBeamBaseY = nodes.portal.y + (artSize * 0.90) * 0.272;
+  const nodeGlow = artSize * 0.104;
+  return {
+    cx,
+    cy,
+    side,
+    artSize,
+    bgSize,
+    core: corePos,
+    coreSize,
+    coreSparkSize,
+    portalBeamH,
+    portalBeamW,
+    portalBeamBaseY,
+    nodeGlow,
+    nodes,
+    activeNodes: [
+      { id: 'portal', label: 'PORTAL', ...nodes.portal },
+      { id: 'merchant', label: 'MERCHANT', ...nodes.merchant },
+      { id: 'tierMaster', label: 'TIER MASTER', ...nodes.tierMaster },
+      { id: 'start', label: 'START', ...nodes.start },
+    ],
+    futureNodes: [
+      { id: 'left', ...nodes.left },
+      { id: 'right', ...nodes.right },
+      { id: 'leftBottom', ...nodes.leftBottom },
+      { id: 'rightBottom', ...nodes.rightBottom },
+    ],
+  };
+}

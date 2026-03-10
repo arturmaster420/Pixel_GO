@@ -33,7 +33,7 @@ function addSteppedLine(list, navZones, id, ax, ay, bx, by, thickness = 34, inse
   const dy = by - ay;
   const len = Math.hypot(dx, dy);
   if (len < 8) return [];
-  const step = Math.max(thickness * 0.62, 16);
+  const step = Math.max(thickness * 0.62, 18);
   const count = Math.max(2, Math.ceil(len / step));
   const out = [];
   for (let i = 0; i <= count; i++) {
@@ -45,14 +45,14 @@ function addSteppedLine(list, navZones, id, ax, ay, bx, by, thickness = 34, inse
   return out;
 }
 
-function addEllipseBands(list, navZones, id, cx, cy, rx, ry, bands = 8, inset = 8) {
+function addEllipseBands(list, navZones, id, cx, cy, rx, ry, bands = 8, inset = 10) {
   const out = [];
-  const bandH = Math.max(16, ((ry * 2) / (bands * 2 + 1)) * 1.16);
+  const bandH = Math.max(20, (ry * 2) / (bands * 2 + 1) * 1.12);
   for (let i = -bands; i <= bands; i++) {
     const t = i / bands;
-    const y = cy + t * ry * 0.97;
+    const y = cy + t * ry * 0.96;
     const halfW = rx * Math.sqrt(Math.max(0, 1 - t * t));
-    const w = Math.max(bandH * 1.2, halfW * 2);
+    const w = Math.max(bandH * 1.1, halfW * 2);
     out.push(addCentered(list, navZones, `${id}_${i + bands}`, cx, y, w, bandH, inset));
   }
   return out;
@@ -66,15 +66,15 @@ function ellipseEdgePoint(cx, cy, rx, ry, tx, ty, shrink = 0.97) {
 }
 
 const ART_REL = {
-  core:        { x:  0.0000, y: -0.0830 },
-  portal:      { x:  0.0000, y: -0.3950 },
-  merchant:    { x: -0.3540, y: -0.3350 },
-  tierMaster:  { x:  0.3540, y: -0.3350 },
-  left:        { x: -0.4480, y: -0.0840 },
-  right:       { x:  0.4480, y: -0.0840 },
-  leftBottom:  { x: -0.3640, y:  0.2170 },
-  rightBottom: { x:  0.3640, y:  0.2170 },
-  start:       { x:  0.0000, y:  0.2960 },
+  core:        { x:  0.0000, y:  0.0000 },
+  portal:      { x:  0.0000, y: -0.4212 },
+  merchant:    { x: -0.3478, y: -0.3389 },
+  tierMaster:  { x:  0.3478, y: -0.3389 },
+  left:        { x: -0.4146, y: -0.0879 },
+  right:       { x:  0.4146, y: -0.0879 },
+  leftBottom:  { x: -0.3480, y:  0.2235 },
+  rightBottom: { x:  0.3480, y:  0.2235 },
+  start:       { x:  0.0030, y:  0.2774 },
 };
 
 function relNode(cx, cy, artSize, rel) {
@@ -93,12 +93,12 @@ export function generateHubArena({ roomIndex = 0, centerX = 0, centerY = 0, side
   const walls = [];
   const hazardZones = [];
 
-  const artSize = Math.max(2200, side * 4.8);
-
-  // Walkable footprint tuned to the visible GOLD geometry of this specific HUB asset.
-  // Center = inside the middle of the 3 thick outer gold rings.
-  const centerRx = artSize * 0.300;
-  const centerRy = artSize * 0.148;
+  const artSize = Math.max(980, side * 1.80);
+  const bridgeT = clamp(side * 0.032, 20, 28);
+  const centerRx = artSize * 0.362;
+  const centerRy = artSize * 0.276;
+  const podSmallR = artSize * 0.088;
+  const podDiagR = artSize * 0.096;
 
   const nodes = {
     portal: relNode(centerX, centerY, artSize, ART_REL.portal),
@@ -112,37 +112,41 @@ export function generateHubArena({ roomIndex = 0, centerX = 0, centerY = 0, side
   };
   const core = relNode(centerX, centerY, artSize, ART_REL.core);
 
-  addEllipseBands(platforms, navZones, 'hub_core_disc', core.x, core.y, centerRx, centerRy, 28, 1);
+  addEllipseBands(platforms, navZones, 'hub_core_disc', centerX, centerY, centerRx, centerRy, 28, 2);
 
   const podConfig = {
-    portal: { rx: artSize * 0.080, ry: artSize * 0.038, bands: 12, bridgeT: artSize * 0.022 },
-    merchant: { rx: artSize * 0.082, ry: artSize * 0.039, bands: 12, bridgeT: artSize * 0.022 },
-    tierMaster: { rx: artSize * 0.082, ry: artSize * 0.039, bands: 12, bridgeT: artSize * 0.022 },
-    left: { rx: artSize * 0.055, ry: artSize * 0.030, bands: 10, bridgeT: artSize * 0.019 },
-    right: { rx: artSize * 0.055, ry: artSize * 0.030, bands: 10, bridgeT: artSize * 0.019 },
-    leftBottom: { rx: artSize * 0.084, ry: artSize * 0.041, bands: 12, bridgeT: artSize * 0.023 },
-    rightBottom: { rx: artSize * 0.084, ry: artSize * 0.041, bands: 12, bridgeT: artSize * 0.023 },
-    start: { rx: artSize * 0.084, ry: artSize * 0.041, bands: 12, bridgeT: artSize * 0.023 },
+    portal: { r: podSmallR, bands: 16 },
+    merchant: { r: podDiagR, bands: 16 },
+    tierMaster: { r: podDiagR, bands: 16 },
+    left: { r: podSmallR, bands: 16 },
+    right: { r: podSmallR, bands: 16 },
+    leftBottom: { r: podDiagR, bands: 16 },
+    rightBottom: { r: podDiagR, bands: 16 },
+    start: { r: podSmallR * 1.02, bands: 16 },
   };
 
   const platformByKey = {};
   for (const [key, pos] of Object.entries(nodes)) {
     const cfg = podConfig[key];
-    platformByKey[key] = addEllipseBands(platforms, navZones, `hub_${key}_pod`, pos.x, pos.y, cfg.rx, cfg.ry, cfg.bands, 1);
+    platformByKey[key] = addEllipseBands(platforms, navZones, `hub_${key}_pod`, pos.x, pos.y, cfg.r, cfg.r * 0.84, cfg.bands, 2);
   }
 
   for (const [key, pos] of Object.entries(nodes)) {
+    const start = ellipseEdgePoint(centerX, centerY, centerRx, centerRy, pos.x, pos.y, 0.992);
     const cfg = podConfig[key];
-    const start = ellipseEdgePoint(core.x, core.y, centerRx, centerRy, pos.x, pos.y, 0.965);
-    const end = ellipseEdgePoint(pos.x, pos.y, cfg.rx, cfg.ry, core.x, core.y, 0.965);
-    addSteppedLine(bridges, navZones, `hub_bridge_${key}`, start.x, start.y, end.x, end.y, Math.max(20, cfg.bridgeT), 1);
+    const inset = cfg.r * 0.72;
+    const dx = pos.x - start.x;
+    const dy = pos.y - start.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const end = { x: pos.x - (dx / len) * inset, y: pos.y - (dy / len) * inset };
+    addSteppedLine(bridges, navZones, `hub_bridge_${key}`, start.x, start.y, end.x, end.y, bridgeT, 2);
   }
 
-  const playerStart = { x: nodes.start.x, y: nodes.start.y };
+  const playerStart = { x: centerX, y: centerY + centerRy * 0.18 };
 
   gateAnchors.push(
-    { side: 'N', x: nodes.portal.x, y: nodes.portal.y - podConfig.portal.ry * 0.25, socket: 'N', tag: 'portal_main' },
-    { side: 'S', x: nodes.start.x, y: nodes.start.y + podConfig.start.ry * 0.68, socket: 'S', tag: 'arrival_entry' },
+    { side: 'N', x: nodes.portal.x, y: nodes.portal.y - podSmallR * 0.35, socket: 'N', tag: 'portal_main' },
+    { side: 'S', x: nodes.start.x, y: nodes.start.y + podSmallR * 0.72, socket: 'S', tag: 'arrival_entry' },
   );
 
   decorAnchors.push(
@@ -230,8 +234,8 @@ export function generateHubArena({ roomIndex = 0, centerX = 0, centerY = 0, side
       center: bossCenter,
       safeLanes: [
         { x: bossCenter.x, y: bossCenter.y, r: innerR * 0.92 },
-        { x: nodes.merchant.x, y: nodes.merchant.y, r: artSize * 0.058 },
-        { x: nodes.tierMaster.x, y: nodes.tierMaster.y, r: artSize * 0.058 },
+        { x: nodes.merchant.x, y: nodes.merchant.y, r: artSize * 0.07 },
+        { x: nodes.tierMaster.x, y: nodes.tierMaster.y, r: artSize * 0.07 },
       ],
       pressureZones: [],
       phaseNodes: [nodes.portal],

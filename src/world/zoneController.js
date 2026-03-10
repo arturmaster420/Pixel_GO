@@ -15,26 +15,86 @@ export const WORLD_SCALE = 0.5;
 export const HUB_HALF = 300;          // hub half-size (side = 600). Hub stays unscaled.
 export const HUB_CORNER_R = 70;       // rounded corner radius (unscaled)
 
-// Rounded-square hit test (with optional padding).
-// Uses standard rounded-rect inclusion: clamp to corner circle.
+const HUB_ART_REL = {
+  portal:      { x:  0.0000, y: -0.3920 },
+  merchant:    { x: -0.3112, y: -0.2432 },
+  tierMaster:  { x:  0.3172, y: -0.2339 },
+  left:        { x: -0.4219, y: -0.0694 },
+  right:       { x:  0.4111, y: -0.0678 },
+  leftBottom:  { x: -0.3379, y:  0.2343 },
+  rightBottom: { x:  0.3472, y:  0.2388 },
+  start:       { x: -0.0019, y:  0.3216 },
+};
+
+function pointInEllipse(px, py, cx, cy, rx, ry) {
+  const dx = px - cx;
+  const dy = py - cy;
+  const nx = dx / Math.max(1e-6, rx);
+  const ny = dy / Math.max(1e-6, ry);
+  return (nx * nx + ny * ny) <= 1;
+}
+
+function pointNearSegment(px, py, ax, ay, bx, by, r) {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const apx = px - ax;
+  const apy = py - ay;
+  const den = abx * abx + aby * aby || 1;
+  let t = (apx * abx + apy * aby) / den;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  const qx = ax + abx * t;
+  const qy = ay + aby * t;
+  const dx = px - qx;
+  const dy = py - qy;
+  return (dx * dx + dy * dy) <= r * r;
+}
+
+function relPoint(rel, artSize) {
+  return { x: rel.x * artSize, y: rel.y * artSize };
+}
+
+// Art-shaped hit test (main disc + 8 circular pods + bridge capsules).
 export function isPointInHub(x, y, pad = 0) {
-  const half = HUB_HALF + pad;
-  const cr = Math.min(HUB_CORNER_R + pad, half);
-  const inner = Math.max(half - cr, 0);
+  const side = HUB_HALF * 2;
+  const artSize = Math.max(760, side * 1.38);
+  const centerRx = artSize * 0.365 + pad;
+  const centerRy = artSize * 0.292 + pad;
+  const podSmallR = artSize * 0.116 + pad;
+  const podDiagR = artSize * 0.128 + pad;
+  const bridgeR = Math.max(18, side * 0.030 + pad);
 
-  const ax = Math.abs(x);
-  const ay = Math.abs(y);
+  if (pointInEllipse(x, y, 0, 0, centerRx, centerRy)) return true;
 
-  // Quick reject
-  if (ax > half || ay > half) return false;
+  const pods = {
+    portal: podSmallR,
+    merchant: podDiagR,
+    tierMaster: podDiagR,
+    left: podSmallR,
+    right: podSmallR,
+    leftBottom: podDiagR,
+    rightBottom: podDiagR,
+    start: podSmallR * 1.04,
+  };
 
-  // Inside the straight edges region.
-  if (ax <= inner || ay <= inner) return true;
+  for (const [key, rel] of Object.entries(HUB_ART_REL)) {
+    const p = relPoint(rel, artSize);
+    const rr = pods[key];
+    if (pointInEllipse(x, y, p.x, p.y, rr, rr * 0.82)) return true;
 
-  // Corner circle test.
-  const dx = ax - inner;
-  const dy = ay - inner;
-  return (dx * dx + dy * dy) <= (cr * cr);
+    const dx = p.x;
+    const dy = p.y;
+    const denom = Math.sqrt((dx * dx) / Math.max(1, centerRx * centerRx) + (dy * dy) / Math.max(1, centerRy * centerRy)) || 1;
+    const sx = (dx / denom) * 0.985;
+    const sy = (dy / denom) * 0.985;
+    const inset = rr * 0.60;
+    const len = Math.hypot(dx - sx, dy - sy) || 1;
+    const ex = p.x - ((dx - sx) / len) * inset;
+    const ey = p.y - ((dy - sy) / len) * inset;
+    if (pointNearSegment(x, y, sx, sy, ex, ey, bridgeR)) return true;
+  }
+
+  return false;
 }
 
 export const ZONE_RADII = {
