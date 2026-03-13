@@ -1,4 +1,4 @@
-import { resolveSocketPoint, primaryEdgeForSocket } from '../roomRoute.js';
+import { resolveSocketPoint, primaryEdgeForSocket, socketVector } from '../roomRoute.js';
 import { buildWalkRectsFromNavZones, clampPointToRects } from '../floorCollision.js';
 
 function clamp(n, a, b) {
@@ -9,11 +9,20 @@ function rect(id, cx, cy, w, h) {
   return { id, type: 'rect', x: cx - w * 0.5, y: cy - h * 0.5, w, h };
 }
 
+function circle(id, cx, cy, r) {
+  return { id, type: 'circle', x: cx, y: cy, r };
+}
+
 function makeNavRect(id, cx, cy, w, h, inset = 8) {
   return rect(id, cx, cy, Math.max(18, w - inset), Math.max(18, h - inset));
 }
 
+function makeNavCircle(id, cx, cy, r, inset = 12) {
+  return circle(id, cx, cy, Math.max(18, r - inset));
+}
+
 function centerOf(r) {
+  if (String(r?.type || '') === 'circle') return { x: Number(r?.x || 0), y: Number(r?.y || 0) };
   return { x: Number(r?.x || 0) + Number(r?.w || 0) * 0.5, y: Number(r?.y || 0) + Number(r?.h || 0) * 0.5 };
 }
 
@@ -21,6 +30,13 @@ function pushPart(parts, nav, id, cx, cy, w, h, navInset = 8) {
   const p = rect(id, cx, cy, w, h);
   parts.push(p);
   nav.push(makeNavRect(`${id}_nav`, cx, cy, w, h, navInset));
+  return p;
+}
+
+function pushCircle(parts, nav, id, cx, cy, r, navInset = 14) {
+  const p = circle(id, cx, cy, r);
+  parts.push(p);
+  nav.push(makeNavCircle(`${id}_nav`, cx, cy, r, navInset));
   return p;
 }
 
@@ -60,7 +76,9 @@ function boundsFromRects(rects) {
   let out = null;
   for (const r of rects) {
     if (!r) continue;
-    const a = { minX: r.x, minY: r.y, maxX: r.x + r.w, maxY: r.y + r.h };
+    const a = String(r.type || '') === 'circle'
+      ? { minX: r.x - r.r, minY: r.y - r.r, maxX: r.x + r.r, maxY: r.y + r.r }
+      : { minX: r.x, minY: r.y, maxX: r.x + r.w, maxY: r.y + r.h };
     out = out ? {
       minX: Math.min(out.minX, a.minX),
       minY: Math.min(out.minY, a.minY),
@@ -311,155 +329,111 @@ function insideBias(bounds, centerX, centerY, socket, depth, walkRects) {
 
 
 
-function buildNeutralIntroSceneGeometry({ templateKey = '', role = '', centerX, centerY, side, routeStyle = '', lateralOffset = 0, entrySocket = '' } = {}) {
-  const tk = String(templateKey || '').toLowerCase();
-  if (!tk.startsWith('neutral_intro_')) return null;
+function circleSocketPoint(cx, cy, r, socket = 'N', outside = 0) {
+  const vec = socketVector(socket || 'N', 'N');
+  const len = Math.hypot(Number(vec?.dx) || 0, Number(vec?.dy) || 0) || 1;
+  const nx = (Number(vec?.dx) || 0) / len;
+  const ny = (Number(vec?.dy) || 0) / len;
+  return { x: cx + nx * (r + outside), y: cy + ny * (r + outside) };
+}
+
+
+function buildBiomeCircleArenaGeometry({ biome = '', role = '', centerX, centerY, side, entrySocket = '', exitSocket = '', portalSocket = '' } = {}) {
   const platforms = [];
   const bridges = [];
   const navZones = [];
   const decorAnchors = [];
   const coverAnchors = [];
+  const hazardAnchors = [];
+  const hazardZones = [];
   const bossMoveNodes = [];
-  const bias = side * clamp(Number(lateralOffset) || 0, -0.25, 0.25) * 0.08;
-  const wide = clamp(side * 0.076, 54, 108);
-  const medium = clamp(side * 0.060, 40, 92);
-  const thin = clamp(side * 0.044, 28, 68);
-  const micro = clamp(side * 0.055, 34, 74);
-  const small = clamp(side * 0.078, 50, 94);
-  const core = {};
+  const safeLanes = [];
+  const pressureZones = [];
+  const phaseNodes = [];
 
-  const node = (id, cx, cy, w, h, inset = 8) => pushPart(platforms, navZones, id, cx, cy, w, h, inset);
-  const link = (id, a, b, width = medium, inset = 6, bridgeBias = 0) => pushConnector(bridges, navZones, id, a, b, width, inset, bridgeBias);
+  const roleRadiusMul = {
+    vestibule: 0.45,
+    hall: 0.465,
+    split: 0.478,
+    pocket: 0.448,
+    ring: 0.49,
+    arena: 0.505,
+    shrine: 0.462,
+    bridge: 0.448,
+    crucible: 0.488,
+    crown: 0.525,
+  };
+  const biomeRadiusAdd = {
+    neutral: 0.0,
+    electric: -0.004,
+    fire: 0.004,
+    ice: 0.010,
+    dark: -0.010,
+    light: 0.006,
+  };
+  const radius = clamp(side * ((roleRadiusMul[role] || 0.46) + (biomeRadiusAdd[String(biome || '').toLowerCase()] || 0)), 320, 580);
+  const walkInset = clamp(radius * 0.050, 12, 24);
+  const platform = pushCircle(platforms, navZones, `${String(biome || 'neutral').toLowerCase()}_${String(role || 'arena').toLowerCase()}_orb`, centerX, centerY, radius, walkInset);
 
-  if (tk === 'neutral_intro_vestibule') {
-    core.arrival = node('ni_v_arrival', centerX, centerY + side * 0.36, side * 0.11, side * 0.06, 8);
-    core.threshold = node('ni_v_threshold', centerX, centerY + side * 0.24, side * 0.13, side * 0.07, 8);
-    core.southSpine = node('ni_v_south_spine', centerX, centerY + side * 0.14, small * 0.92, micro * 0.82, 8);
-    core.rotunda = node('ni_v_rotunda', centerX + bias, centerY + side * 0.01, side * 0.16, side * 0.13, 10);
-    core.galleryL = node('ni_v_gallery_l', centerX - side * 0.20, centerY - side * 0.02, small, micro * 0.82, 8);
-    core.galleryR = node('ni_v_gallery_r', centerX + side * 0.20, centerY - side * 0.02, small, micro * 0.82, 8);
-    core.deckL = node('ni_v_deck_l', centerX - side * 0.31, centerY - side * 0.09, micro * 0.94, micro * 0.74, 8);
-    core.deckR = node('ni_v_deck_r', centerX + side * 0.31, centerY - side * 0.09, micro * 0.94, micro * 0.74, 8);
-    core.northSpine = node('ni_v_north_spine', centerX + bias * 0.4, centerY - side * 0.15, small * 0.92, micro * 0.82, 8);
-    core.northVest = node('ni_v_north_vest', centerX + bias * 0.3, centerY - side * 0.28, side * 0.12, side * 0.07, 8);
-    core.skyL = node('ni_v_sky_l', centerX - side * 0.12, centerY - side * 0.17, micro * 0.82, micro * 0.64, 8);
-    core.skyR = node('ni_v_sky_r', centerX + side * 0.12, centerY - side * 0.17, micro * 0.82, micro * 0.64, 8);
-    link('ni_v_l0', core.arrival, core.threshold, thin);
-    link('ni_v_l1', core.threshold, core.southSpine, thin);
-    link('ni_v_l2', core.southSpine, core.rotunda, medium);
-    link('ni_v_l3', core.galleryL, core.rotunda, thin);
-    link('ni_v_l4', core.rotunda, core.galleryR, thin);
-    link('ni_v_l5', core.deckL, core.galleryL, thin);
-    link('ni_v_l6', core.galleryR, core.deckR, thin);
-    link('ni_v_l7', core.rotunda, core.northSpine, thin);
-    link('ni_v_l8', core.northSpine, core.northVest, thin);
-    link('ni_v_l9', core.skyL, core.rotunda, thin);
-    link('ni_v_l10', core.rotunda, core.skyR, thin);
-    decorAnchors.push({ x: centerX, y: centerY - side * 0.07, kind: 'hologrid_pylon', size: clamp(side * 0.028, 18, 30) });
-    decorAnchors.push({ x: centerOf(core.deckL).x, y: centerOf(core.deckL).y, kind: 'observation_deck', size: 20 });
-    decorAnchors.push({ x: centerOf(core.deckR).x, y: centerOf(core.deckR).y, kind: 'observation_deck', size: 20 });
-  } else if (tk === 'neutral_intro_hall') {
-    core.entry = node('ni_h_entry', centerX - side * 0.34, centerY + side * 0.12, side * 0.10, side * 0.06, 8);
-    core.galleryA = node('ni_h_gallery_a', centerX - side * 0.20, centerY + side * 0.08, side * 0.11, side * 0.07, 8);
-    core.rotunda = node('ni_h_rotunda', centerX + bias * 0.4, centerY + side * 0.02, side * 0.14, side * 0.11, 10);
-    core.galleryB = node('ni_h_gallery_b', centerX + side * 0.18, centerY - side * 0.01, side * 0.12, side * 0.07, 8);
-    core.galleryC = node('ni_h_gallery_c', centerX + side * 0.35, centerY - side * 0.01, side * 0.11, side * 0.07, 8);
-    core.exit = node('ni_h_exit', centerX + side * 0.48, centerY - side * 0.01, side * 0.10, side * 0.06, 8);
-    core.northA = node('ni_h_north_a', centerX - side * 0.05, centerY - side * 0.14, micro, micro * 0.72, 8);
-    core.northB = node('ni_h_north_b', centerX + side * 0.08, centerY - side * 0.22, micro, micro * 0.72, 8);
-    core.deckL = node('ni_h_deck_l', centerX - side * 0.28, centerY - side * 0.08, micro * 0.92, micro * 0.70, 8);
-    core.deckR = node('ni_h_deck_r', centerX + side * 0.26, centerY + side * 0.10, micro * 0.92, micro * 0.70, 8);
-    link('ni_h_l1', core.entry, core.galleryA, thin);
-    link('ni_h_l2', core.galleryA, core.rotunda, medium);
-    link('ni_h_l3', core.rotunda, core.galleryB, medium);
-    link('ni_h_l4', core.galleryB, core.galleryC, thin);
-    link('ni_h_l5', core.galleryC, core.exit, thin);
-    link('ni_h_l6', core.rotunda, core.northA, thin);
-    link('ni_h_l7', core.northA, core.northB, thin);
-    link('ni_h_l8', core.deckL, core.galleryA, thin);
-    link('ni_h_l9', core.galleryB, core.deckR, thin);
-    decorAnchors.push({ x: centerX + side * 0.10, y: centerY - side * 0.01, kind: 'transit_rail', size: 24 });
-    decorAnchors.push({ x: centerOf(core.deckL).x, y: centerOf(core.deckL).y, kind: 'relay_balcony', size: 18 });
-    decorAnchors.push({ x: centerOf(core.deckR).x, y: centerOf(core.deckR).y, kind: 'observation_deck', size: 18 });
-  } else if (tk === 'neutral_intro_split') {
-    core.entry = node('ni_s_entry', centerX - side * 0.34, centerY + side * 0.03, side * 0.11, side * 0.06, 8);
-    core.transit = node('ni_s_transit', centerX - side * 0.18, centerY + side * 0.03, small, micro * 0.80, 8);
-    core.rotunda = node('ni_s_rotunda', centerX + bias * 0.45, centerY + side * 0.02, side * 0.15, side * 0.12, 10);
-    core.eastA = node('ni_s_east_a', centerX + side * 0.20, centerY + side * 0.02, side * 0.10, side * 0.06, 8);
-    core.eastB = node('ni_s_east_b', centerX + side * 0.34, centerY + side * 0.02, side * 0.10, side * 0.06, 8);
-    core.north = node('ni_s_north', centerX + side * 0.04, centerY - side * 0.17, side * 0.10, side * 0.06, 8);
-    core.service = node('ni_s_service', centerX + side * 0.20, centerY - side * 0.14, micro * 0.92, micro * 0.68, 8);
-    core.sidebay = node('ni_s_sidebay', centerX - side * 0.14, centerY - side * 0.12, micro * 0.92, micro * 0.68, 8);
-    core.south = node('ni_s_south', centerX - side * 0.03, centerY + side * 0.20, side * 0.10, side * 0.06, 8);
-    core.overR = node('ni_s_over_r', centerX + side * 0.30, centerY - side * 0.10, micro * 0.84, micro * 0.66, 8);
-    link('ni_s_l1', core.entry, core.transit, thin);
-    link('ni_s_l2', core.transit, core.rotunda, medium);
-    link('ni_s_l3', core.rotunda, core.eastA, thin);
-    link('ni_s_l4', core.eastA, core.eastB, thin);
-    link('ni_s_l5', core.rotunda, core.north, thin);
-    link('ni_s_l6', core.south, core.rotunda, thin);
-    link('ni_s_l7', core.service, core.rotunda, thin);
-    link('ni_s_l8', core.sidebay, core.rotunda, thin);
-    link('ni_s_l9', core.service, core.overR, thin);
-    decorAnchors.push({ x: centerOf(core.service).x, y: centerOf(core.service).y, kind: 'dock', size: 20 });
-    decorAnchors.push({ x: centerOf(core.sidebay).x, y: centerOf(core.sidebay).y, kind: 'relay_balcony', size: 18 });
-    decorAnchors.push({ x: centerOf(core.overR).x, y: centerOf(core.overR).y, kind: 'observation_deck', size: 18 });
-  } else if (tk === 'neutral_intro_arena') {
-    core.entry = node('ni_a_entry', centerX - side * 0.33, centerY + side * 0.05, side * 0.11, side * 0.06, 8);
-    core.gate = node('ni_a_gate', centerX - side * 0.17, centerY + side * 0.05, small, micro * 0.80, 8);
-    core.center = node('ni_a_center', centerX + bias * 0.35, centerY + side * 0.01, side * 0.18, side * 0.14, 10);
-    core.eastA = node('ni_a_east_a', centerX + side * 0.18, centerY + side * 0.01, side * 0.11, side * 0.07, 8);
-    core.eastB = node('ni_a_east_b', centerX + side * 0.33, centerY + side * 0.01, side * 0.11, side * 0.07, 8);
-    core.north = node('ni_a_north', centerX + side * 0.04, centerY - side * 0.18, side * 0.10, side * 0.06, 8);
-    core.balL = node('ni_a_bal_l', centerX - side * 0.12, centerY - side * 0.14, micro * 0.92, micro * 0.66, 8);
-    core.balR = node('ni_a_bal_r', centerX + side * 0.16, centerY - side * 0.12, micro * 0.92, micro * 0.66, 8);
-    core.tail = node('ni_a_tail', centerX + side * 0.02, centerY + side * 0.20, side * 0.12, side * 0.06, 8);
-    core.tailCap = node('ni_a_tail_cap', centerX + side * 0.02, centerY + side * 0.30, micro, micro * 0.66, 8);
-    link('ni_a_l1', core.entry, core.gate, thin);
-    link('ni_a_l2', core.gate, core.center, medium);
-    link('ni_a_l3', core.center, core.eastA, thin);
-    link('ni_a_l4', core.eastA, core.eastB, thin);
-    link('ni_a_l5', core.center, core.north, thin);
-    link('ni_a_l6', core.tail, core.center, thin);
-    link('ni_a_l7', core.tail, core.tailCap, thin);
-    link('ni_a_l8', core.balL, core.center, thin);
-    link('ni_a_l9', core.center, core.balR, thin);
-    decorAnchors.push({ x: centerX + side * 0.02, y: centerY + side * 0.01, kind: 'reactor', size: 24 });
-    decorAnchors.push({ x: centerOf(core.balL).x, y: centerOf(core.balL).y, kind: 'observation_deck', size: 18 });
-    decorAnchors.push({ x: centerOf(core.balR).x, y: centerOf(core.balR).y, kind: 'observation_deck', size: 18 });
-  } else if (tk === 'neutral_intro_crown') {
-    core.processionalA = node('ni_c_proc_a', centerX, centerY + side * 0.28, side * 0.10, side * 0.06, 8);
-    core.processionalB = node('ni_c_proc_b', centerX, centerY + side * 0.16, side * 0.11, side * 0.06, 8);
-    core.dais = node('ni_c_dais', centerX, centerY + side * 0.01, side * 0.18, side * 0.14, 10);
-    core.north = node('ni_c_north', centerX, centerY - side * 0.19, side * 0.10, side * 0.06, 8);
-    core.left = node('ni_c_left', centerX - side * 0.22, centerY + side * 0.01, micro * 1.02, micro * 0.72, 8);
-    core.right = node('ni_c_right', centerX + side * 0.22, centerY + side * 0.01, micro * 1.02, micro * 0.72, 8);
-    core.haloNw = node('ni_c_halo_nw', centerX - side * 0.12, centerY - side * 0.10, micro * 0.82, micro * 0.58, 8);
-    core.haloNe = node('ni_c_halo_ne', centerX + side * 0.12, centerY - side * 0.10, micro * 0.82, micro * 0.58, 8);
-    core.haloSw = node('ni_c_halo_sw', centerX - side * 0.12, centerY + side * 0.12, micro * 0.82, micro * 0.58, 8);
-    core.haloSe = node('ni_c_halo_se', centerX + side * 0.12, centerY + side * 0.12, micro * 0.82, micro * 0.58, 8);
-    core.skyL = node('ni_c_sky_l', centerX - side * 0.24, centerY - side * 0.12, micro * 0.72, micro * 0.52, 8);
-    core.skyR = node('ni_c_sky_r', centerX + side * 0.24, centerY - side * 0.12, micro * 0.72, micro * 0.52, 8);
-    link('ni_c_l1', core.processionalA, core.processionalB, thin);
-    link('ni_c_l2', core.processionalB, core.dais, thin);
-    link('ni_c_l3', core.dais, core.north, thin);
-    link('ni_c_l4', core.left, core.dais, thin);
-    link('ni_c_l5', core.dais, core.right, thin);
-    link('ni_c_l6', core.haloNw, core.haloNe, thin);
-    link('ni_c_l7', core.haloSw, core.haloSe, thin);
-    link('ni_c_l8', core.haloNw, core.dais, thin);
-    link('ni_c_l9', core.dais, core.haloSe, thin);
-    link('ni_c_l10', core.skyL, core.haloNw, thin);
-    link('ni_c_l11', core.haloNe, core.skyR, thin);
-    decorAnchors.push({ x: centerX, y: centerY + side * 0.01, kind: 'hub_core', size: clamp(side * 0.032, 22, 36) });
-    decorAnchors.push({ x: centerX, y: centerY - side * 0.19, kind: 'hologrid_pylon', size: 22 });
-  }
+  const entryInner = circleSocketPoint(centerX, centerY, radius * 0.66, entrySocket || 'S', 0);
+  const exitInner = circleSocketPoint(centerX, centerY, radius * 0.66, exitSocket || portalSocket || 'N', 0);
+  const portalInner = circleSocketPoint(centerX, centerY, radius * 0.72, portalSocket || exitSocket || 'N', 0);
+  const playerStart = {
+    x: centerX * 0.22 + entryInner.x * 0.78,
+    y: centerY * 0.22 + entryInner.y * 0.78,
+  };
+  const bossCenter = { x: centerX, y: centerY };
 
-  const partsBounds = boundsFromRects([...(platforms || []), ...(bridges || [])]);
-  const walkRects = buildWalkRectsFromNavZones(navZones, { seamGap: 12, seamMinOverlap: 16, touchThickness: 10 });
-  const playerStart = insideBias(partsBounds, centerX, centerY, entrySocket || 'S', side * 0.12, walkRects);
-  const bossCenter = centerOf(core.dais || core.center || core.rotunda || core.north || core.entry || Object.values(core).find(Boolean));
-  bossMoveNodes.push(...uniqueAnchors(Object.values(core).filter(Boolean).map(centerOf), 36));
+  const spawnOutside = radius + clamp(side * 0.10, 96, 148);
+  const spawnAnchors = uniqueAnchors([
+    circleSocketPoint(centerX, centerY, spawnOutside, 'N', 0),
+    circleSocketPoint(centerX, centerY, spawnOutside, 'NE', 0),
+    circleSocketPoint(centerX, centerY, spawnOutside, 'E', 0),
+    circleSocketPoint(centerX, centerY, spawnOutside, 'SE', 0),
+    circleSocketPoint(centerX, centerY, spawnOutside, 'S', 0),
+    circleSocketPoint(centerX, centerY, spawnOutside, 'SW', 0),
+    circleSocketPoint(centerX, centerY, spawnOutside, 'W', 0),
+    circleSocketPoint(centerX, centerY, spawnOutside, 'NW', 0),
+  ].map((p, i) => ({ x: p.x, y: p.y, tag: `outer_${i}` })), 72);
+
+  const gateAnchors = uniqueAnchors([
+    entrySocket ? { ...circleSocketPoint(centerX, centerY, radius - 4, entrySocket, 0), side: primaryEdgeForSocket(entrySocket, 'S'), socket: entrySocket, tag: 'entry' } : null,
+    exitSocket ? { ...circleSocketPoint(centerX, centerY, radius - 4, exitSocket, 0), side: primaryEdgeForSocket(exitSocket, 'N'), socket: exitSocket, tag: 'exit' } : null,
+    portalSocket ? { ...circleSocketPoint(centerX, centerY, radius - 4, portalSocket, 0), side: primaryEdgeForSocket(portalSocket, 'N'), socket: portalSocket, tag: 'portal' } : null,
+  ].filter(Boolean), 28);
+
+  const orbitR = radius * 0.68;
+  bossMoveNodes.push(
+    { x: centerX, y: centerY },
+    circleSocketPoint(centerX, centerY, orbitR, 'N', 0),
+    circleSocketPoint(centerX, centerY, orbitR, 'NE', 0),
+    circleSocketPoint(centerX, centerY, orbitR, 'E', 0),
+    circleSocketPoint(centerX, centerY, orbitR, 'SE', 0),
+    circleSocketPoint(centerX, centerY, orbitR, 'S', 0),
+    circleSocketPoint(centerX, centerY, orbitR, 'SW', 0),
+    circleSocketPoint(centerX, centerY, orbitR, 'W', 0),
+    circleSocketPoint(centerX, centerY, orbitR, 'NW', 0),
+  );
+
+  safeLanes.push(
+    { x: centerX, y: centerY, r: radius * 0.28 },
+    { x: playerStart.x, y: playerStart.y, r: radius * 0.18 },
+  );
+  pressureZones.push(
+    { x: exitInner.x * 0.84 + centerX * 0.16, y: exitInner.y * 0.84 + centerY * 0.16, r: radius * 0.16 },
+  );
+  phaseNodes.push(
+    circleSocketPoint(centerX, centerY, radius * 0.40, 'NE', 0),
+    circleSocketPoint(centerX, centerY, radius * 0.40, 'NW', 0),
+    circleSocketPoint(centerX, centerY, radius * 0.40, 'SE', 0),
+  );
+
+  const coverRadius = clamp(side * 0.020, 14, 24);
+  coverAnchors.push(
+    { x: centerX - radius * 0.28, y: centerY + radius * 0.06, size: coverRadius },
+    { x: centerX + radius * 0.28, y: centerY - radius * 0.06, size: coverRadius },
+  );
+
   return {
     playerStart,
     platforms,
@@ -467,122 +441,96 @@ function buildNeutralIntroSceneGeometry({ templateKey = '', role = '', centerX, 
     navZones,
     decorAnchors,
     coverAnchors,
-    spawnAnchors: [],
-    hazardAnchors: [],
-    hazardZones: [],
-    bossMoveNodes,
-    safeLanes: [],
-    pressureZones: [],
-    phaseNodes: [],
+    spawnAnchors,
+    gateAnchors,
+    hazardAnchors,
+    hazardZones,
+    safeLanes,
+    pressureZones,
+    phaseNodes,
     bossCenter,
-    core,
+    bossMoveNodes,
+    core: {},
+    circlePlatform: platform,
+    allowOutsideSpawnAnchors: true,
+    skipBiomeIdentity: true,
+    biomeCircularArena: true,
   };
 }
 
-function buildNeutralGrandGeometry({ role, centerX, centerY, side, routeStyle = '', lateralOffset = 0, entrySocket = '' } = {}) {
-  if (!['vestibule', 'hall', 'split', 'arena', 'crown'].includes(String(role || ''))) return null;
+function buildNeutralIntroSceneGeometry({ templateKey = '', role = '', centerX, centerY, side, routeStyle = '', lateralOffset = 0, entrySocket = '', exitSocket = '', portalSocket = '' } = {}) {
+  const tk = String(templateKey || '').toLowerCase();
+  if (!tk.startsWith('neutral_intro_')) return null;
+
   const platforms = [];
   const bridges = [];
   const navZones = [];
   const decorAnchors = [];
   const coverAnchors = [];
+  const hazardAnchors = [];
+  const hazardZones = [];
   const bossMoveNodes = [];
-  const ruleOffset = clamp(Number(lateralOffset) || 0, -0.28, 0.28);
-  const bias = side * ruleOffset * 0.10;
-  const wide = clamp(side * 0.125, 88, 190);
-  const medium = clamp(side * 0.098, 74, 154);
-  const thin = clamp(side * 0.076, 58, 126);
-  const span = clamp(side * 0.118, 68, 174);
-  const pocketSide = ((Math.round(centerX + centerY) + (routeStyle === 'diagonal' ? 1 : 0)) & 1) === 0 ? -1 : 1;
-  const core = {};
+  const safeLanes = [];
+  const pressureZones = [];
+  const phaseNodes = [];
 
-  if (role === 'vestibule') {
-    core.entry = pushPart(platforms, navZones, 'grand_vest_entry', centerX + bias * 0.16, centerY + side * 0.29, side * 0.18, side * 0.10, 12);
-    core.threshold = pushPart(platforms, navZones, 'grand_vest_threshold', centerX, centerY + side * 0.16, side * 0.24, side * 0.11, 12);
-    core.rotunda = pushPart(platforms, navZones, 'grand_vest_rotunda', centerX, centerY + side * 0.00, side * 0.22, side * 0.20, 12);
-    core.left = pushPart(platforms, navZones, 'grand_vest_left_gallery', centerX - side * 0.28, centerY + side * 0.04, side * 0.18, side * 0.11, 11);
-    core.right = pushPart(platforms, navZones, 'grand_vest_right_gallery', centerX + side * 0.28, centerY + side * 0.04, side * 0.18, side * 0.11, 11);
-    core.front = pushPart(platforms, navZones, 'grand_vest_front_dais', centerX - bias * 0.08, centerY - side * 0.22, side * 0.18, side * 0.10, 10);
-    core.overlookL = pushPart(platforms, navZones, 'grand_vest_overlook_l', centerX - side * 0.17, centerY - side * 0.10, side * 0.11, side * 0.08, 10);
-    core.overlookR = pushPart(platforms, navZones, 'grand_vest_overlook_r', centerX + side * 0.17, centerY - side * 0.10, side * 0.11, side * 0.08, 10);
-    pushConnector(bridges, navZones, 'gv_entry', core.entry, core.threshold, medium);
-    pushConnector(bridges, navZones, 'gv_threshold', core.threshold, core.rotunda, wide);
-    pushConnector(bridges, navZones, 'gv_left', core.left, core.rotunda, medium);
-    pushConnector(bridges, navZones, 'gv_right', core.rotunda, core.right, medium);
-    pushConnector(bridges, navZones, 'gv_front', core.rotunda, core.front, medium);
-    pushConnector(bridges, navZones, 'gv_overlook_l', core.overlookL, core.rotunda, thin);
-    pushConnector(bridges, navZones, 'gv_overlook_r', core.rotunda, core.overlookR, thin);
-  } else if (role === 'hall') {
-    core.entry = pushPart(platforms, navZones, 'grand_hall_entry', centerX - side * 0.02, centerY + side * 0.29, side * 0.18, side * 0.10, 11);
-    core.ante = pushPart(platforms, navZones, 'grand_hall_ante', centerX, centerY + side * 0.15, side * 0.22, side * 0.11, 11);
-    core.rotunda = pushPart(platforms, navZones, 'grand_hall_rotunda', centerX - side * 0.04, centerY + side * 0.00, side * 0.22, side * 0.18, 12);
-    core.gallery = pushPart(platforms, navZones, 'grand_hall_gallery', centerX + side * 0.10, centerY - side * 0.01, side * 0.38, side * 0.13, 11);
-    core.east = pushPart(platforms, navZones, 'grand_hall_east', centerX + side * 0.34, centerY - side * 0.01, side * 0.18, side * 0.11, 10);
-    core.north = pushPart(platforms, navZones, 'grand_hall_north', centerX - side * 0.06, centerY - side * 0.22, side * 0.18, side * 0.10, 10);
-    core.overlook = pushPart(platforms, navZones, 'grand_hall_overlook', centerX - side * 0.28, centerY - side * 0.04, side * 0.16, side * 0.10, 10);
-    pushConnector(bridges, navZones, 'gh_entry', core.entry, core.ante, medium);
-    pushConnector(bridges, navZones, 'gh_ante', core.ante, core.rotunda, medium);
-    pushConnector(bridges, navZones, 'gh_gallery', core.rotunda, core.gallery, wide);
-    pushConnector(bridges, navZones, 'gh_east', core.gallery, core.east, wide);
-    pushConnector(bridges, navZones, 'gh_north', core.rotunda, core.north, medium);
-    pushConnector(bridges, navZones, 'gh_overlook', core.overlook, core.rotunda, thin);
-  } else if (role === 'split') {
-    core.entry = pushPart(platforms, navZones, 'grand_split_entry', centerX - side * 0.18, centerY + side * 0.00, side * 0.18, side * 0.11, 11);
-    core.rotunda = pushPart(platforms, navZones, 'grand_split_rotunda', centerX + bias * 0.10, centerY + side * 0.00, side * 0.22, side * 0.20, 12);
-    core.east = pushPart(platforms, navZones, 'grand_split_east', centerX + side * 0.28, centerY + side * 0.00, side * 0.18, side * 0.11, 11);
-    core.north = pushPart(platforms, navZones, 'grand_split_north', centerX + side * 0.02, centerY - side * 0.23, side * 0.18, side * 0.10, 10);
-    core.south = pushPart(platforms, navZones, 'grand_split_south', centerX + side * 0.00, centerY + side * 0.24, side * 0.18, side * 0.10, 10);
-    core.service = pushPart(platforms, navZones, 'grand_split_service', centerX + pocketSide * side * 0.22, centerY - side * 0.16, side * 0.14, side * 0.09, 10);
-    core.balance = pushPart(platforms, navZones, 'grand_split_balance', centerX - pocketSide * side * 0.24, centerY + side * 0.18, side * 0.12, side * 0.08, 10);
-    pushConnector(bridges, navZones, 'gs_entry', core.entry, core.rotunda, wide);
-    pushConnector(bridges, navZones, 'gs_east', core.rotunda, core.east, wide);
-    pushConnector(bridges, navZones, 'gs_north', core.rotunda, core.north, medium);
-    pushConnector(bridges, navZones, 'gs_south', core.south, core.rotunda, medium);
-    pushConnector(bridges, navZones, 'gs_service', core.rotunda, core.service, thin);
-    pushConnector(bridges, navZones, 'gs_balance', core.balance, core.rotunda, thin);
-  } else if (role === 'arena') {
-    core.south = pushPart(platforms, navZones, 'grand_arena_south', centerX - side * 0.02, centerY + side * 0.28, side * 0.20, side * 0.10, 11);
-    core.center = pushPart(platforms, navZones, 'grand_arena_center', centerX + bias * 0.05, centerY + side * 0.00, side * 0.30, side * 0.24, 14);
-    core.west = pushPart(platforms, navZones, 'grand_arena_west', centerX - side * 0.31, centerY + side * 0.01, side * 0.18, side * 0.12, 11);
-    core.east = pushPart(platforms, navZones, 'grand_arena_east', centerX + side * 0.31, centerY + side * 0.01, side * 0.18, side * 0.12, 11);
-    core.north = pushPart(platforms, navZones, 'grand_arena_north', centerX, centerY - side * 0.24, side * 0.20, side * 0.10, 10);
-    core.nw = pushPart(platforms, navZones, 'grand_arena_nw', centerX - side * 0.19, centerY - side * 0.15, side * 0.12, side * 0.08, 10);
-    core.ne = pushPart(platforms, navZones, 'grand_arena_ne', centerX + side * 0.19, centerY - side * 0.15, side * 0.12, side * 0.08, 10);
-    core.sw = pushPart(platforms, navZones, 'grand_arena_sw', centerX - side * 0.20, centerY + side * 0.15, side * 0.12, side * 0.08, 10);
-    core.se = pushPart(platforms, navZones, 'grand_arena_se', centerX + side * 0.20, centerY + side * 0.15, side * 0.12, side * 0.08, 10);
-    pushConnector(bridges, navZones, 'ga_south', core.south, core.center, medium);
-    pushConnector(bridges, navZones, 'ga_west', core.west, core.center, wide);
-    pushConnector(bridges, navZones, 'ga_east', core.center, core.east, wide);
-    pushConnector(bridges, navZones, 'ga_north', core.center, core.north, medium);
-    pushConnector(bridges, navZones, 'ga_top_ring', core.nw, core.ne, span * 0.88);
-    pushConnector(bridges, navZones, 'ga_bottom_ring', core.sw, core.se, span * 0.88);
-    pushConnector(bridges, navZones, 'ga_left_spoke', core.nw, core.center, thin);
-    pushConnector(bridges, navZones, 'ga_right_spoke', core.center, core.se, thin);
-  } else if (role === 'crown') {
-    core.processional = pushPart(platforms, navZones, 'grand_crown_processional', centerX, centerY + side * 0.29, side * 0.20, side * 0.10, 11);
-    core.dais = pushPart(platforms, navZones, 'grand_crown_dais', centerX, centerY + side * 0.00, side * 0.24, side * 0.18, 12);
-    core.top = pushPart(platforms, navZones, 'grand_crown_top', centerX, centerY - side * 0.27, side * 0.20, side * 0.10, 10);
-    core.left = pushPart(platforms, navZones, 'grand_crown_left', centerX - side * 0.30, centerY + side * 0.00, side * 0.17, side * 0.11, 10);
-    core.right = pushPart(platforms, navZones, 'grand_crown_right', centerX + side * 0.30, centerY + side * 0.00, side * 0.17, side * 0.11, 10);
-    core.haloNw = pushPart(platforms, navZones, 'grand_crown_halo_nw', centerX - side * 0.17, centerY - side * 0.15, side * 0.12, side * 0.08, 10);
-    core.haloNe = pushPart(platforms, navZones, 'grand_crown_halo_ne', centerX + side * 0.17, centerY - side * 0.15, side * 0.12, side * 0.08, 10);
-    core.haloSw = pushPart(platforms, navZones, 'grand_crown_halo_sw', centerX - side * 0.17, centerY + side * 0.14, side * 0.12, side * 0.08, 10);
-    core.haloSe = pushPart(platforms, navZones, 'grand_crown_halo_se', centerX + side * 0.17, centerY + side * 0.14, side * 0.12, side * 0.08, 10);
-    pushConnector(bridges, navZones, 'gc_processional', core.processional, core.dais, medium);
-    pushConnector(bridges, navZones, 'gc_top', core.dais, core.top, medium);
-    pushConnector(bridges, navZones, 'gc_left', core.left, core.dais, medium);
-    pushConnector(bridges, navZones, 'gc_right', core.dais, core.right, medium);
-    pushConnector(bridges, navZones, 'gc_halo_top', core.haloNw, core.haloNe, span * 0.86);
-    pushConnector(bridges, navZones, 'gc_halo_bottom', core.haloSw, core.haloSe, span * 0.86);
-    pushConnector(bridges, navZones, 'gc_halo_left', core.haloNw, core.haloSw, span * 0.74);
-    pushConnector(bridges, navZones, 'gc_halo_right', core.haloNe, core.haloSe, span * 0.74);
-    pushConnector(bridges, navZones, 'gc_spoke_l', core.haloNw, core.dais, thin);
-    pushConnector(bridges, navZones, 'gc_spoke_r', core.dais, core.haloSe, thin);
-  }
+  const roleRadiusMul = {
+    vestibule: 0.46,
+    hall: 0.472,
+    split: 0.485,
+    arena: 0.50,
+    crown: 0.515,
+  };
+  const radius = clamp(side * (roleRadiusMul[role] || 0.46), 320, 560);
+  const walkInset = clamp(radius * 0.050, 12, 24);
+  const platform = pushCircle(platforms, navZones, `neutral_intro_${role}_disc`, centerX, centerY, radius, walkInset);
+  const ringInner = Math.max(56, radius * 0.72);
 
-  const partsBounds = boundsFromRects([...(platforms || []), ...(bridges || [])]);
-  const walkRects = buildWalkRectsFromNavZones(navZones, { seamGap: 14, seamMinOverlap: 18, touchThickness: 10 });
-  const playerStart = insideBias(partsBounds, centerX, centerY, entrySocket || 'S', side * 0.14, walkRects);
+  const entryPoint = circleSocketPoint(centerX, centerY, ringInner, entrySocket || 'S', 0);
+  const exitPoint = circleSocketPoint(centerX, centerY, ringInner, exitSocket || portalSocket || 'N', 0);
+  const portalPoint = circleSocketPoint(centerX, centerY, ringInner * 0.96, portalSocket || exitSocket || 'N', 0);
+
+  const playerStart = {
+    x: (entryPoint.x * 0.82) + centerX * 0.18,
+    y: (entryPoint.y * 0.82) + centerY * 0.18,
+  };
+  const bossCenter = { x: centerX, y: centerY };
+
+  const spawnOutside = radius + clamp(side * 0.085, 86, 136);
+  const spawnDirs = uniqueAnchors([
+    circleSocketPoint(centerX, centerY, spawnOutside, 'N', 0),
+    circleSocketPoint(centerX, centerY, spawnOutside, 'E', 0),
+    circleSocketPoint(centerX, centerY, spawnOutside, 'W', 0),
+    circleSocketPoint(centerX, centerY, spawnOutside, 'NE', 0),
+    circleSocketPoint(centerX, centerY, spawnOutside, 'NW', 0),
+    circleSocketPoint(centerX, centerY, spawnOutside, 'S', 0),
+  ].map((p, i) => ({ x: p.x, y: p.y, tag: `outer_${i}` })), 72);
+
+  const gateAnchors = uniqueAnchors([
+    entrySocket ? { ...circleSocketPoint(centerX, centerY, radius - 4, entrySocket, 0), side: primaryEdgeForSocket(entrySocket, 'S'), socket: entrySocket, tag: 'entry' } : null,
+    exitSocket ? { ...circleSocketPoint(centerX, centerY, radius - 4, exitSocket, 0), side: primaryEdgeForSocket(exitSocket, 'N'), socket: exitSocket, tag: 'exit' } : null,
+    portalSocket ? { ...circleSocketPoint(centerX, centerY, radius - 4, portalSocket, 0), side: primaryEdgeForSocket(portalSocket, 'N'), socket: portalSocket, tag: 'portal' } : null,
+  ].filter(Boolean), 28);
+
+  const orbitR = radius * 0.72;
+  bossMoveNodes.push(
+    { x: centerX, y: centerY },
+    circleSocketPoint(centerX, centerY, orbitR, 'N', 0),
+    circleSocketPoint(centerX, centerY, orbitR, 'E', 0),
+    circleSocketPoint(centerX, centerY, orbitR, 'S', 0),
+    circleSocketPoint(centerX, centerY, orbitR, 'W', 0),
+  );
+  safeLanes.push(
+    { x: centerX, y: centerY, r: radius * 0.34 },
+    { x: playerStart.x, y: playerStart.y, r: radius * 0.22 },
+  );
+  phaseNodes.push(
+    circleSocketPoint(centerX, centerY, radius * 0.48, 'NE', 0),
+    circleSocketPoint(centerX, centerY, radius * 0.48, 'NW', 0),
+    circleSocketPoint(centerX, centerY, radius * 0.48, 'SE', 0),
+  );
+
+  // Keep neutral intro visually clean: no extra baked decor on the disc itself.
 
   return {
     playerStart,
@@ -591,15 +539,19 @@ function buildNeutralGrandGeometry({ role, centerX, centerY, side, routeStyle = 
     navZones,
     decorAnchors,
     coverAnchors,
-    spawnAnchors: [],
-    hazardAnchors: [],
-    hazardZones: [],
+    spawnAnchors: spawnDirs,
+    gateAnchors,
+    hazardAnchors,
+    hazardZones,
+    safeLanes,
+    pressureZones,
+    phaseNodes,
+    bossCenter,
     bossMoveNodes,
-    safeLanes: [],
-    pressureZones: [],
-    phaseNodes: [],
-    bossCenter: centerOf(core.dais || core.center || core.rotunda || core.gallery || core.top || core.entry || Object.values(core).find(Boolean)),
-    core,
+    core: {},
+    circlePlatform: platform,
+    allowOutsideSpawnAnchors: true,
+    skipBiomeIdentity: true,
   };
 }
 
@@ -1053,11 +1005,7 @@ function buildStationArtParts({ biome, role, built, side, isNeutralIntro = false
   }
 
   if (isNeutralIntro) {
-    const center = built?.bossCenter || built?.playerStart;
-    if (center) {
-      addArtPart(art, `${role}_sat_l`, center.x - side * 0.18, center.y - side * 0.02, mini, micro * 0.66, 'satellite', 'over');
-      addArtPart(art, `${role}_sat_r`, center.x + side * 0.14, center.y + side * 0.02, mini, micro * 0.66, 'satellite', 'over');
-    }
+    return art;
   }
   return art;
 }
@@ -1071,15 +1019,15 @@ export function generateRoleRoomArena({ biomeKey = '', templateKey = '', templat
   const theme = THEME[biome] || THEME.neutral;
   const isNeutralIntro = tk.startsWith('neutral_intro_');
   const roomSide = isNeutralIntro ? side * (role === 'arena' || role === 'crown' ? 1.12 : 1.08) : side;
-  const built = buildNeutralIntroSceneGeometry({ templateKey: tk, role, centerX, centerY, side: roomSide, routeStyle, lateralOffset, entrySocket, exitSocket }) || buildRoleGeometry({ role, theme, centerX, centerY, side: roomSide, routeStyle, lateralOffset, entrySocket, exitSocket });
+  const built = buildBiomeCircleArenaGeometry({ biome, role, centerX, centerY, side: roomSide, entrySocket, exitSocket, portalSocket }) || buildNeutralIntroSceneGeometry({ templateKey: tk, role, centerX, centerY, side: roomSide, routeStyle, lateralOffset, entrySocket, exitSocket, portalSocket }) || buildRoleGeometry({ role, theme, centerX, centerY, side: roomSide, routeStyle, lateralOffset, entrySocket, exitSocket });
   if (!built) return null;
   built.routeStyle = routeStyle;
-  applyBiomeIdentity({ biome, role, theme, built, centerX, centerY, side });
+  if (!built.skipBiomeIdentity) applyBiomeIdentity({ biome, role, theme, built, centerX, centerY, side });
 
   const bounds = boundsFromRects([...(built.platforms || []), ...(built.bridges || [])]);
   if (bounds) {
     built.playerStart = clampPointToBounds(built.playerStart, bounds, 16);
-    built.spawnAnchors = clampPointListToBounds(built.spawnAnchors, bounds, 18);
+    if (!built.allowOutsideSpawnAnchors) built.spawnAnchors = clampPointListToBounds(built.spawnAnchors, bounds, 18);
     built.decorAnchors = clampPointListToBounds(built.decorAnchors, bounds, 14);
     built.coverAnchors = clampPointListToBounds(built.coverAnchors, bounds, 16);
     built.hazardAnchors = clampPointListToBounds(built.hazardAnchors, bounds, 16);
@@ -1090,7 +1038,7 @@ export function generateRoleRoomArena({ biomeKey = '', templateKey = '', templat
     built.bossCenter = clampPointToBounds(built.bossCenter, bounds, 20);
     built.hazardZones = clampPointListToBounds(built.hazardZones, bounds, 18);
   }
-  const gateAnchors = gateAnchorsFromBounds(bounds, centerX, centerY, { entrySocket, exitSocket, portalSocket });
+  const gateAnchors = Array.isArray(built.gateAnchors) && built.gateAnchors.length ? built.gateAnchors : gateAnchorsFromBounds(bounds, centerX, centerY, { entrySocket, exitSocket, portalSocket });
   const grammarName = ROOM_GRAMMAR_BY_BIOME[biome]?.[role] || role;
   const artParts = buildStationArtParts({ biome, role, built, side: roomSide, isNeutralIntro });
 
@@ -1142,7 +1090,10 @@ export function generateRoleRoomArena({ biomeKey = '', templateKey = '', templat
       safeLogic: theme.safeLogic,
       pressureStyle: theme.pressureStyle,
       shapeIdentity: theme.shapeIdentity,
-      sceneAssembler: isNeutralIntro ? 'station_modules_v2' : 'role_modules_v2',
+      sceneAssembler: built.biomeCircularArena ? 'biome_circle_arena_v1' : (isNeutralIntro ? (built.circlePlatform ? 'neutral_circle_intro_v1' : 'station_modules_v2') : 'role_modules_v2'),
+      neutralIntroCircleArena: !!built.circlePlatform,
+      biomeCircularArena: !!built.biomeCircularArena,
+      spawnAnchorsOutside: !!built.allowOutsideSpawnAnchors,
     },
   };
 }

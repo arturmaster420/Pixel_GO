@@ -4,13 +4,21 @@ function num(v, fallback = 0) {
 }
 
 function rectToAabb(rect) {
-  if (!rect || rect.type !== 'rect') return null;
+  if (!rect) return null;
+  if (rect.type === 'circle') {
+    const x = num(rect.x, NaN);
+    const y = num(rect.y, NaN);
+    const r = num(rect.r, NaN);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(r) || r <= 0) return null;
+    return { minX: x - r, minY: y - r, maxX: x + r, maxY: y + r, type: 'circle', x, y, r };
+  }
+  if (rect.type !== 'rect') return null;
   const x = num(rect.x, NaN);
   const y = num(rect.y, NaN);
   const w = num(rect.w, NaN);
   const h = num(rect.h, NaN);
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
-  return { minX: x, minY: y, maxX: x + w, maxY: y + h };
+  return { minX: x, minY: y, maxX: x + w, maxY: y + h, type: 'rect' };
 }
 
 function unionAabb(list) {
@@ -41,6 +49,12 @@ function rectContainsPoint(rect, p, pad = 0) {
   const x = num(p.x, NaN);
   const y = num(p.y, NaN);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  if (rect.type === 'circle') {
+    const rr = Math.max(0, num(rect.r, 0) + pad);
+    const dx = x - num(rect.x, 0);
+    const dy = y - num(rect.y, 0);
+    return dx * dx + dy * dy <= rr * rr;
+  }
   return x >= rect.minX - pad && x <= rect.maxX + pad && y >= rect.minY - pad && y <= rect.maxY + pad;
 }
 
@@ -134,7 +148,8 @@ export function validateArenaSpec(arenaSpec) {
   push(issues, !bossArena || !bossCenter, 'missing boss arena metadata');
   push(issues, !!bossCenter && !!roomAabb && !pointInAabb(bossCenter, roomAabb, 56), 'boss center outside room');
 
-  const spawnAnchors = validateAnchorList('spawnAnchors', arenaSpec?.anchors?.spawnAnchors, roomAabb, issues, { minCount: 1 });
+  const spawnAnchorsOutside = !!arenaSpec?.rules?.spawnAnchorsOutside;
+  const spawnAnchors = validateAnchorList('spawnAnchors', arenaSpec?.anchors?.spawnAnchors, roomAabb, issues, { minCount: 1, allowOutside: spawnAnchorsOutside });
   const gateAnchors = validateAnchorList('gateAnchors', arenaSpec?.anchors?.gateAnchors, roomAabb, issues, { minCount: arenaSpec?.rules?.isHub ? 0 : 0, allowOutside: true });
   const coverAnchors = validateAnchorList('coverAnchors', arenaSpec?.anchors?.coverAnchors, roomAabb, issues, { minCount: 0 });
   const decorAnchors = validateAnchorList('decorAnchors', arenaSpec?.anchors?.decorAnchors, roomAabb, issues, { minCount: 0 });
@@ -192,7 +207,7 @@ export function validateArenaSpec(arenaSpec) {
     }
     for (let i = 0; i < Math.min(2, spawnAnchors.length); i++) {
       const s = spawnAnchors[i];
-      if (s && Number.isFinite(Number(s.x)) && Number.isFinite(Number(s.y))) {
+      if (!spawnAnchorsOutside && s && Number.isFinite(Number(s.x)) && Number.isFinite(Number(s.y))) {
         reachTargets.push(s);
         labels.push(`spawnAnchors[${i}] not reachable from player start`);
       }

@@ -649,7 +649,11 @@ function nearestDistanceScore(x, y, points = [], scale = 240) {
 
 function chooseSpawnCandidate(room, players, minDist = 220, tuning = null, anchorUse = null) {
   const context = makeSpawnContext(room);
-  const candidates = Array.isArray(context.candidates) ? context.candidates.slice() : [];
+  let candidates = Array.isArray(context.candidates) ? context.candidates.slice() : [];
+  if (room?.arenaSpec?.rules?.spawnAnchorsOutside) {
+    const outerOnly = candidates.filter((c) => String(c?.kind || '') === 'spawn');
+    if (outerOnly.length) candidates = outerOnly;
+  }
   const side = Math.max(420, Number(room?.side) || 840);
   const weights = tuning?.scoreWeights || {};
   const jitter = clamp(Number(tuning?.spawnJitter) || 36, 20, 42);
@@ -713,7 +717,7 @@ function applyEnemyEncounterBehavior(enemy, room, choice, tuning) {
   const anchor = { x: Number(choice?.x) || enemy.x || room.centerX, y: Number(choice?.y) || enemy.y || room.centerY };
   const campFocus = context.nodePoints[0] || context.pressurePoints[0] || context.center;
   enemy.aiMode = aiMode;
-  enemy.aggroed = false;
+  enemy.aggroed = true;
   enemy.aggroRange = clamp((enemy.aggroRange || 450) + (tuning?.aggroRangeAdd || 0) + (enemy.isElite ? 18 : 0), 260, 700);
   enemy._encounterRole = getRoomRole(room);
   enemy._encounterBiome = String(room?.biomeKey || '').toLowerCase();

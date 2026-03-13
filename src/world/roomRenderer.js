@@ -3,7 +3,37 @@
 import { biomeByKey } from "./biomes.js";
 import { primaryEdgeForSocket } from "./roomRoute.js";
 import { renderHubSceneScreenBackdrop, renderHubSceneWorld } from "./hub/hubRenderer.js";
+import { HUB_ASSET_URLS } from "./hub/hubAssets.js";
 
+
+const roomTextureCache = new Map();
+
+function getRoomTexture(url) {
+  if (!url) return null;
+  let entry = roomTextureCache.get(url);
+  if (entry) return entry;
+  const img = new Image();
+  entry = { img, loaded: false, url };
+  img.onload = () => { entry.loaded = true; };
+  img.onerror = () => { entry.loaded = false; entry.error = true; };
+  img.src = url;
+  roomTextureCache.set(url, entry);
+  return entry;
+}
+
+function drawImageCoverScreen(ctx, entry, x, y, w, h, alpha = 1, ox = 0, oy = 0, scaleMul = 1) {
+  if (!entry?.loaded || !entry?.img) return false;
+  const imgW = Math.max(1, Number(entry.img.naturalWidth || entry.img.width) || 1);
+  const imgH = Math.max(1, Number(entry.img.naturalHeight || entry.img.height) || 1);
+  const scale = Math.max(w / imgW, h / imgH) * Math.max(0.01, scaleMul);
+  const dw = imgW * scale;
+  const dh = imgH * scale;
+  ctx.save();
+  ctx.globalAlpha *= alpha;
+  ctx.drawImage(entry.img, x + (w - dw) * 0.5 + ox, y + (h - dh) * 0.5 + oy, dw, dh);
+  ctx.restore();
+  return true;
+}
 
 function clamp(n, a, b) {
   return n < a ? a : (n > b ? b : n);
@@ -149,6 +179,234 @@ function rectPath(ctx, r) {
   if (w <= 0 || h <= 0) return false;
   ctx.rect(x, y, w, h);
   return true;
+}
+
+function shapePath(ctx, r) {
+  if (!r) return false;
+  if (String(r?.type || '') === 'circle') {
+    const x = Number(r?.x) || 0;
+    const y = Number(r?.y) || 0;
+    const rad = Number(r?.r) || 0;
+    if (!(rad > 0)) return false;
+    ctx.moveTo(x + rad, y);
+    ctx.arc(x, y, rad, 0, Math.PI * 2);
+    return true;
+  }
+  return rectPath(ctx, r);
+}
+
+function drawBiomeOrbCirclePlatform(ctx, part, time = 0, { biomeKey = 'neutral', isHub = false } = {}) {
+  const cx = Number(part?.x) || 0;
+  const cy = Number(part?.y) || 0;
+  const r = Number(part?.r) || 0;
+  if (!(r > 0)) return;
+
+  const pid = String(part?.id || '').toLowerCase();
+  const isNeutralIntroDisc = pid.startsWith('neutral_intro_');
+  const pulse = 0.5 + 0.5 * Math.sin(time * 0.55);
+
+  if (isNeutralIntroDisc) {
+    const limb = ctx.createRadialGradient(cx, cy, r * 0.68, cx, cy, r);
+    limb.addColorStop(0, 'rgba(28,62,126,0.10)');
+    limb.addColorStop(0.74, 'rgba(82,164,255,0.24)');
+    limb.addColorStop(0.90, 'rgba(228,244,255,0.40)');
+    limb.addColorStop(0.95, 'rgba(156,222,255,0.24)');
+    limb.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = limb;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    const atmosphere = ctx.createRadialGradient(cx, cy, r * 0.90, cx, cy, r * 1.08);
+    atmosphere.addColorStop(0, 'rgba(255,255,255,0)');
+    atmosphere.addColorStop(0.45, 'rgba(132,224,255,0.18)');
+    atmosphere.addColorStop(0.75, 'rgba(92,196,255,0.12)');
+    atmosphere.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = atmosphere;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 1.08, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 0.95, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.globalCompositeOperation = 'screen';
+
+    const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 0.92);
+    core.addColorStop(0, 'rgba(196,236,255,0.10)');
+    core.addColorStop(0.38, 'rgba(122,192,255,0.06)');
+    core.addColorStop(0.76, 'rgba(82,124,220,0.04)');
+    core.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = core;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 0.95, 0, Math.PI * 2);
+    ctx.fill();
+
+    const starCount = Math.max(22, Math.round(r * 0.09));
+    for (let i = 0; i < starCount; i++) {
+      const seed = i * 92821 + Math.round(cx * 0.63) * 131 + Math.round(cy * 0.41) * 271;
+      const ang = ((seed % 6283) / 1000) + Math.sin(time * 0.10 + i * 0.17) * 0.008;
+      const dist = r * (0.08 + ((seed >>> 3) % 1000) / 1000 * 0.80);
+      const sx = cx + Math.cos(ang) * dist;
+      const sy = cy + Math.sin(ang * 1.12) * dist * 0.96;
+      const sr = Math.max(0.7, r * (0.0018 + (((seed >>> 7) % 100) / 100) * 0.0022));
+      const a = 0.12 + (((seed >>> 11) % 100) / 100) * 0.18 + pulse * 0.02;
+      ctx.fillStyle = `rgba(244,250,255,${a.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    return;
+  }
+
+  const biome = String(biomeKey || 'neutral').toLowerCase();
+  const palette = biome === 'electric'
+    ? { outer: 'rgba(170,255,255,0.18)', inner0: 'rgba(226,255,255,0.32)', inner1: 'rgba(112,246,255,0.22)', inner2: 'rgba(22,122,166,0.22)', inner3: 'rgba(6,44,70,0.18)', inner4: 'rgba(2,20,34,0.16)', ringA: 'rgba(244,255,255,0.92)', ringB: 'rgba(168,250,255,0.84)', ringC: 'rgba(124,238,255,0.78)', pattern: 'electric' }
+    : biome === 'fire'
+      ? { outer: 'rgba(255,184,124,0.16)', inner0: 'rgba(255,224,186,0.26)', inner1: 'rgba(255,170,96,0.22)', inner2: 'rgba(180,68,32,0.20)', inner3: 'rgba(78,24,14,0.16)', inner4: 'rgba(26,8,8,0.14)', ringA: 'rgba(255,242,220,0.90)', ringB: 'rgba(255,206,152,0.82)', ringC: 'rgba(255,158,92,0.76)', pattern: 'fire' }
+      : biome === 'ice'
+        ? { outer: 'rgba(208,238,255,0.16)', inner0: 'rgba(248,253,255,0.28)', inner1: 'rgba(206,234,255,0.22)', inner2: 'rgba(136,186,244,0.18)', inner3: 'rgba(64,108,176,0.16)', inner4: 'rgba(18,34,72,0.14)', ringA: 'rgba(255,255,255,0.94)', ringB: 'rgba(228,246,255,0.86)', ringC: 'rgba(188,228,255,0.78)', pattern: 'ice' }
+        : biome === 'dark'
+          ? { outer: 'rgba(168,126,255,0.14)', inner0: 'rgba(220,206,255,0.22)', inner1: 'rgba(148,112,255,0.18)', inner2: 'rgba(68,40,126,0.18)', inner3: 'rgba(22,14,44,0.18)', inner4: 'rgba(8,6,18,0.16)', ringA: 'rgba(242,234,255,0.82)', ringB: 'rgba(198,168,255,0.76)', ringC: 'rgba(144,112,255,0.72)', pattern: 'dark' }
+          : biome === 'light'
+            ? { outer: 'rgba(255,238,176,0.16)', inner0: 'rgba(255,252,236,0.28)', inner1: 'rgba(255,236,168,0.22)', inner2: 'rgba(232,196,88,0.18)', inner3: 'rgba(122,94,28,0.16)', inner4: 'rgba(34,26,10,0.14)', ringA: 'rgba(255,255,248,0.94)', ringB: 'rgba(255,244,198,0.88)', ringC: 'rgba(255,222,138,0.80)', pattern: 'light' }
+            : { outer: isHub ? 'rgba(176,236,255,0.10)' : 'rgba(186,234,255,0.16)', inner0: 'rgba(214,242,255,0.30)', inner1: 'rgba(122,196,255,0.20)', inner2: 'rgba(48,102,210,0.18)', inner3: 'rgba(14,34,90,0.16)', inner4: 'rgba(8,18,52,0.14)', ringA: 'rgba(246,252,255,0.90)', ringB: 'rgba(228,244,255,0.84)', ringC: 'rgba(192,236,255,0.80)', pattern: 'neutral' };
+
+  const outer = ctx.createRadialGradient(cx, cy, r * 0.78, cx, cy, r * 1.08);
+  outer.addColorStop(0, 'rgba(255,255,255,0)');
+  outer.addColorStop(0.72, palette.outer);
+  outer.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = outer;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 1.08, 0, Math.PI * 2);
+  ctx.fill();
+
+  const core = ctx.createRadialGradient(cx, cy, r * 0.08, cx, cy, r * 0.96);
+  core.addColorStop(0, palette.inner0);
+  core.addColorStop(0.30, palette.inner1);
+  core.addColorStop(0.62, palette.inner2);
+  core.addColorStop(0.88, palette.inner3);
+  core.addColorStop(1, palette.inner4);
+  ctx.fillStyle = core;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.955, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.952, 0, Math.PI * 2);
+  ctx.clip();
+
+  ctx.globalCompositeOperation = 'screen';
+  for (let i = 0; i < 7; i++) {
+    const ang = time * (0.035 + i * 0.004) + i * 1.37;
+    const cloudX = cx + Math.cos(ang) * r * (0.06 + i * 0.055);
+    const cloudY = cy + Math.sin(ang * 1.07) * r * (0.05 + i * 0.042);
+    const cloudR = r * (0.34 - i * 0.030);
+    const nebula = ctx.createRadialGradient(cloudX, cloudY, 0, cloudX, cloudY, Math.max(12, cloudR));
+    nebula.addColorStop(0, i % 2 === 0 ? 'rgba(234,248,255,0.08)' : 'rgba(214,236,255,0.07)');
+    nebula.addColorStop(0.44, i % 2 === 0 ? 'rgba(134,222,255,0.055)' : 'rgba(122,166,255,0.05)');
+    nebula.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = nebula;
+    ctx.beginPath();
+    ctx.arc(cloudX, cloudY, Math.max(12, cloudR), 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const starCount = Math.max(18, Math.round(r * 0.12));
+  for (let i = 0; i < starCount; i++) {
+    const seed = i * 92821 + Math.round(cx * 0.63) * 131 + Math.round(cy * 0.41) * 271;
+    const ang = ((seed % 6283) / 1000) + Math.sin(time * 0.10 + i * 0.17) * 0.008;
+    const dist = r * (0.08 + ((seed >>> 3) % 1000) / 1000 * 0.78);
+    const sx = cx + Math.cos(ang) * dist;
+    const sy = cy + Math.sin(ang * 1.12) * dist * 0.96;
+    const sr = Math.max(0.7, r * (0.0022 + (((seed >>> 7) % 100) / 100) * 0.0026));
+    const a = 0.18 + (((seed >>> 11) % 100) / 100) * 0.22 + pulse * 0.03;
+    ctx.fillStyle = `rgba(244,250,255,${a.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.90, 0, Math.PI * 2);
+  ctx.clip();
+  if (palette.pattern === 'electric') {
+    ctx.strokeStyle = 'rgba(210,255,255,0.16)';
+    ctx.lineWidth = Math.max(2, r * 0.010);
+    for (let i = 0; i < 3; i++) {
+      const ang = time * (0.8 + i * 0.16) + i * 2.1;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(ang) * r * 0.18, cy + Math.sin(ang) * r * 0.18);
+      ctx.lineTo(cx + Math.cos(ang + 0.18) * r * 0.38, cy + Math.sin(ang + 0.18) * r * 0.38);
+      ctx.lineTo(cx + Math.cos(ang - 0.08) * r * 0.56, cy + Math.sin(ang - 0.08) * r * 0.56);
+      ctx.stroke();
+    }
+  } else if (palette.pattern === 'fire') {
+    ctx.strokeStyle = 'rgba(255,222,184,0.11)';
+    ctx.lineWidth = Math.max(2, r * 0.008);
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      const shift = time * 0.25 + i * 1.9;
+      for (let t = 0; t <= 18; t++) {
+        const a = shift + t * 0.18;
+        const rr = r * (0.20 + t / 18 * 0.42) + Math.sin(time * 1.1 + t * 0.6 + i) * r * 0.015;
+        const px = cx + Math.cos(a) * rr;
+        const py = cy + Math.sin(a * 1.12) * rr * 0.72;
+        if (t === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+  } else if (palette.pattern === 'ice') {
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.lineWidth = Math.max(2, r * 0.008);
+    for (let i = 0; i < 4; i++) {
+      const a = i * (Math.PI / 2) + time * 0.08;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a) * r * 0.54, cy + Math.sin(a) * r * 0.54);
+      ctx.stroke();
+    }
+  } else if (palette.pattern === 'dark') {
+    ctx.strokeStyle = 'rgba(208,184,255,0.10)';
+    ctx.lineWidth = Math.max(2, r * 0.008);
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      const start = time * 0.12 + i * 2.2;
+      for (let t = 0; t <= 20; t++) {
+        const a = start + t * 0.22;
+        const rr = r * (0.14 + t / 20 * 0.58);
+        const wobble = Math.sin(time * 0.8 + t * 0.6 + i) * r * 0.03;
+        const px = cx + Math.cos(a) * (rr + wobble);
+        const py = cy + Math.sin(a) * (rr - wobble * 0.5);
+        if (t === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+  } else if (palette.pattern === 'light') {
+    ctx.strokeStyle = 'rgba(255,250,220,0.14)';
+    ctx.lineWidth = Math.max(2, r * 0.008);
+    for (let i = 0; i < 8; i++) {
+      const a = time * 0.06 + i * (Math.PI / 4);
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * r * 0.10, cy + Math.sin(a) * r * 0.10);
+      ctx.lineTo(cx + Math.cos(a) * r * 0.60, cy + Math.sin(a) * r * 0.60);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+
+  const ring = ctx.createLinearGradient(cx, cy - r, cx, cy + r);
+  ring.addColorStop(0, palette.ringA);
+  ring.addColorStop(0.52, palette.ringB);
+  ring.addColorStop(1, palette.ringC);
+  ctx.strokeStyle = ring;
+  ctx.lineWidth = Math.max(8, r * 0.060);
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - ctx.lineWidth * 0.56, 0, Math.PI * 2);
+  ctx.stroke();
 }
 
 function chamferedRectPath(ctx, x, y, w, h, cut = 12) {
@@ -398,17 +656,22 @@ function getArenaArtParts(arenaSpec) {
   return Array.isArray(arenaSpec?.geometry?.artParts) ? arenaSpec.geometry.artParts.filter(Boolean) : [];
 }
 
-function drawStationMiniModule(ctx, x, y, w, h, { isHub = false, style = 'pod', time = 0 } = {}) {
+function drawStationMiniModule(ctx, x, y, w, h, { isHub = false, style = 'pod', time = 0, isNeutralIntro = false } = {}) {
   if (!(w > 0 && h > 0)) return;
   if (style === 'rail') {
     ctx.save();
     const g = ctx.createLinearGradient(x, y, x + w, y + h);
     g.addColorStop(0, 'rgba(255,255,255,0)');
-    g.addColorStop(0.18, isHub ? 'rgba(182,242,255,0.42)' : 'rgba(168,216,255,0.30)');
-    g.addColorStop(0.52, isHub ? 'rgba(255,240,198,0.32)' : 'rgba(222,236,255,0.20)');
+    g.addColorStop(0.18, isHub ? 'rgba(182,242,255,0.42)' : (isNeutralIntro ? 'rgba(196,238,255,0.42)' : 'rgba(168,216,255,0.30)'));
+    g.addColorStop(0.52, isHub ? 'rgba(255,240,198,0.32)' : (isNeutralIntro ? 'rgba(244,232,255,0.24)' : 'rgba(222,236,255,0.20)'));
     g.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = g;
     ctx.fillRect(x, y, w, h);
+    if (isNeutralIntro) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = 'rgba(214,246,255,0.16)';
+      ctx.fillRect(x + w * 0.18, y, Math.max(2, w * 0.64), h);
+    }
     ctx.restore();
     return;
   }
@@ -422,7 +685,7 @@ function drawStationMiniModule(ctx, x, y, w, h, { isHub = false, style = 'pod', 
   }
   drawStationLuxuryTrim(ctx, x, y, w, h, { isBridge: false, isHub, pid: style, time, smallModule: true });
   ctx.save();
-  ctx.strokeStyle = isHub ? 'rgba(255,244,200,0.24)' : 'rgba(184,226,255,0.18)';
+  ctx.strokeStyle = isHub ? 'rgba(255,244,200,0.24)' : (isNeutralIntro ? 'rgba(220,242,255,0.34)' : 'rgba(184,226,255,0.18)');
   ctx.lineWidth = 1.2;
   if (style === 'fin') {
     ctx.beginPath();
@@ -431,9 +694,34 @@ function drawStationMiniModule(ctx, x, y, w, h, { isHub = false, style = 'pod', 
     ctx.lineTo(x + w - 5, y + h - 5);
     ctx.stroke();
   } else if (style === 'satellite') {
+    const cx = x + w * 0.5;
+    const cy = y + h * 0.5;
+    const rr = Math.min(w, h) * 0.18;
     ctx.beginPath();
-    ctx.arc(x + w * 0.5, y + h * 0.5, Math.min(w, h) * 0.18, 0, Math.PI * 2);
+    ctx.arc(cx, cy, rr, 0, Math.PI * 2);
     ctx.stroke();
+    if (isNeutralIntro) {
+      ctx.globalCompositeOperation = 'lighter';
+      const orb = ctx.createRadialGradient(cx, cy, 0, cx, cy, rr * 2.8);
+      orb.addColorStop(0, 'rgba(248,255,255,0.42)');
+      orb.addColorStop(0.32, 'rgba(170,240,255,0.22)');
+      orb.addColorStop(0.72, 'rgba(132,146,255,0.12)');
+      orb.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = orb;
+      ctx.beginPath();
+      ctx.arc(cx, cy, rr * 2.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,244,214,0.36)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, rr * 1.65, time * 0.2, time * 0.2 + Math.PI * 1.2);
+      ctx.stroke();
+    }
+  }
+  if (isNeutralIntro && (style === 'pod' || style === 'fin')) {
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = 'rgba(212,244,255,0.12)';
+    chamferedRectPath(ctx, x + 3, y + 3, Math.max(1, w - 6), Math.max(1, h - 6), Math.min(4, Math.min(w, h) * 0.16));
+    ctx.fill();
   }
   ctx.restore();
 }
@@ -442,6 +730,8 @@ function drawStationArtParts(ctx, room, arenaSpec, time = 0, layer = 'over') {
   const parts = getArenaArtParts(arenaSpec).filter((p) => String(p?.layer || 'over') === String(layer || 'over'));
   if (!parts.length) return;
   const isHub = !!arenaSpec?.rules?.isHub || String(room?.biomeKey || '').toLowerCase() === 'hub' || (room && (room.index | 0) === 0);
+  const isNeutralIntro = !!arenaSpec?.rules?.neutralIntroCircleArena;
+  if (isNeutralIntro) return;
   ctx.save();
   for (const part of parts) {
     const x = Number(part?.x) || 0;
@@ -449,7 +739,7 @@ function drawStationArtParts(ctx, room, arenaSpec, time = 0, layer = 'over') {
     const w = Number(part?.w) || 0;
     const h = Number(part?.h) || 0;
     if (!(w > 0 && h > 0)) continue;
-    drawStationMiniModule(ctx, x, y, w, h, { isHub, style: String(part?.style || 'pod'), time });
+    drawStationMiniModule(ctx, x, y, w, h, { isHub, style: String(part?.style || 'pod'), time, isNeutralIntro });
   }
   ctx.restore();
 }
@@ -541,7 +831,7 @@ function clipToArenaParts(ctx, arenaSpec) {
   const parts = getArenaParts(arenaSpec);
   if (!parts.length) return false;
   ctx.beginPath();
-  for (const part of parts) rectPath(ctx, part);
+  for (const part of parts) shapePath(ctx, part);
   ctx.clip();
   return true;
 }
@@ -600,15 +890,22 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
     ctx.restore();
     return true;
   }
-  if (isNeutralShape) drawStationArtParts(ctx, room, arenaSpec, time, 'under');
+  if (isNeutralShape && !arenaSpec?.rules?.biomeCircularArena) drawStationArtParts(ctx, room, arenaSpec, time, 'under');
   for (const part of parts) {
+    const isCircle = String(part?.type || '') === 'circle';
     const x = Number(part?.x) || 0;
     const y = Number(part?.y) || 0;
     const w = Number(part?.w) || 0;
     const h = Number(part?.h) || 0;
-    if (w <= 0 || h <= 0) continue;
+    const r = Number(part?.r) || 0;
+    if (!isCircle && (w <= 0 || h <= 0)) continue;
+    if (isCircle && !(r > 0)) continue;
     const isBridge = bridges.includes(part);
     if (isHubShape) {
+      continue;
+    }
+    if (isCircle) {
+      drawBiomeOrbCirclePlatform(ctx, part, time, { biomeKey, isHub: false });
       continue;
     }
     const shadow = ctx.createRadialGradient(x + w * 0.5, y + h * 0.5, 0, x + w * 0.5, y + h * 0.5, Math.max(w, h) * 0.8);
@@ -633,7 +930,7 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
       ctx.strokeRect(x + 1.5, y + 1.5, Math.max(0, w - 3), Math.max(0, h - 3));
     }
   }
-  if (isNeutralShape) drawStationArtParts(ctx, room, arenaSpec, time, 'over');
+  if (isNeutralShape && !arenaSpec?.rules?.biomeCircularArena) drawStationArtParts(ctx, room, arenaSpec, time, 'over');
   ctx.restore();
   return true;
 }
@@ -1539,6 +1836,7 @@ function drawBiomeSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { biomeKey, hue
 
 function drawNeutralSpaceSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { hue, time }) {
   const arenaSpec = getArenaSpec(room);
+  if (arenaSpec?.rules?.neutralIntroCircleArena) return;
   const seed = (((room.index || 0) + 17) * 2246822519) ^ 0x7f4a7c15;
   const rnd = makeRng(seed >>> 0);
   const cx = (x0 + x1) * 0.5;
@@ -1779,41 +2077,23 @@ function drawCosmosScreen(ctx, state) {
     return;
   }
 
-  const bg = ctx.createRadialGradient(w * 0.56, h * 0.44, 0, w * 0.56, h * 0.44, Math.max(w, h) * 0.95);
-  bg.addColorStop(0, '#0a1126');
-  bg.addColorStop(0.42, '#060b19');
-  bg.addColorStop(1, '#02040c');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, w, h);
-
   if (isNeutralSpace) {
-    const planetCx = w * 1.08;
-    const planetCy = h * 1.22;
-    const planetR = Math.max(w, h) * 0.62;
-    const planet = ctx.createRadialGradient(planetCx - planetR * 0.18, planetCy - planetR * 0.24, 0, planetCx, planetCy, planetR);
-    planet.addColorStop(0, 'rgba(182,220,255,0.68)');
-    planet.addColorStop(0.24, 'rgba(124,174,242,0.62)');
-    planet.addColorStop(0.58, 'rgba(46,76,134,0.56)');
-    planet.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = planet;
-    ctx.beginPath();
-    ctx.arc(planetCx, planetCy, planetR, 0, Math.PI * 2);
-    ctx.fill();
-
-    const atmosphere = ctx.createRadialGradient(planetCx, planetCy, planetR * 0.78, planetCx, planetCy, planetR * 1.02);
-    atmosphere.addColorStop(0, 'rgba(118,196,255,0.0)');
-    atmosphere.addColorStop(0.82, 'rgba(146,220,255,0.12)');
-    atmosphere.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = atmosphere;
-    ctx.beginPath();
-    ctx.arc(planetCx, planetCy, planetR * 1.02, 0, Math.PI * 2);
-    ctx.fill();
-
-    const orbitalHaze = ctx.createLinearGradient(0, h * 0.38, 0, h * 0.88);
-    orbitalHaze.addColorStop(0, 'rgba(120,188,255,0)');
-    orbitalHaze.addColorStop(0.62, 'rgba(92,154,255,0.04)');
-    orbitalHaze.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = orbitalHaze;
+    const neutralBgTex = getRoomTexture(HUB_ASSET_URLS.bg);
+    const drewNeutralBg = drawImageCoverScreen(ctx, neutralBgTex, 0, 0, w, h, 1, -cam.x * 0.015, -cam.y * 0.015, 1.06);
+    if (!drewNeutralBg) {
+      const bg = ctx.createRadialGradient(w * 0.56, h * 0.44, 0, w * 0.56, h * 0.44, Math.max(w, h) * 0.95);
+      bg.addColorStop(0, '#0a1126');
+      bg.addColorStop(0.42, '#060b19');
+      bg.addColorStop(1, '#02040c');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, w, h);
+    }
+  } else {
+    const bg = ctx.createRadialGradient(w * 0.56, h * 0.44, 0, w * 0.56, h * 0.44, Math.max(w, h) * 0.95);
+    bg.addColorStop(0, '#0a1126');
+    bg.addColorStop(0.42, '#060b19');
+    bg.addColorStop(1, '#02040c');
+    ctx.fillStyle = bg;
     ctx.fillRect(0, 0, w, h);
   }
 
@@ -2811,7 +3091,8 @@ function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, s
   ctx.globalAlpha = alpha;
 
   const isHubRoom = !!arenaSpec?.rules?.isHub || String(room?.biomeKey || '').toLowerCase() === 'hub' || ((room?.index | 0) === 0);
-  if (luxurySpace && !isHubRoom) {
+  const isNeutralIntroOrbRoom = !!arenaSpec?.rules?.neutralIntroCircleArena;
+  if (luxurySpace && !isHubRoom && !isNeutralIntroOrbRoom) {
     drawOrbitalBackdropBehindRoom(ctx, room, { x0, y0, x1, y1, w, h }, false);
   }
 

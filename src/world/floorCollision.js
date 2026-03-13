@@ -18,6 +18,19 @@ function asRect(r) {
   return { id: r.id || '', type: 'rect', x, y, w, h, minX: x, minY: y, maxX: x + w, maxY: y + h };
 }
 
+function asCircle(c) {
+  if (!c || String(c.type || '') !== 'circle') return null;
+  const x = num(c.x, NaN);
+  const y = num(c.y, NaN);
+  const r = num(c.r, NaN);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(r) || r <= 0) return null;
+  return { id: c.id || '', type: 'circle', x, y, r, w: r * 2, h: r * 2, minX: x - r, minY: y - r, maxX: x + r, maxY: y + r };
+}
+
+function asWalkShape(shape) {
+  return asRect(shape) || asCircle(shape);
+}
+
 function overlap1D(a0, a1, b0, b1) {
   return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
 }
@@ -37,10 +50,10 @@ export function buildNavSeamConnectors(rects, { gap = 12, minOverlap = 20, touch
   const touchHalf = touch * 0.5;
   for (let i = 0; i < rects.length; i++) {
     const a = rects[i];
-    if (!a) continue;
+    if (!a || a.type !== 'rect') continue;
     for (let j = i + 1; j < rects.length; j++) {
       const b = rects[j];
-      if (!b) continue;
+      if (!b || b.type !== 'rect') continue;
 
       const xOverlap = overlap1D(a.minX, a.maxX, b.minX, b.maxX);
       const yOverlap = overlap1D(a.minY, a.maxY, b.minY, b.maxY);
@@ -86,9 +99,10 @@ export function buildNavSeamConnectors(rects, { gap = 12, minOverlap = 20, touch
 }
 
 export function weldWalkRects(rects, { seamGap = 12, seamMinOverlap = 20, touchThickness = 10 } = {}) {
-  const base = (Array.isArray(rects) ? rects : []).map(asRect).filter(Boolean);
+  const base = (Array.isArray(rects) ? rects : []).map(asWalkShape).filter(Boolean);
   if (!base.length) return [];
-  const seams = buildNavSeamConnectors(base, { gap: seamGap, minOverlap: seamMinOverlap, touchThickness });
+  const seamSources = base.filter((s) => s.type === 'rect');
+  const seams = buildNavSeamConnectors(seamSources, { gap: seamGap, minOverlap: seamMinOverlap, touchThickness });
   return seams.length ? base.concat(seams) : base;
 }
 
@@ -102,31 +116,31 @@ export function getRoomWalkRects(room) {
     if (room && room._walkRectCacheSource === nav && Array.isArray(room._walkRectCache) && room._walkRectCache.length) {
       return room._walkRectCache;
     }
-    const rects = buildWalkRectsFromNavZones(nav, { seamGap: 14, seamMinOverlap: 18, touchThickness: 10 });
+    const shapes = buildWalkRectsFromNavZones(nav, { seamGap: 14, seamMinOverlap: 18, touchThickness: 10 });
     if (room) {
       room._walkRectCacheSource = nav;
-      room._walkRectCache = rects;
+      room._walkRectCache = shapes;
     }
-    if (rects.length) return rects;
+    if (shapes.length) return shapes;
   }
   const b = room?.bounds;
   if (!b) return [];
-  return [{ x: b.minX, y: b.minY, w: b.maxX - b.minX, h: b.maxY - b.minY, minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY }];
+  return [{ type: 'rect', x: b.minX, y: b.minY, w: b.maxX - b.minX, h: b.maxY - b.minY, minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY }];
 }
 
 export function getRoomGeometryBounds(room, pad = 0) {
-  const rects = getRoomWalkRects(room);
-  if (!rects.length) return null;
+  const shapes = getRoomWalkRects(room);
+  if (!shapes.length) return null;
   let out = null;
-  for (const r of rects) {
+  for (const s of shapes) {
     out = out
       ? {
-          minX: Math.min(out.minX, r.minX),
-          minY: Math.min(out.minY, r.minY),
-          maxX: Math.max(out.maxX, r.maxX),
-          maxY: Math.max(out.maxY, r.maxY),
+          minX: Math.min(out.minX, s.minX),
+          minY: Math.min(out.minY, s.minY),
+          maxX: Math.max(out.maxX, s.maxX),
+          maxY: Math.max(out.maxY, s.maxY),
         }
-      : { minX: r.minX, minY: r.minY, maxX: r.maxX, maxY: r.maxY };
+      : { minX: s.minX, minY: s.minY, maxX: s.maxX, maxY: s.maxY };
   }
   if (!out) return null;
   return { minX: out.minX - pad, minY: out.minY - pad, maxX: out.maxX + pad, maxY: out.maxY + pad };
@@ -144,15 +158,29 @@ export function pointInRect(x, y, rect, pad = 0) {
   return x >= rect.minX + pad && x <= rect.maxX - pad && y >= rect.minY + pad && y <= rect.maxY - pad;
 }
 
+function pointInCircle(x, y, circle, pad = 0) {
+  if (!circle) return false;
+  const rr = Math.max(0, Number(circle.r) - Math.max(0, Number(pad) || 0));
+  const dx = x - Number(circle.x || 0);
+  const dy = y - Number(circle.y || 0);
+  return dx * dx + dy * dy <= rr * rr;
+}
+
+function pointInShape(x, y, shape, pad = 0) {
+  if (!shape) return false;
+  if (shape.type === 'circle') return pointInCircle(x, y, shape, pad);
+  return pointInRect(x, y, shape, pad);
+}
+
 export function pointInRoomWalkable(room, x, y, pad = 0) {
   if (isHubRoom(room)) {
     const maskHit = isHubMaskPointWalkable(room?.arenaSpec || null, x, y, { pad });
     if (maskHit !== null) return !!maskHit;
   }
-  const rects = getRoomWalkRects(room);
-  if (!rects.length) return false;
-  for (const r of rects) {
-    if (pointInRect(x, y, r, pad)) return true;
+  const shapes = getRoomWalkRects(room);
+  if (!shapes.length) return false;
+  for (const s of shapes) {
+    if (pointInShape(x, y, s, pad)) return true;
   }
   return false;
 }
@@ -173,7 +201,6 @@ function pushOutOfCovers(x, y, radius, covers, fallbackDir = { x: 1, y: 0 }) {
       const fl = Math.hypot(fallbackDir.x, fallbackDir.y) || 1;
       nx = fallbackDir.x / fl;
       ny = fallbackDir.y / fl;
-      len = 1;
     } else {
       nx = dx / len;
       ny = dy / len;
@@ -182,6 +209,36 @@ function pushOutOfCovers(x, y, radius, covers, fallbackDir = { x: 1, y: 0 }) {
     outY = c.y + ny * rr;
   }
   return { x: outX, y: outY };
+}
+
+function clampPointToCircle(x, y, circle, pad = 0, prefer = null) {
+  const rr = Math.max(1, Number(circle.r || 0) - Math.max(0, Number(pad) || 0));
+  const cx = Number(circle.x || 0);
+  const cy = Number(circle.y || 0);
+  let dx = x - cx;
+  let dy = y - cy;
+  let len = Math.hypot(dx, dy);
+  if (len <= rr) return { x, y };
+  if (len < 0.0001) {
+    const pdx = x - Number(prefer?.x || cx);
+    const pdy = y - Number(prefer?.y || cy);
+    len = Math.hypot(pdx, pdy) || 1;
+    dx = pdx / len;
+    dy = pdy / len;
+  } else {
+    dx /= len;
+    dy /= len;
+  }
+  return { x: cx + dx * rr, y: cy + dy * rr };
+}
+
+function projectPointInsideShape(x, y, shape, pad = 0, prefer = null) {
+  if (!shape) return { x, y };
+  if (shape.type === 'circle') return clampPointToCircle(x, y, shape, pad, prefer);
+  return {
+    x: Math.max(shape.minX + pad, Math.min(shape.maxX - pad, x)),
+    y: Math.max(shape.minY + pad, Math.min(shape.maxY - pad, y)),
+  };
 }
 
 export function clampPointToRects(
@@ -201,31 +258,26 @@ export function clampPointToRects(
   const pad = Math.max(0, num(edgePad, 0));
   const pushR = Math.max(0, num(coverRadius, 0));
 
-  for (const r of rects) {
-    if (pointInRect(x, y, r, pad)) {
+  for (const shape of rects) {
+    if (pointInShape(x, y, shape, pad)) {
       const pushed = pushOutOfCovers(x, y, pushR, covers, { x: x - pref.x, y: y - pref.y });
-      if (pointInRect(pushed.x, pushed.y, r, pad)) return pushed;
-      return {
-        x: Math.max(r.minX + pad, Math.min(r.maxX - pad, pushed.x)),
-        y: Math.max(r.minY + pad, Math.min(r.maxY - pad, pushed.y)),
-      };
+      if (pointInShape(pushed.x, pushed.y, shape, pad)) return pushed;
+      return projectPointInsideShape(pushed.x, pushed.y, shape, pad, pref);
     }
   }
 
   let best = null;
   let bestD2 = Infinity;
-  for (const r of rects) {
-    const cx = Math.max(r.minX + pad, Math.min(r.maxX - pad, x));
-    const cy = Math.max(r.minY + pad, Math.min(r.maxY - pad, y));
-    const pushed = pushOutOfCovers(cx, cy, pushR, covers, { x: cx - pref.x, y: cy - pref.y });
-    const fx = Math.max(r.minX + pad, Math.min(r.maxX - pad, pushed.x));
-    const fy = Math.max(r.minY + pad, Math.min(r.maxY - pad, pushed.y));
-    const dx = fx - x;
-    const dy = fy - y;
+  for (const shape of rects) {
+    const candidate = projectPointInsideShape(x, y, shape, pad, pref);
+    const pushed = pushOutOfCovers(candidate.x, candidate.y, pushR, covers, { x: candidate.x - pref.x, y: candidate.y - pref.y });
+    const fixed = pointInShape(pushed.x, pushed.y, shape, pad) ? pushed : projectPointInsideShape(pushed.x, pushed.y, shape, pad, pref);
+    const dx = fixed.x - x;
+    const dy = fixed.y - y;
     const d2 = dx * dx + dy * dy;
     if (d2 < bestD2) {
       bestD2 = d2;
-      best = { x: fx, y: fy };
+      best = fixed;
     }
   }
   return best || { x, y };
@@ -245,12 +297,12 @@ export function clampEntityToRoomWalkable(entity, room, { pad = 0, prevX = null,
       return;
     }
   }
-  const rects = getRoomWalkRects(room);
-  if (!rects.length) return;
+  const shapes = getRoomWalkRects(room);
+  if (!shapes.length) return;
   const covers = getRoomCoverCircles(room);
   const coverRadius = Math.max(4, num(entity.radius, 18) + pad);
   const edgePad = 2;
-  const fixed = clampPointToRects(entity.x, entity.y, rects, {
+  const fixed = clampPointToRects(entity.x, entity.y, shapes, {
     edgePad,
     coverRadius,
     covers,
@@ -268,26 +320,35 @@ export function randomPointInRoomWalkable(room) {
     const p = getRandomHubMaskPoint(room?.arenaSpec || null, { pad: 20 });
     if (p) return p;
   }
-  const rects = getRoomWalkRects(room);
-  if (!rects.length) {
+  const shapes = getRoomWalkRects(room);
+  if (!shapes.length) {
     const b = room?.bounds;
     if (!b) return { x: 0, y: 0 };
     return { x: (b.minX + b.maxX) * 0.5, y: (b.minY + b.maxY) * 0.5 };
   }
   const weighted = [];
   let total = 0;
-  for (const r of rects) {
-    const area = Math.max(1, r.w * r.h);
-    total += area;
-    weighted.push({ r, total });
+  for (const s of shapes) {
+    const area = s.type === 'circle' ? Math.PI * s.r * s.r : Math.max(1, s.w * s.h);
+    total += Math.max(1, area);
+    weighted.push({ s, total });
   }
   const pick = Math.random() * total;
   const hit = weighted.find((w) => pick <= w.total) || weighted[weighted.length - 1];
-  const r = hit.r;
+  const s = hit.s;
   const pad = 20;
+  if (s.type === 'circle') {
+    const rr = Math.max(4, s.r - pad);
+    const ang = Math.random() * Math.PI * 2;
+    const dist = Math.sqrt(Math.random()) * rr;
+    return {
+      x: s.x + Math.cos(ang) * dist,
+      y: s.y + Math.sin(ang) * dist,
+    };
+  }
   return {
-    x: r.minX + pad + Math.random() * Math.max(1, r.w - pad * 2),
-    y: r.minY + pad + Math.random() * Math.max(1, r.h - pad * 2),
+    x: s.minX + pad + Math.random() * Math.max(1, s.w - pad * 2),
+    y: s.minY + pad + Math.random() * Math.max(1, s.h - pad * 2),
   };
 }
 
@@ -305,7 +366,7 @@ export function getActiveWalkRects(state) {
   if (rd.bridge) {
     const br = rd.bridge.built && rd.bridge.bounds ? rd.bridge.bounds : (typeof rd._getBridgeBuiltBounds === 'function' ? rd._getBridgeBuiltBounds() : null);
     if (br) {
-      rects.push({ x: br.minX, y: br.minY, w: br.maxX - br.minX, h: br.maxY - br.minY, minX: br.minX, minY: br.minY, maxX: br.maxX, maxY: br.maxY });
+      rects.push({ type: 'rect', x: br.minX, y: br.minY, w: br.maxX - br.minX, h: br.maxY - br.minY, minX: br.minX, minY: br.minY, maxX: br.maxX, maxY: br.maxY });
     }
   }
   return weldWalkRects(rects, { seamGap: 18, seamMinOverlap: 18, touchThickness: 12 });
