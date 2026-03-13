@@ -1,0 +1,153 @@
+import { getHubAssetSet } from './hubAssets.js';
+import { getHubSceneLayout } from './hubLayout.js';
+import { getHubHitZones } from './hubHitZones.js';
+
+function drawImageCover(ctx, entry, x, y, w, h, alpha = 1, ox = 0, oy = 0, scaleMul = 1) {
+  if (!entry?.loaded || !entry?.img) return false;
+  const imgW = Math.max(1, Number(entry.img.naturalWidth || entry.img.width) || 1);
+  const imgH = Math.max(1, Number(entry.img.naturalHeight || entry.img.height) || 1);
+  const scale = Math.max(w / imgW, h / imgH) * Math.max(0.01, scaleMul);
+  const dw = imgW * scale;
+  const dh = imgH * scale;
+  ctx.save();
+  ctx.globalAlpha *= alpha;
+  ctx.drawImage(entry.img, x + (w - dw) * 0.5 + ox, y + (h - dh) * 0.5 + oy, dw, dh);
+  ctx.restore();
+  return true;
+}
+
+function drawImageCentered(ctx, entry, cx, cy, w, h, alpha = 1) {
+  if (!entry?.loaded || !entry?.img) return false;
+  ctx.save();
+  ctx.globalAlpha *= alpha;
+  ctx.drawImage(entry.img, cx - w * 0.5, cy - h * 0.5, w, h);
+  ctx.restore();
+  return true;
+}
+
+function drawImageBottomCentered(ctx, entry, cx, by, w, h, alpha = 1) {
+  if (!entry?.loaded || !entry?.img) return false;
+  ctx.save();
+  ctx.globalAlpha *= alpha;
+  ctx.drawImage(entry.img, cx - w * 0.5, by - h, w, h);
+  ctx.restore();
+  return true;
+}
+
+function drawFallbackRadial(ctx, cx, cy, r, inner, outer, alpha = 1) {
+  ctx.save();
+  ctx.globalAlpha *= alpha;
+  const g = ctx.createRadialGradient(cx, cy, r * 0.08, cx, cy, r);
+  g.addColorStop(0, inner);
+  g.addColorStop(1, outer);
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawFutureNodeHints(ctx, layout, time) {
+  ctx.save();
+  for (const node of layout.futureNodes) {
+    const pulse = 0.3 + 0.12 * Math.sin(time * 1.2 + node.x * 0.01 + node.y * 0.01);
+    drawFallbackRadial(ctx, node.x, node.y, layout.nodeGlow * 0.46, 'rgba(232,180,255,0.22)', 'rgba(232,180,255,0)', pulse);
+  }
+  ctx.restore();
+}
+
+function drawActiveNodeLabels(ctx, zones, time) {
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const zone of zones) {
+    if (!zone.active || !zone.label) continue;
+    const glow = 0.74 + 0.16 * Math.sin(time * 2.2 + zone.x * 0.02);
+    ctx.globalAlpha = 0.64 * glow;
+    ctx.strokeStyle = 'rgba(186,228,255,0.18)';
+    ctx.lineWidth = Math.max(2, zone.r * 0.04);
+    ctx.beginPath();
+    ctx.arc(zone.x, zone.y, zone.r * 0.82, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawSparkCluster(ctx, sparkTex, cx, cy, radius, count, time, alpha = 1) {
+  if (!sparkTex?.loaded || !sparkTex?.img) return;
+  const img = sparkTex.img;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * Math.PI * 2 + time * (0.18 + (i % 5) * 0.03);
+    const wobble = Math.sin(time * 1.3 + i * 1.7) * radius * 0.08;
+    const r = radius * (0.62 + ((i * 37) % 100) / 100 * 0.46) + wobble;
+    const x = cx + Math.cos(a) * r;
+    const y = cy + Math.sin(a * 1.17) * r * 0.72;
+    const s = Math.max(8, radius * (0.12 + ((i * 19) % 9) * 0.015));
+    ctx.globalAlpha = alpha * (0.26 + ((i * 11) % 10) / 10 * 0.48);
+    ctx.drawImage(img, x - s * 0.5, y - s * 0.5, s, s);
+  }
+  ctx.restore();
+}
+
+export function renderHubSceneScreenBackdrop(ctx, state, time = 0) {
+  const assets = getHubAssetSet();
+  const canvas = state?.canvas || null;
+  if (!canvas) return false;
+  const w = Math.max(1, Number(canvas.width) || 1);
+  const h = Math.max(1, Number(canvas.height) || 1);
+  const camX = Number(state?.camera?.x) || 0;
+  const camY = Number(state?.camera?.y) || 0;
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const bg = ctx.createRadialGradient(w * 0.5, h * 0.5, 0, w * 0.5, h * 0.5, Math.max(w, h) * 0.9);
+  bg.addColorStop(0, 'rgba(10,10,24,1)');
+  bg.addColorStop(1, 'rgba(2,2,8,1)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, w, h);
+
+  if (assets.bg?.loaded) {
+    const driftX = Math.sin(time * 0.05) * w * 0.018 - camX * 0.006;
+    const driftY = Math.cos(time * 0.04) * h * 0.015 - camY * 0.006;
+    drawImageCover(ctx, assets.bg, 0, 0, w, h, 0.98, driftX, driftY, 1.06);
+  }
+
+  const vignette = ctx.createRadialGradient(w * 0.5, h * 0.48, Math.min(w, h) * 0.18, w * 0.5, h * 0.5, Math.max(w, h) * 0.82);
+  vignette.addColorStop(0, 'rgba(255,255,255,0)');
+  vignette.addColorStop(1, 'rgba(0,0,0,0.42)');
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+  return true;
+}
+
+export function renderHubSceneWorld(ctx, arenaSpec, time = 0) {
+  const assets = getHubAssetSet();
+  const layout = getHubSceneLayout(arenaSpec);
+  const zones = getHubHitZones(arenaSpec);
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const portalPulse = 0.72 + 0.18 * Math.sin(time * 2.1);
+  drawImageBottomCentered(ctx, assets.portalBeam, layout.nodes.portal.x, layout.nodes.portal.y + layout.side * 0.02, layout.portalBeamW, layout.portalBeamH, portalPulse);
+  ctx.restore();
+
+  drawImageCentered(ctx, assets.arch, layout.cx, layout.cy, layout.artSize, layout.artSize, 1);
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const corePulse = 0.70 + 0.24 * Math.sin(time * 2.6);
+  const coreWobble = 1 + 0.03 * Math.sin(time * 1.8);
+  drawImageCentered(ctx, assets.coreGlow, layout.cx, layout.cy, layout.coreSize * coreWobble, layout.coreSize * coreWobble, corePulse);
+  drawFallbackRadial(ctx, layout.cx, layout.cy, layout.side * 0.12, 'rgba(255,255,255,0.35)', 'rgba(125,195,255,0)', 0.22 + corePulse * 0.15);
+  ctx.restore();
+
+  drawFutureNodeHints(ctx, layout, time);
+  drawSparkCluster(ctx, assets.spark, layout.cx, layout.cy, layout.side * 0.16, 16, time, 0.85);
+  drawSparkCluster(ctx, assets.spark, layout.nodes.portal.x, layout.nodes.portal.y - layout.side * 0.04, layout.side * 0.10, 12, time + 2.3, 0.72);
+
+  drawActiveNodeLabels(ctx, zones, time);
+  return true;
+}
