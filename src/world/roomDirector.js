@@ -5,6 +5,7 @@ import { buildArenaSpec } from './arenaSpecBuilder.js';
 import { buildFloorPlan, getRoomTemplatePreset } from './floorPlanBuilder.js';
 import { getRoomGeometryBounds, getRoomWalkRects, clampPointToRects } from './floorCollision.js';
 import { resolveSocketPoint, oppositeSocket, primaryEdgeForSocket, socketVector } from './roomRoute.js';
+import { scheduleRoomRenderWarmup } from './roomRenderer.js';
 
 const GAP = 120;
 const CONNECTOR_BUILD_DUR = 0.55;
@@ -348,6 +349,7 @@ export class RoomDirector {
     this._ensureNextSpawned();
     this._ensureBridge();
     this._applyDynamicBounds();
+    try { scheduleRoomRenderWarmup(this.state); } catch {}
   }
 
   get roomIndex() {
@@ -378,6 +380,7 @@ export class RoomDirector {
     }
 
     this._applyDynamicBounds();
+    try { scheduleRoomRenderWarmup(this.state); } catch {}
   }
 
   _ensureFloorShop() {
@@ -572,6 +575,7 @@ export class RoomDirector {
     } catch {}
 
     this._applyDynamicBounds();
+    try { scheduleRoomRenderWarmup(this.state); } catch {}
   }
 
   _enterNextFloor() {
@@ -611,6 +615,7 @@ export class RoomDirector {
     } catch {}
 
     this._applyDynamicBounds();
+    try { scheduleRoomRenderWarmup(this.state); } catch {}
   }
 
   forceSetCurrent(roomIndex, opts = null) {
@@ -622,6 +627,7 @@ export class RoomDirector {
       this.bridge = null;
       this._activeFloorPlan = null;
       this._applyDynamicBounds();
+      try { scheduleRoomRenderWarmup(this.state); } catch {}
       return;
     }
     const floorNumber = Math.max(1, Number(opts?.floorNumber) || Number(this.state?._floorNumber) || 1);
@@ -740,6 +746,7 @@ export class RoomDirector {
       })),
     };
     this._applyDynamicBounds();
+    try { scheduleRoomRenderWarmup(this.state); } catch {}
   }
 
   _cleanupRoomEntities(room) {

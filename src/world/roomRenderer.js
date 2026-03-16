@@ -4,6 +4,8 @@ import { biomeByKey } from "./biomes.js";
 import { primaryEdgeForSocket } from "./roomRoute.js";
 import { renderHubSceneScreenBackdrop, renderHubSceneWorld } from "./hub/hubRenderer.js";
 import { HUB_ASSET_URLS } from "./hub/hubAssets.js";
+import { getBiomeArtAssetSet, getBiomeArtSignature } from "./biomeArtAssets.js";
+import neutralSpaceBgUrl from "../assets/neutral/neutral_space_bg_4k.png";
 
 
 const roomTextureCache = new Map();
@@ -33,6 +35,74 @@ function drawImageCoverScreen(ctx, entry, x, y, w, h, alpha = 1, ox = 0, oy = 0,
   ctx.drawImage(entry.img, x + (w - dw) * 0.5 + ox, y + (h - dh) * 0.5 + oy, dw, dh);
   ctx.restore();
   return true;
+}
+
+function drawImageCoverRect(ctx, entry, x, y, w, h, alpha = 1, ox = 0, oy = 0, scaleMul = 1) {
+  if (!entry?.loaded || !entry?.img) return false;
+  const imgW = Math.max(1, Number(entry.img.naturalWidth || entry.img.width) || 1);
+  const imgH = Math.max(1, Number(entry.img.naturalHeight || entry.img.height) || 1);
+  const scale = Math.max(w / imgW, h / imgH) * Math.max(0.01, scaleMul);
+  const dw = imgW * scale;
+  const dh = imgH * scale;
+  ctx.save();
+  ctx.globalAlpha *= alpha;
+  ctx.drawImage(entry.img, x + (w - dw) * 0.5 + ox, y + (h - dh) * 0.5 + oy, dw, dh);
+  ctx.restore();
+  return true;
+}
+
+function getLoadedBiomeArenaEntry(room, layer = 'bg') {
+  const biomeKey = String(room?.biomeKey || 'neutral').toLowerCase();
+  const assets = getBiomeArtAssetSet(biomeKey);
+  if (layer === 'surface' || layer === 'overlay') {
+    const overlay = assets.overlay;
+    return (overlay?.loaded && overlay?.img) ? overlay : null;
+  }
+  if (layer === 'any') {
+    if (assets.overlay?.loaded && assets.overlay?.img) return assets.overlay;
+    if (assets.bg?.loaded && assets.bg?.img) return assets.bg;
+    return null;
+  }
+  const entry = assets.bg;
+  return (entry?.loaded && entry?.img) ? entry : null;
+}
+
+function hasLoadedBiomeArenaArt(room, layer = 'bg') {
+  return !!getLoadedBiomeArenaEntry(room, layer);
+}
+
+function drawBiomeArenaArt(ctx, room, arenaSpec, bounds, layer = 'bg', time = 0, options = null) {
+  if (!ctx || !room || !arenaSpec || !bounds) return false;
+  const biomeKey = String(room?.biomeKey || 'neutral').toLowerCase();
+  const visualPreset = String(arenaSpec?.visualPreset || '').toLowerCase();
+  const isHubShape = !!arenaSpec?.rules?.isHub || visualPreset === 'hub_core_station' || visualPreset === 'hub_orbital_disc';
+  if (isHubShape || biomeKey === 'hub') return false;
+  const entry = getLoadedBiomeArenaEntry(room, layer);
+  if (!entry?.loaded || !entry?.img) return false;
+  const { x0, y0, w, h } = bounds;
+  const clipMode = String(options?.clipMode || 'arena').toLowerCase();
+  const isSurface = layer === 'surface';
+  const alpha = Number.isFinite(Number(options?.alpha)) ? Number(options.alpha) : (isSurface ? 1 : (layer === 'overlay' ? 0.46 : 0.88));
+  const scaleMul = Number.isFinite(Number(options?.scaleMul)) ? Number(options.scaleMul) : (isSurface ? 1 : (layer === 'overlay' ? 1.02 : 1.04));
+  const parallax = Number.isFinite(Number(options?.parallax)) ? Number(options.parallax) : (isSurface ? 0 : (layer === 'overlay' ? 0.008 : 0.014));
+  const compositeOperation = options?.compositeOperation || (isSurface ? 'source-over' : (layer === 'overlay' ? 'screen' : 'source-over'));
+  const driftX = isSurface ? 0 : Math.sin((Number(time) || 0) * (layer === 'overlay' ? 0.12 : 0.08)) * (layer === 'overlay' ? 4 : 2);
+  const driftY = isSurface ? 0 : Math.cos((Number(time) || 0) * (layer === 'overlay' ? 0.10 : 0.06)) * (layer === 'overlay' ? 3 : 2);
+  const ox = -((Number(room?.centerX) || 0) * parallax) + driftX;
+  const oy = -((Number(room?.centerY) || 0) * parallax) + driftY;
+  ctx.save();
+  if (clipMode === 'bounds') {
+    ctx.beginPath();
+    ctx.rect(x0, y0, w, h);
+    ctx.clip();
+  } else if (!clipToArenaParts(ctx, arenaSpec)) {
+    ctx.restore();
+    return false;
+  }
+  ctx.globalCompositeOperation = compositeOperation;
+  const drew = drawImageCoverRect(ctx, entry, x0, y0, w, h, alpha, ox, oy, scaleMul);
+  ctx.restore();
+  return drew;
 }
 
 function clamp(n, a, b) {
@@ -782,6 +852,7 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
   const visualPreset = String(arenaSpec?.visualPreset || '').toLowerCase();
   const isHubShape = !!arenaSpec?.rules?.isHub || visualPreset === 'hub_core_station' || visualPreset === 'hub_orbital_disc';
   const isNeutralShape = biomeKey === 'neutral' || visualPreset.includes('neutral_') || isHubShape;
+  const useLoadedBiomeArtSurface = !isHubShape && hasLoadedBiomeArenaArt(room, 'surface');
   let coreA = 'rgba(84,100,126,0.96)';
   let coreB = 'rgba(32,40,58,0.96)';
   let bridgeA = 'rgba(106,126,154,0.90)';
@@ -825,7 +896,7 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
     ctx.restore();
     return true;
   }
-  if (isNeutralShape && !arenaSpec?.rules?.biomeCircularArena) drawStationArtParts(ctx, room, arenaSpec, time, 'under');
+  if (!useLoadedBiomeArtSurface && isNeutralShape && !arenaSpec?.rules?.biomeCircularArena) drawStationArtParts(ctx, room, arenaSpec, time, 'under');
   for (const part of parts) {
     const isCircle = String(part?.type || '') === 'circle';
     const x = Number(part?.x) || 0;
@@ -840,7 +911,7 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
       continue;
     }
     if (isCircle) {
-      drawBiomeOrbCirclePlatform(ctx, part, time, { biomeKey, isHub: false });
+      if (!useLoadedBiomeArtSurface) drawBiomeOrbCirclePlatform(ctx, part, time, { biomeKey, isHub: false });
       continue;
     }
     const shadow = ctx.createRadialGradient(x + w * 0.5, y + h * 0.5, 0, x + w * 0.5, y + h * 0.5, Math.max(w, h) * 0.8);
@@ -848,24 +919,35 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
     shadow.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = shadow;
     ctx.fillRect(x - 28, y - 28, w + 56, h + 56);
-    if (isNeutralShape) {
-      const pid = String(part?.id || '').toLowerCase();
-      drawStationLuxuryTrim(ctx, x, y, w, h, { isBridge, isHub: false, pid, time });
-    } else {
-      const g = ctx.createLinearGradient(x, y, x + w, y + h);
-      g.addColorStop(0, isBridge ? bridgeA : coreA);
-      g.addColorStop(1, isBridge ? bridgeB : coreB);
-      ctx.shadowColor = glow;
-      ctx.shadowBlur = isBridge ? 10 : 16;
-      ctx.fillStyle = g;
-      ctx.fillRect(x, y, w, h);
-      ctx.shadowBlur = 0;
-      ctx.strokeStyle = edge;
-      ctx.lineWidth = isBridge ? 2 : 3;
-      ctx.strokeRect(x + 1.5, y + 1.5, Math.max(0, w - 3), Math.max(0, h - 3));
+    if (!useLoadedBiomeArtSurface) {
+      if (isNeutralShape) {
+        const pid = String(part?.id || '').toLowerCase();
+        drawStationLuxuryTrim(ctx, x, y, w, h, { isBridge, isHub: false, pid, time });
+      } else {
+        const g = ctx.createLinearGradient(x, y, x + w, y + h);
+        g.addColorStop(0, isBridge ? bridgeA : coreA);
+        g.addColorStop(1, isBridge ? bridgeB : coreB);
+        ctx.shadowColor = glow;
+        ctx.shadowBlur = isBridge ? 10 : 16;
+        ctx.fillStyle = g;
+        ctx.fillRect(x, y, w, h);
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = edge;
+        ctx.lineWidth = isBridge ? 2 : 3;
+        ctx.strokeRect(x + 1.5, y + 1.5, Math.max(0, w - 3), Math.max(0, h - 3));
+      }
     }
   }
-  if (isNeutralShape && !arenaSpec?.rules?.biomeCircularArena) drawStationArtParts(ctx, room, arenaSpec, time, 'over');
+  if (!isHubShape && useLoadedBiomeArtSurface) {
+    drawBiomeArenaArt(ctx, room, arenaSpec, bounds, 'surface', time, {
+      clipMode: 'arena',
+      alpha: 1,
+      scaleMul: 1,
+      compositeOperation: 'source-over',
+      parallax: 0,
+    });
+  }
+  if (!useLoadedBiomeArtSurface && isNeutralShape && !arenaSpec?.rules?.biomeCircularArena) drawStationArtParts(ctx, room, arenaSpec, time, 'over');
   ctx.restore();
   return true;
 }
@@ -881,7 +963,7 @@ function drawArenaShapeOverlay(ctx, room, arenaSpec, time = 0) {
   const visualPreset = String(arenaSpec?.visualPreset || '').toLowerCase();
   const isHubShape = !!arenaSpec?.rules?.isHub || visualPreset === 'hub_core_station' || visualPreset === 'hub_orbital_disc';
   const isNeutralShape = biomeKey === 'neutral' || visualPreset.includes('neutral_') || isHubShape;
-  if (isNeutralShape) return;
+  const useLoadedBiomeArtSurface = !isHubShape && hasLoadedBiomeArenaArt(room, 'surface');
   let panelStroke = 'rgba(255,255,255,0.08)';
   let fillCore = 'rgba(16,18,28,0.16)';
   let fillBridge = 'rgba(160,200,255,0.06)';
@@ -929,12 +1011,12 @@ function drawArenaShapeOverlay(ctx, room, arenaSpec, time = 0) {
     ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
   };
 
-  if (!isNeutralShape) {
+  if (!useLoadedBiomeArtSurface && !isNeutralShape) {
     for (const p of platforms) drawRectLike(p, fillCore, panelStroke, 3);
     for (const b of bridges) drawRectLike(b, fillBridge, panelStroke, 2);
   }
 
-  if (biomeKey === 'electric' || biomeKey === 'dark' || biomeKey === 'light') {
+  if (!useLoadedBiomeArtSurface && (biomeKey === 'electric' || biomeKey === 'dark' || biomeKey === 'light')) {
     ctx.strokeStyle = biomeKey === 'electric'
       ? 'rgba(120,245,255,0.36)'
       : (biomeKey === 'dark' ? 'rgba(190,120,255,0.28)' : 'rgba(255,232,132,0.30)');
@@ -960,6 +1042,17 @@ function drawArenaShapeOverlay(ctx, room, arenaSpec, time = 0) {
       }
     }
     ctx.globalAlpha = 1;
+  }
+  const roomBounds = room?.bounds || null;
+  if (!useLoadedBiomeArtSurface && !isHubShape && roomBounds) {
+    drawBiomeArenaArt(ctx, room, arenaSpec, {
+      x0: Number(roomBounds.minX) || 0,
+      y0: Number(roomBounds.minY) || 0,
+      x1: Number(roomBounds.maxX) || 0,
+      y1: Number(roomBounds.maxY) || 0,
+      w: (Number(roomBounds.maxX) || 0) - (Number(roomBounds.minX) || 0),
+      h: (Number(roomBounds.maxY) || 0) - (Number(roomBounds.minY) || 0),
+    }, 'overlay', time, null);
   }
   ctx.restore();
 }
@@ -1998,7 +2091,10 @@ function drawCosmosScreen(ctx, state) {
   const canvas = state.canvas;
   const w = canvas.width || 1;
   const h = canvas.height || 1;
-  const cache = ensureCosmosCache(state);
+  const cache = state?._cosmosCache?.ready ? state._cosmosCache : null;
+  if (!cache) {
+    try { scheduleRoomRenderWarmup(state); } catch {}
+  }
   const biomeKey = String(state._roomBiome || (state.roomDirector && state.roomDirector.current ? state.roomDirector.current.biomeKey : '') || '').toLowerCase();
   const isNeutralSpace = !biomeKey || biomeKey === 'neutral' || biomeKey === 'hub';
   const currentRoom = state?.roomDirector?.current || null;
@@ -2013,8 +2109,23 @@ function drawCosmosScreen(ctx, state) {
     return;
   }
 
-  const roomBgTex = getRoomTexture(HUB_ASSET_URLS.bg);
-  const drewRoomBg = drawImageCoverScreen(ctx, roomBgTex, 0, 0, w, h, 1, -cam.x * 0.015, -cam.y * 0.015, 1.06);
+  const biomeBgTex = getLoadedBiomeArenaEntry(currentRoom, 'bg');
+  const roomBgTex = biomeBgTex || getRoomTexture(neutralSpaceBgUrl);
+  const bgAlpha = biomeBgTex ? 0.92 : 1;
+  const bgScale = biomeBgTex ? 1.18 : 1.06;
+  const bgParallax = biomeBgTex ? 0.0065 : 0.015;
+  const drewRoomBg = drawImageCoverScreen(
+    ctx,
+    roomBgTex,
+    0,
+    0,
+    w,
+    h,
+    bgAlpha,
+    -cam.x * bgParallax + (biomeBgTex ? Math.sin((Number(state?.time) || 0) * 0.05) * 18 : 0),
+    -cam.y * bgParallax + (biomeBgTex ? Math.cos((Number(state?.time) || 0) * 0.04) * 12 : 0),
+    bgScale,
+  );
   if (!drewRoomBg) {
     const bg = ctx.createRadialGradient(w * 0.56, h * 0.44, 0, w * 0.56, h * 0.44, Math.max(w, h) * 0.95);
     bg.addColorStop(0, '#0a1126');
@@ -2036,20 +2147,21 @@ function drawCosmosScreen(ctx, state) {
     }
   } catch {}
 
-  if (cache.nebula) {
-    ctx.globalAlpha = 0.34;
+  const spaceFxMul = biomeBgTex ? 0.42 : 1;
+  if (cache?.nebula) {
+    ctx.globalAlpha = 0.34 * spaceFxMul;
     drawTiled(ctx, cache.nebula, cam.x * 0.018, cam.y * 0.018, w, h);
   }
-  if (cache.starsFar) {
-    ctx.globalAlpha = 0.34;
+  if (cache?.starsFar) {
+    ctx.globalAlpha = 0.34 * spaceFxMul;
     drawTiled(ctx, cache.starsFar, cam.x * 0.05, cam.y * 0.05, w, h);
   }
-  if (cache.starsMid) {
-    ctx.globalAlpha = 0.22;
+  if (cache?.starsMid) {
+    ctx.globalAlpha = 0.22 * spaceFxMul;
     drawTiled(ctx, cache.starsMid, cam.x * 0.09, cam.y * 0.09, w, h);
   }
-  if (cache.dust) {
-    ctx.globalAlpha = 0.04;
+  if (cache?.dust) {
+    ctx.globalAlpha = 0.04 * spaceFxMul;
     drawTiled(ctx, cache.dust, cam.x * 0.16, cam.y * 0.16, w, h);
   }
 
@@ -2951,13 +3063,41 @@ function drawOrbitalBackdropBehindRoom(ctx, room, { x0, y0, x1, y1, w, h }, isHu
   ctx.restore();
 }
 
-function getRoomStaticArtCache(state, room, arenaSpec, hue) {
-  if (!state || !room || !arenaSpec || !isLuxurySpaceRoom(room, arenaSpec)) return null;
+function getRoomStaticArtCacheKey(room, arenaSpec) {
+  const b = room?.bounds || null;
+  if (!room || !arenaSpec || !b) return '';
+  const artSig = getBiomeArtSignature(room?.biomeKey || 'neutral');
+  return [
+    room.index | 0,
+    room.biomeKey || '',
+    arenaSpec.layoutId || '',
+    arenaSpec.visualPreset || '',
+    artSig,
+    b.minX | 0,
+    b.minY | 0,
+    b.maxX | 0,
+    b.maxY | 0,
+  ].join('|');
+}
+
+function peekRoomStaticArtCache(state, room, arenaSpec) {
+  if (!state || !room || !arenaSpec) return null;
+  const map = state._roomStaticArtCache;
+  if (!(map instanceof Map)) return null;
+  const key = getRoomStaticArtCacheKey(room, arenaSpec);
+  return key ? (map.get(key) || null) : null;
+}
+
+function ensureRoomStaticArtCache(state, room, arenaSpec, hue) {
+  if (!state || !room || !arenaSpec) return null;
+  const hasLoadedBiomeArt = /(?:^|\|)1(?:\||$)/.test(getBiomeArtSignature(room?.biomeKey || 'neutral'));
+  if (!isLuxurySpaceRoom(room, arenaSpec) && !hasLoadedBiomeArt) return null;
   if (typeof document === 'undefined') return null;
   const map = (state._roomStaticArtCache ||= new Map());
   const b = room.bounds || null;
   if (!b) return null;
-  const key = [room.index|0, room.biomeKey || '', arenaSpec.layoutId || '', arenaSpec.visualPreset || '', b.minX|0, b.minY|0, b.maxX|0, b.maxY|0].join('|');
+  const key = getRoomStaticArtCacheKey(room, arenaSpec);
+  if (!key) return null;
   if (map.has(key)) return map.get(key);
   const pad = 180;
   const canvas = makeScratchCanvas((b.maxX - b.minX) + pad * 2, (b.maxY - b.minY) + pad * 2);
@@ -2970,15 +3110,61 @@ function getRoomStaticArtCache(state, room, arenaSpec, hue) {
   const y1 = b.maxY;
   const w = x1 - x0;
   const h = y1 - y0;
+  const useLoadedBiomeArtSurface = !arenaSpec?.rules?.isHub && hasLoadedBiomeArenaArt(room, 'surface');
   drawArenaSolidShape(g, room, arenaSpec, 0, { x0, y0, x1, y1, w, h });
-  drawBiomeSurfaceFX(g, room, { x0, x1, y0, y1, w, h }, { biomeKey: room.biomeKey || '', hue, time: 0 });
-  if (!String(room.biomeKey || '').toLowerCase() || arenaSpec?.rules?.isHub || String(room.biomeKey || '').toLowerCase() === 'neutral') {
-    drawNeutralSpaceSurfaceFX(g, room, { x0, x1, y0, y1, w, h }, { hue, time: 0 });
+  drawArenaShapeOverlay(g, room, arenaSpec, 0);
+  if (!useLoadedBiomeArtSurface) {
+    drawBiomeSurfaceFX(g, room, { x0, x1, y0, y1, w, h }, { biomeKey: room.biomeKey || '', hue, time: 0 });
+    if (!String(room.biomeKey || '').toLowerCase() || arenaSpec?.rules?.isHub || String(room.biomeKey || '').toLowerCase() === 'neutral') {
+      drawNeutralSpaceSurfaceFX(g, room, { x0, x1, y0, y1, w, h }, { hue, time: 0 });
+    }
+    drawArenaSpecDecor(g, room, arenaSpec, 0);
   }
-  drawArenaSpecDecor(g, room, arenaSpec, 0);
   const rec = { canvas, x: b.minX - pad, y: b.minY - pad };
   map.set(key, rec);
   return rec;
+}
+
+export function scheduleRoomRenderWarmup(state) {
+  if (!state || typeof window === 'undefined') return;
+  const rd = state.roomDirector;
+  const rooms = [rd?.current, rd?.next].filter(Boolean);
+  const sig = rooms.map((room) => {
+    const arenaSpec = getArenaSpec(room);
+    return [
+      room?.index | 0,
+      room?.biomeKey || '',
+      arenaSpec?.layoutId || '',
+      arenaSpec?.visualPreset || '',
+      getBiomeArtSignature(room?.biomeKey || 'neutral'),
+    ].join('~');
+  }).join('||');
+  if (!sig) return;
+  if (state._roomRenderWarmupPending && state._roomRenderWarmupSig === sig) return;
+  if (state._roomRenderWarmupDoneSig === sig) return;
+  state._roomRenderWarmupPending = true;
+  state._roomRenderWarmupSig = sig;
+
+  const runner = () => {
+    state._roomRenderWarmupPending = false;
+    try { ensureCosmosCache(state); } catch {}
+    try { getRoomTexture(neutralSpaceBgUrl); } catch {}
+    for (const room of rooms) {
+      try { getBiomeArtAssetSet(room?.biomeKey || 'neutral'); } catch {}
+      const arenaSpec = getArenaSpec(room);
+      if (!arenaSpec) continue;
+      const biome = biomeByKey(room && room.biomeKey);
+      const hue = biome ? (biome.hue | 0) : ((room?.hue | 0) || 210);
+      try { ensureRoomStaticArtCache(state, room, arenaSpec, hue); } catch {}
+    }
+    state._roomRenderWarmupDoneSig = sig;
+  };
+
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(runner, { timeout: 180 });
+  } else {
+    window.setTimeout(runner, 16);
+  }
 }
 
 function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, state = null } = {}) {
@@ -3019,7 +3205,8 @@ function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, s
 
   const isHubRoom = !!arenaSpec?.rules?.isHub || String(room?.biomeKey || '').toLowerCase() === 'hub' || ((room?.index | 0) === 0);
   const isNeutralIntroOrbRoom = !!arenaSpec?.rules?.neutralIntroCircleArena;
-  if (luxurySpace && !isHubRoom && !isNeutralIntroOrbRoom) {
+  const useLoadedBiomeArtSurface = !isHubRoom && hasLoadedBiomeArenaArt(room, 'surface'); // overlay only; never substitute bg on the walkable surface
+  if (luxurySpace && !isHubRoom && !isNeutralIntroOrbRoom && !useLoadedBiomeArtSurface) {
     drawOrbitalBackdropBehindRoom(ctx, room, { x0, y0, x1, y1, w, h }, false);
   }
 
@@ -3155,19 +3342,21 @@ function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, s
       }
     }
 
-    const cachedArt = (luxurySpace && !isHubRoom) ? getRoomStaticArtCache(state, room, arenaSpec, hue) : null;
+    const cachedArt = (luxurySpace && !isHubRoom) ? peekRoomStaticArtCache(state, room, arenaSpec) : null;
     if (cachedArt) {
       ctx.drawImage(cachedArt.canvas, cachedArt.x, cachedArt.y + fall);
     } else {
       drawArenaSolidShape(ctx, room, arenaSpec, time, { x0, y0, x1, y1, w, h });
       drawArenaShapeOverlay(ctx, room, arenaSpec, time);
 
-      // Biome-specific surface accents (neon / frost / runes / etc.)
-      drawBiomeSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { biomeKey: (room && room.biomeKey) || "", hue, time });
-      if (!isHubRoom && (!String((room && room.biomeKey) || '').toLowerCase() || String((room && room.biomeKey) || '').toLowerCase() === 'neutral')) {
-        drawNeutralSpaceSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { hue, time });
+      if (!useLoadedBiomeArtSurface) {
+        // Biome-specific surface accents (neon / frost / runes / etc.)
+        drawBiomeSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { biomeKey: (room && room.biomeKey) || "", hue, time });
+        if (!isHubRoom && (!String((room && room.biomeKey) || '').toLowerCase() || String((room && room.biomeKey) || '').toLowerCase() === 'neutral')) {
+          drawNeutralSpaceSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { hue, time });
+        }
+        drawArenaSpecDecor(ctx, room, arenaSpec, time);
       }
-      drawArenaSpecDecor(ctx, room, arenaSpec, time);
     }
     drawArenaHazards(ctx, room, arenaSpec, time);
     drawBossArenaOverlay(ctx, room, arenaSpec, time);

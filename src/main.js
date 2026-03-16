@@ -1,5 +1,6 @@
 import { warmHubAssets } from './world/hub/hubAssets.js';
 import { warmHubWalkMask } from './world/hub/hubWalkMask.js';
+import { warmBiomeArtAssets } from './world/biomeArtAssets.js';
 import { createGame } from "./core/gameLoop.js";
 import { loadProgression } from "./core/progression.js";
 import {
@@ -41,6 +42,7 @@ resize();
 
 warmHubAssets();
 warmHubWalkMask();
+warmBiomeArtAssets();
 
 const progression = loadProgression();
 const game = createGame(canvas, ctx, progression);
