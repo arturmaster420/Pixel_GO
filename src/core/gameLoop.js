@@ -9,6 +9,7 @@ import { updateIceWalls } from "../weapons/iceWall.js";
 import { updateBlackholes } from "../weapons/blackhole.js";
 import { updateHealPulses } from "../weapons/lightHeal.js";
 import { explodeFireball } from "../weapons/fireball.js";
+import { explodeIceBall } from "../weapons/iceBall.js";
 import { RoomSpawnSystem } from "../world/roomSpawnSystem.js";
 import { RoomDirector } from "../world/roomDirector.js";
 import { renderRoomsBackground } from "../world/roomRenderer.js";
@@ -25,14 +26,14 @@ import {
   applyCritToDamage,
   applyLifeSteal,
 } from "./progression.js";
-import { initRunUpgrades, rollRunUpgrades, applyRunUpgrade } from "./runUpgrades.js";
-import { rollFloorShopOffersStandard, rollFloorShopOffers, describeFloorShopOffer, tryBuyFloorShopOfferEx, getReplaceCandidates } from "./floorShop.js";
+import { initRunUpgrades } from "./runUpgrades.js";
+import { rollFloorShopOffersStandard, rollFloorShopOffers, describeFloorShopOffer, tryBuyFloorShopOfferEx, getFloorShopRerollCost, rerollFloorShopOffersForPlayer, offerNeedsReplace } from "./floorShop.js";
 import { biomeName } from "../world/biomes.js";
 import { updateBuffs } from "../buffs/buffs.js";
 import { getZone, ZONE_RADII, ZONE6_SQUARE_HALF, WORLD_SQUARE_HALF, HUB_HALF, HUB_CORNER_R, isPointInHub, WORLD_SCALE } from "../world/zoneController.js";
 import { WORLD_HEIGHT, WORLD_WIDTH } from "../world/mapGenerator.js";
 import { createNetClient, getDefaultWsUrl } from "../net/netClient.js";
-import { showRunUpgradeOverlay, hideRunUpgradeOverlay } from "../ui/runUpgradeDom.js";
+import { hideRunUpgradeOverlay } from "../ui/runUpgradeDom.js";
 import { showFloorShopOverlay, hideFloorShopOverlay } from "../ui/floorShopDom.js";
 import { ensureShopMeta } from "../meta/shopMeta.js";
 import {
@@ -292,24 +293,13 @@ export function createGame(canvas, ctx, progression) {
       const myId = state.net?.playerId ? String(state.net.playerId) : (state.player?.id ? String(state.player.id) : "local");
       const by = (msg.by != null ? String(msg.by) : "");
       if (by && by !== myId) return;
-      state._runUpgradeActive = true;
-      if (state.player) {
-        state.player._lvlUpChoosing = true;
-        state.player._lvlUpInvuln = true;
-        state.player.vx = 0;
-        state.player.vy = 0;
-      }
+      clearLegacyRunUpgradeState(state);
       return;
     }
 
     if (msg.type === "runResume") {
       if (state.net.isHost) return;
-      state._runUpgradeActive = false;
-      try { hideRunUpgradeOverlay(); } catch {}
-      if (state.player) {
-        state.player._lvlUpChoosing = false;
-        state.player._lvlUpInvuln = false;
-      }
+      clearLegacyRunUpgradeState(state);
       return;
     }
 
@@ -318,62 +308,20 @@ export function createGame(canvas, ctx, progression) {
       const myId = state.net?.playerId ? String(state.net.playerId) : (state.player?.id ? String(state.player.id) : "local");
       const to = (msg.to != null ? String(msg.to) : "");
       if (to && to !== myId) return;
-
-      const choices = Array.isArray(msg.choices) ? msg.choices : [];
-      if (!choices.length) return;
-
-      state._runUpgradeActive = true;
-      if (state.player) {
-        state.player._lvlUpChoosing = true;
-        state.player._lvlUpInvuln = true;
-        state.player.vx = 0;
-        state.player.vy = 0;
-      }
-
-      showRunUpgradeOverlay(
-        choices,
-        msg.metaText || `Lv ${state.player?.level || 0}`,
-        (choice) => {
-          // Send only the id; host validates and applies.
-          if (state.net && state.net.status === "connected") {
-            state.net.sendRunPick(choice?.id || "");
-          // Track pending locally for joiner UX
-          if (state.player) {
-            state.player._pendingLevelUps = Math.max(0, (state.player._pendingLevelUps || 0) - 1);
-          }
-          }
-          // Immediately resume locally (no global runResume in per-player flow).
-          state._runUpgradeActive = false;
-          if (state.player) {
-            state.player._lvlUpChoosing = false;
-            state.player._lvlUpInvuln = false;
-          }
-        }
-      );
+      clearLegacyRunUpgradeState(state);
+      if (state.popups) state.popups.push({ text: "Run upgrades moved to Floor Shop", time: 1.4 });
       return;
     }
 
-
-
-if (msg.type === "runRequest") {
-  // Joiner requests to open in-run upgrade choices.
-  // Host will validate and respond with runChoices(to=playerId).
-  if (!state.net?.isHost) return;
-  const from = String(msg.from || "");
-  if (!from) return;
-  if (!state._runUpNet) state._runUpNet = { sessions: new Map(), requests: new Map() };
-  if (!state._runUpNet.requests) state._runUpNet.requests = new Map();
-  state._runUpNet.requests.set(from, state.time || 0);
-  return;
-}
+    if (msg.type === "runRequest") {
+      if (!state.net?.isHost) return;
+      clearLegacyRunUpgradeState(state, { clearSessions: true });
+      return;
+    }
 
     if (msg.type === "runPick") {
-      // Host receives a pick from a joiner.
       if (!state.net.isHost) return;
-      const from = String(msg.from || "");
-      const choiceId = String(msg.choiceId || "");
-      if (!from || !choiceId) return;
-      hostApplyRunPick(state, from, choiceId);
+      clearLegacyRunUpgradeState(state, { clearSessions: true });
       return;
     }
   };
@@ -901,7 +849,7 @@ function render() {
     return;
   }
 
-  // Keyboard shortcut: U to open in-run upgrade choices (manual, out of combat)
+  // Keyboard shortcut: U now just reminds that run upgrades live in the Floor Shop.
   function isTypingFocus() {
     if (typeof document === "undefined") return false;
     const el = document.activeElement;
@@ -983,6 +931,34 @@ function render() {
     handlePointerMove,
     handlePointerUp,
   };
+}
+
+function resetLegacyRunUpgradeForPlayer(player) {
+  if (!player) return;
+  player._pendingLevelUps = 0;
+  player._lvlUpChoosing = false;
+  player._lvlUpInvuln = false;
+}
+
+function clearLegacyRunUpgradeState(state, { clearSessions = false } = {}) {
+  if (!state) return;
+  state._runUpgradeActive = false;
+  state._runUpgradeChoices = null;
+  state._runUpPending = 0;
+  state._runUpReady = false;
+  state._runUpReadyIn = 0;
+  state._runUpBlockReason = "disabled";
+  try { hideRunUpgradeOverlay(); } catch {}
+
+  if (Array.isArray(state.players)) {
+    for (const p of state.players) resetLegacyRunUpgradeForPlayer(p);
+  }
+  resetLegacyRunUpgradeForPlayer(state.player);
+
+  if (clearSessions && state._runUpNet) {
+    try { state._runUpNet.sessions?.clear?.(); } catch {}
+    try { state._runUpNet.requests?.clear?.(); } catch {}
+  }
 }
 
 function startNewRun(state) {
@@ -1311,13 +1287,17 @@ function updatePlayers(state, dt, online) {
 
       // Pixel_GO v0.4: floor shop purchases from joiners (host-authoritative)
       const sa = input && input.shopAct;
-      if (sa && sa.offerId) {
+      if (sa && (sa.offerId || String(sa.action || '') === 'reroll')) {
         const seq = (sa.seq | 0) || 0;
         if (!state._shopActLastSeq) state._shopActLastSeq = new Map();
         const last = state._shopActLastSeq.get(String(p.id)) || 0;
         if (seq && seq !== last) {
           state._shopActLastSeq.set(String(p.id), seq);
-          try { performFloorShopPurchase(state, p, String(sa.offerId), sa.replaceKey != null ? String(sa.replaceKey) : null); } catch {}
+          try {
+            const action = String(sa.action || 'buy');
+            if (action === 'reroll') performFloorShopReroll(state, p);
+            else performFloorShopPurchase(state, p, String(sa.offerId), sa.replaceKey != null ? String(sa.replaceKey) : null);
+          } catch {}
         }
       }
     }
@@ -1361,51 +1341,13 @@ function updateWeapons(state, dt, online) {
 }
 
 function autoApplyRemoteRunUpgrades(state) {
-  // Minimal co-op behavior: remote players get random upgrades so they don't stall.
-  // (Later we can add per-player choice UI + net messages.)
-  const localId = state.player ? String(state.player.id) : "local";
-  for (const p of getPlayersArr(state)) {
-    if (!p || String(p.id) === localId) continue;
-    let pending = p._pendingLevelUps || 0;
-    while (pending > 0) {
-      const choices = rollRunUpgrades(p, 3);
-      const pick = choices[(Math.random() * choices.length) | 0];
-      applyRunUpgrade(p, pick);
-      pending--;
-    }
-    p._pendingLevelUps = pending;
-  }
+  // Retired together with legacy pending level-up choices.
+  clearLegacyRunUpgradeState(state);
 }
 
 function updateRunUpgradeAvailability(state) {
-  const p = state?.player;
-  const pending = p ? (p._pendingLevelUps || 0) : 0;
-  state._runUpPending = pending;
-
-  // Defaults
-  state._runUpReady = false;
-  state._runUpReadyIn = 0;
-  state._runUpBlockReason = "";
-
-  if (!state || state.mode !== "playing") return;
-  if (!p || p.hp <= 0) return;
-  if (state.overlayMode) return;
-  if (state.paused) return;
-  if (state._runUpgradeActive) return;
-  if (pending <= 0) return;
-
-  // Out-of-combat gate
-  const need = 3.0;
-  const tSince = state.time - (Number.isFinite(p._lastCombatAt) ? p._lastCombatAt : -Infinity);
-  if (tSince < need) {
-    state._runUpReady = false;
-    state._runUpReadyIn = Math.max(0, need - tSince);
-    state._runUpBlockReason = "combat";
-    return;
-  }
-
-  // Note: enemy proximity no longer blocks manual upgrades; only out-of-combat timer is used.
-  state._runUpReady = true;
+  if (!state) return;
+  clearLegacyRunUpgradeState(state);
 }
 
 function applyRunUpgradeRepel(state, dt) {
@@ -1457,117 +1399,19 @@ function updateSkillFx(state, dt) {
 }
 
 function openManualRunUpgradeOverlay(state) {
-  if (!state || state.mode !== "playing") return false;
-  if (state._runUpgradeActive) return true;
-  if (state.overlayMode || state.paused) return false;
-  const p = state.player;
-  if (!p || p.hp <= 0) return false;
-  const pending = p._pendingLevelUps || 0;
-  if (pending <= 0) return false;
-
-  state._runUpgradeActive = true;
-  p._lvlUpChoosing = true;
-  p._lvlUpInvuln = true;
-  p.vx = 0;
-  p.vy = 0;
-
-  // Small safety window when opening (mobs fall behind / repel)
-  state._repelUntil = state.time + 1.6;
-
-  const choices = rollRunUpgrades(p, 3);
-  state._runUpgradeChoices = choices;
-
-  showRunUpgradeOverlay(
-    choices,
-    `Lv ${p.level} · Pending ${pending}`,
-    (choice) => {
-      applyRunUpgrade(p, choice);
-      p._pendingLevelUps = Math.max(0, (p._pendingLevelUps || 0) - 1);
-
-      // Keep picking until pending is consumed (player chose to open the menu).
-      if ((p._pendingLevelUps || 0) > 0) {
-        // Allow re-opening immediately with a fresh roll.
-        state._runUpgradeActive = false;
-        setTimeout(() => {
-          if (state.mode === "playing") openManualRunUpgradeOverlay(state);
-        }, 0);
-        return;
-      }
-
-      state._runUpgradeActive = false;
-      p._lvlUpChoosing = false;
-      p._lvlUpInvuln = false;
-    }
-  );
-
-  return true;
+  clearLegacyRunUpgradeState(state);
+  if (state && state.popups) state.popups.push({ text: "Run upgrades moved to Floor Shop", time: 1.4 });
+  return false;
 }
 
 function tryOpenManualRunUpgradeOverlay(state) {
-  if (!state || state.mode !== "playing") return false;
-  if (state._runUpgradeActive) return true;
-
-  const online = isOnline(state);
-  const isJoiner = !!(online && state.net && !state.net.isHost);
-
-  // Joiner: request choices from host (host-authoritative), do NOT roll/apply locally.
-  if (isJoiner) {
-    updateRunUpgradeAvailability(state);
-    if (state._runUpReady) {
-      const nowT = state.time || 0;
-      if (nowT - (state._runUpLastReqAt || 0) < 0.5) return true;
-      state._runUpLastReqAt = nowT;
-
-      if (state.net && state.net.status === "connected" && typeof state.net.sendRunRequest === "function") {
-        state.net.sendRunRequest();
-        if (state.popups) state.popups.push({ text: "Upgrade requested", time: 1.0 });
-        return true;
-      }
-      if (state.popups) state.popups.push({ text: "Not connected", time: 1.2 });
-      return false;
-    }
-
-    // Lightweight feedback (same as offline)
-    if (state.popups) {
-      let msg = "Can't upgrade yet";
-      if (state._runUpBlockReason === "combat") {
-        msg = `Upgrade: out of combat in ${Math.max(0, state._runUpReadyIn).toFixed(1)}s`;
-      } else if ((state._runUpPending || 0) <= 0) {
-        msg = "No upgrades pending";
-      }
-      state.popups.push({ text: msg, time: 1.3 });
-    }
-    return false;
-  }
-
-  // Offline or host: open the menu locally (manual, out of combat).
-  updateRunUpgradeAvailability(state);
-  if (state._runUpReady) {
-    return openManualRunUpgradeOverlay(state);
-  }
-
-  // Lightweight feedback
-  if (state.popups) {
-    let msg = "Can't upgrade yet";
-    if (state._runUpBlockReason === "combat") {
-      msg = `Upgrade: out of combat in ${Math.max(0, state._runUpReadyIn).toFixed(1)}s`;
-    } else if ((state._runUpPending || 0) <= 0) {
-      msg = "No upgrades pending";
-    }
-    state.popups.push({ text: msg, time: 1.3 });
-  }
+  clearLegacyRunUpgradeState(state);
+  if (state && state.popups) state.popups.push({ text: "Run upgrades moved to Floor Shop", time: 1.4 });
   return false;
 }
 
 function maybeOpenRunUpgradeOverlay(state) {
-  if (!state || state.mode !== "playing") return false;
-  if (state._runUpgradeActive) return true;
-  const p = state.player;
-  if (!p || p.hp <= 0) return false;
-  const pending = p._pendingLevelUps || 0;
-  if (pending <= 0) return false;
-
-  // Deprecated auto-open (kept for backward compatibility). Use manual opening instead.
+  clearLegacyRunUpgradeState(state);
   return false;
 }
 
@@ -1589,66 +1433,108 @@ function canPlayerUseFloorShop(state, player) {
   return (dx * dx + dy * dy) <= (210 * 210);
 }
 
-function tryOpenFloorShop(state) {
-  if (!state || state.mode !== 'playing') return false;
-  if (state._floorShopActive) return true;
-  const p = state.player;
-  if (!p) return false;
-  if (!canPlayerUseFloorShop(state, p)) return false;
+function getCurrentFloorShopFloor(state) {
+  return (state.currentRoomIndex != null ? (state.currentRoomIndex | 0) : (state.roomDirector ? (state.roomDirector.roomIndex | 0) : 0));
+}
 
-  // Ensure we have offers (offline/host should have generated them on floor clear).
-  const curFloor = (state.currentRoomIndex != null ? (state.currentRoomIndex | 0) : (state.roomDirector ? (state.roomDirector.roomIndex | 0) : 0));
-  if (!p.floorShop || (p.floorShop.floor | 0) !== curFloor || !Array.isArray(p.floorShop.offers)) {
-    // Fallback: offline/host generate a fresh set.
-    const online = isOnline(state);
-    const isHost = !online || !!state.net?.isHost;
-    if (isHost) {
-      const biomeKey = (state.roomDirector && state.roomDirector.current) ? (state.roomDirector.current.biomeKey || "") : (state._roomBiome || "");
-      const offers = rollFloorShopOffers(p, curFloor, biomeKey, 3);
-      p.floorShop = { floor: curFloor, offers, sold: offers.map(() => false) };
-    }
+function getCurrentFloorShopBiomeKey(state) {
+  return (state.roomDirector && state.roomDirector.current) ? (state.roomDirector.current.biomeKey || '') : (state._roomBiome || '');
+}
+
+function ensureFloorShopForPlayer(state, player) {
+  if (!state || !player) return null;
+  const curFloor = getCurrentFloorShopFloor(state);
+  if (player.floorShop && (player.floorShop.floor | 0) === curFloor && Array.isArray(player.floorShop.offers)) {
+    if (!Array.isArray(player.floorShop.sold)) player.floorShop.sold = player.floorShop.offers.map(() => false);
+    if (!Number.isFinite(player.floorShop.rerollsUsed)) player.floorShop.rerollsUsed = 0;
+    return player.floorShop;
   }
+  const online = isOnline(state);
+  const isHost = !online || !!state.net?.isHost;
+  if (!isHost) return player.floorShop || null;
+  const biomeKey = getCurrentFloorShopBiomeKey(state);
+  const offers = rollFloorShopOffers(player, curFloor, biomeKey, 3);
+  player.floorShop = { floor: curFloor, offers, sold: offers.map(() => false), rerollsUsed: 0 };
+  return player.floorShop;
+}
 
-  const fs = p.floorShop;
-  if (!fs || !Array.isArray(fs.offers) || !fs.offers.length) return false;
-
-  const spNow = (p.skillPoints | 0) || 0;
+function buildFloorShopChoices(player) {
+  const fs = player?.floorShop;
+  if (!fs || !Array.isArray(fs.offers)) return [];
+  const spNow = (player?.skillPoints | 0) || 0;
   const choices = [];
   for (let i = 0; i < fs.offers.length; i++) {
     const o = fs.offers[i];
     if (!o) continue;
     if (Array.isArray(fs.sold) && fs.sold[i]) continue;
-    const desc = describeFloorShopOffer(p, o);
+    const liveRequiresReplace = offerNeedsReplace(player, o);
+    const liveOffer = { ...o, requiresReplace: liveRequiresReplace };
+    const desc = describeFloorShopOffer(player, liveOffer);
     const cost = (o.spCost | 0) || 0;
-    choices.push({ ...o, desc, disabled: spNow < cost });
+    choices.push({ ...liveOffer, desc, disabled: spNow < cost });
   }
+  return choices.slice(0, 3);
+}
 
-  if (!choices.length) {
-    if (state.popups) state.popups.push({ text: 'Terminal: nothing to buy', time: 1.2 });
-    return false;
-  }
+function openFloorShopOverlay(state) {
+  if (!state || state.mode !== 'playing') return false;
+  const p = state.player;
+  if (!p) return false;
+  const fs = ensureFloorShopForPlayer(state, p);
+  if (!fs || !Array.isArray(fs.offers)) return false;
 
-  state._floorShopActive = true;
-  const biomeKey = (state.roomDirector && state.roomDirector.current) ? (state.roomDirector.current.biomeKey || "") : (state._roomBiome || "");
-  const biomeLabel = (curFloor >= 4 && biomeKey) ? ` • Biome: ${biomeName(biomeKey)}` : "";
+  const curFloor = getCurrentFloorShopFloor(state);
+  const biomeKey = getCurrentFloorShopBiomeKey(state);
+  const biomeLabel = (curFloor >= 4 && biomeKey) ? ` • Biome: ${biomeName(biomeKey)}` : '';
+  const spNow = (p.skillPoints | 0) || 0;
+  const rerollCost = getFloorShopRerollCost(fs);
+  const choices = buildFloorShopChoices(p);
+
+  const emptyHint = (!choices.length && rerollCost <= 0) ? 'All offers bought here. Close terminal.' : null;
+
   showFloorShopOverlay({
     title: 'Terminal',
     subtitle: `Spend Skill Points (SP)${biomeLabel}`,
-    metaText: `SP: ${spNow}`,
-    choices: choices.slice(0, 3),
+    metaText: `SP: ${spNow} • Reroll ${Math.min(3, (fs.rerollsUsed | 0) || 0)}/3${rerollCost > 0 ? ` • Next ${rerollCost} SP` : ' • Maxed'}`,
+    choices,
+    rerollText: rerollCost > 0 ? `Reroll • ${rerollCost} SP` : 'Reroll Maxed',
+    rerollDisabled: !(rerollCost > 0) || spNow < rerollCost,
+    hint: emptyHint || undefined,
+    onRerollCb: () => {
+      const online = isOnline(state);
+      const isJoiner = !!(online && state.net && !state.net.isHost);
+      if (!(rerollCost > 0)) return;
+      if (spNow < rerollCost) {
+        if (state.popups) state.popups.push({ text: 'Not enough SP', time: 1.2 });
+        return;
+      }
+      if (isJoiner) {
+        state._shopActSeq = (state._shopActSeq || 0) + 1;
+        state._shopActPending = { action: 'reroll', seq: state._shopActSeq };
+        state._floorShopReopenOnSync = true;
+        hideFloorShopOverlay();
+        state._floorShopActive = false;
+        if (state.popups) state.popups.push({ text: 'Rerolling…', time: 0.8 });
+        return;
+      }
+      const ok = performFloorShopReroll(state, p);
+      if (!ok) {
+        if (state.popups) state.popups.push({ text: 'Cannot reroll', time: 1.2 });
+        return;
+      }
+      openFloorShopOverlay(state);
+    },
     onCloseCb: () => { state._floorShopActive = false; },
     onPickCb: (pick) => {
-      // NOTE: overlay is already closed by UI module; keep _floorShopActive until we're done (replace flow)
-      if (!pick || pick.disabled) { state._floorShopActive = false; return; }
+      if (!pick || pick.disabled) return;
 
       const online = isOnline(state);
       const isJoiner = !!(online && state.net && !state.net.isHost);
 
-      // Active skill cap: unlocking a new skill may require replacement.
-      if (pick.kind === 'skill' && (pick.from | 0) <= 0 && pick.requiresReplace) {
+      const needsReplace = offerNeedsReplace(p, pick);
+      if (pick.kind === 'skill' && (pick.from | 0) <= 0 && needsReplace) {
         const cand = getReplaceCandidates(p, pick.key);
         if (!cand || !cand.length) {
-          state._floorShopActive = false;
           if (state.popups) state.popups.push({ text: 'No skill to replace', time: 1.1 });
           return;
         }
@@ -1656,54 +1542,65 @@ function tryOpenFloorShop(state) {
         showFloorShopOverlay({
           title: 'Replace Skill',
           subtitle: `Max 6 active skills • Replace one with ${pick.name}`,
-          metaText: `SP: ${spNow}`,
-          hint: 'Pick a skill to remove (Esc cancels)',
-          choices: cand.map((c, i) => ({
+          metaText: `SP: ${(p.skillPoints | 0) || 0}`,
+          hint: 'Pick a skill to remove (Esc returns)',
+          choices: cand.map((c) => ({
             id: `rep_${c.key}`,
             replaceKey: c.key,
             name: `${c.name}  Lv${c.level}`,
             desc: 'Will be removed to make room',
             spCost: null,
           })),
-          onCloseCb: () => { state._floorShopActive = false; },
+          onCloseCb: () => { openFloorShopOverlay(state); },
           onPickCb: (rep) => {
-            if (!rep || !rep.replaceKey) { state._floorShopActive = false; return; }
+            if (!rep || !rep.replaceKey) return;
             const replaceKey = String(rep.replaceKey);
-
             if (isJoiner) {
               state._shopActSeq = (state._shopActSeq || 0) + 1;
-              state._shopActPending = { offerId: String(pick.id || ''), replaceKey, seq: state._shopActSeq };
-              if (state.popups) state.popups.push({ text: 'Buying…', time: 0.8 });
-              // keep shop active until we send; then close
+              state._shopActPending = { action: 'buy', offerId: String(pick.id || ''), replaceKey, seq: state._shopActSeq };
+              state._floorShopReopenOnSync = true;
+              hideFloorShopOverlay();
               state._floorShopActive = false;
+              if (state.popups) state.popups.push({ text: 'Buying…', time: 0.8 });
               return;
             }
-
             const ok = performFloorShopPurchase(state, p, String(pick.id || ''), replaceKey);
-            state._floorShopActive = false;
             if (!ok && state.popups) state.popups.push({ text: 'Cannot buy', time: 1.2 });
+            openFloorShopOverlay(state);
           },
         });
         return;
       }
 
       if (isJoiner) {
-        // Send purchase request to host.
         state._shopActSeq = (state._shopActSeq || 0) + 1;
-        state._shopActPending = { offerId: String(pick.id || ''), replaceKey: null, seq: state._shopActSeq };
-        if (state.popups) state.popups.push({ text: 'Buying…', time: 0.8 });
+        state._shopActPending = { action: 'buy', offerId: String(pick.id || ''), replaceKey: null, seq: state._shopActSeq };
+        state._floorShopReopenOnSync = true;
+        hideFloorShopOverlay();
         state._floorShopActive = false;
+        if (state.popups) state.popups.push({ text: 'Buying…', time: 0.8 });
         return;
       }
 
-      // Offline/host: apply immediately.
       const ok = performFloorShopPurchase(state, p, String(pick.id || ''), null);
-      state._floorShopActive = false;
       if (!ok && state.popups) state.popups.push({ text: 'Not enough SP', time: 1.2 });
+      openFloorShopOverlay(state);
     },
   });
 
   return true;
+}
+
+function tryOpenFloorShop(state) {
+  if (!state || state.mode !== 'playing') return false;
+  if (state._floorShopActive) return true;
+  const p = state.player;
+  if (!p) return false;
+  if (!canPlayerUseFloorShop(state, p)) return false;
+  state._floorShopActive = true;
+  const ok = openFloorShopOverlay(state);
+  if (!ok) state._floorShopActive = false;
+  return ok;
 }
 
 function performFloorShopPurchase(state, buyer, offerId, replaceKey) {
@@ -1735,136 +1632,42 @@ function performFloorShopPurchase(state, buyer, offerId, replaceKey) {
   return true;
 }
 
+function performFloorShopReroll(state, buyer) {
+  if (!state || !buyer) return false;
+  if (!canPlayerUseFloorShop(state, buyer)) return false;
+  const fs = ensureFloorShopForPlayer(state, buyer);
+  const curFloor = getCurrentFloorShopFloor(state);
+  if (!fs || (fs.floor | 0) !== curFloor) return false;
+  const cost = getFloorShopRerollCost(fs);
+  if (!(cost > 0)) return false;
+  const sp = (buyer.skillPoints | 0) || 0;
+  if (sp < cost) return false;
+  buyer.skillPoints = sp - cost;
+  const next = rerollFloorShopOffersForPlayer(buyer, curFloor, getCurrentFloorShopBiomeKey(state), 3);
+  if (!next) {
+    buyer.skillPoints = sp;
+    return false;
+  }
+  if (Array.isArray(state.floatingTexts)) {
+    state.floatingTexts.push({ x: buyer.x, y: buyer.y - 34, text: `-${cost | 0} SP`, time: 0.8 });
+  }
+  if (Array.isArray(state.popups)) {
+    state.popups.push({ text: `Terminal reroll (${(next.rerollsUsed | 0)}/3)`, time: 1.0 });
+  }
+  return true;
+}
+
 // Host-authoritative run-upgrade flow (per-player):
 // Each player chooses independently. Only that player is frozen/invulnerable while picking.
 // Host sends runChoices(to=playerId) and applies the pick on runPick.
 function hostProcessRunUpgrades(state) {
-  if (!state || state.mode !== "playing") return;
-  if (!isOnline(state) || !state.net?.isHost) return;
-
-  // sessions: playerId -> { choices, metaText, sentAt }
-  // requests: playerId -> requestedAt (player pressed Upgrade)
-  if (!state._runUpNet) state._runUpNet = { sessions: new Map(), requests: new Map() };
-  if (!state._runUpNet.sessions) state._runUpNet.sessions = new Map();
-  if (!state._runUpNet.requests) state._runUpNet.requests = new Map();
-
-  const sessions = state._runUpNet.sessions;
-  const requests = state._runUpNet.requests;
-
-  const localId = state.player ? String(state.player.id) : "";
-  const nowT = state.time || 0;
-
-  for (const p of getPlayersArr(state)) {
-    if (!p) continue;
-    const id = String(p.id);
-    const pending = p._pendingLevelUps || 0;
-
-    // Local host player uses the offline/manual overlay path (U / HUD button).
-    // Do not auto-open here.
-    if (id === localId) {
-      sessions.delete(id);
-      requests.delete(id);
-      continue;
-    }
-
-    // If no pending (or dead), ensure flags cleared and session removed.
-    if (p.hp <= 0 || pending <= 0) {
-      if (p._lvlUpChoosing) {
-        p._lvlUpChoosing = false;
-        p._lvlUpInvuln = false;
-      }
-      sessions.delete(id);
-      requests.delete(id);
-      continue;
-    }
-
-    const s = sessions.get(id);
-
-    if (!s) {
-      // No active session: only open when the player explicitly requested it.
-      if (p._lvlUpChoosing) {
-        p._lvlUpChoosing = false;
-        p._lvlUpInvuln = false;
-      }
-
-      if (!requests.has(id)) continue;
-
-      // Out-of-combat gate (host-authoritative): no recent HP loss for this player.
-      const need = 3.0;
-      const tSince = nowT - (Number.isFinite(p._lastCombatAt) ? p._lastCombatAt : -Infinity);
-      if (tSince < need) continue;
-
-      const choices = rollRunUpgrades(p, 3);
-      const metaText = `${p.nickname || "Player"} · Lv ${p.level} · Pending ${pending}`;
-      sessions.set(id, { choices, metaText, sentAt: nowT });
-
-      p._lvlUpChoosing = true;
-      p._lvlUpInvuln = true;
-      p.vx = 0;
-      p.vy = 0;
-
-      if (state.net && state.net.status === "connected") {
-        state.net.sendRunChoices(id, choices, metaText);
-      }
-      continue;
-    }
-
-    // Awaiting pick: keep frozen; occasionally re-send choices (helps if UI was missed).
-    p._lvlUpChoosing = true;
-    p._lvlUpInvuln = true;
-    p.vx = 0;
-    p.vy = 0;
-
-    if (nowT - (s.sentAt || 0) > 2.5) {
-      s.sentAt = nowT;
-      if (state.net && state.net.status === "connected") {
-        state.net.sendRunChoices(id, s.choices, s.metaText);
-      }
-    }
-  }
+  // Legacy manual level-up UI is retired in v0.4.15.
+  // Host keeps this as a cleanup point so old requests/flags cannot stall a run.
+  clearLegacyRunUpgradeState(state, { clearSessions: true });
 }
 
-function hostApplyRunPick(state, fromId, choiceId) {
-  if (!state || !state.net?.isHost) return;
-  const sid = String(fromId || "");
-  if (!sid) return;
-
-  if (!state._runUpNet) state._runUpNet = { sessions: new Map() };
-  if (!state._runUpNet.sessions) state._runUpNet.sessions = new Map();
-  const sessions = state._runUpNet.sessions;
-
-  if (!state._runUpNet.requests) state._runUpNet.requests = new Map();
-  const requests = state._runUpNet.requests;
-
-  const session = sessions.get(sid);
-  if (!session) return;
-
-  const player = getPlayerById(state, sid);
-  if (!player) {
-    sessions.delete(sid);
-  try { requests.delete(sid); } catch {}
-    return;
-  }
-
-  const choices = Array.isArray(session.choices) ? session.choices : [];
-  const pick = choices.find((c) => c && c.id === choiceId) || choices[0];
-  if (!pick) return;
-
-  applyRunUpgrade(player, pick);
-  player._pendingLevelUps = Math.max(0, (player._pendingLevelUps || 0) - 1);
-
-  // Resume this player (next pending level-up will open again on the next tick if needed).
-  sessions.delete(sid);
-  try { requests.delete(sid); } catch {}
-  player._lvlUpChoosing = false;
-  player._lvlUpInvuln = false;
-
-  const localId = state.player ? String(state.player.id) : "";
-  if (sid === localId) {
-    state._runUpgradeActive = false;
-    // showRunUpgradeOverlay already hid itself on pick; this is just a safety net.
-    try { hideRunUpgradeOverlay(); } catch {}
-  }
+function hostApplyRunPick(state, fromId, choiceId, replaceKey = null) {
+  clearLegacyRunUpgradeState(state, { clearSessions: true });
 }
 
 
@@ -1940,10 +1743,11 @@ function sendLocalInputToHost(state) {
     };
   }
 
-  // Pixel_GO v0.4: floor shop purchases (host-authoritative)
-  if (state._shopActPending && state._shopActPending.offerId) {
+  // Pixel_GO v0.4: floor shop actions (host-authoritative)
+  if (state._shopActPending && (state._shopActPending.offerId || state._shopActPending.action)) {
     input.shopAct = {
-      offerId: String(state._shopActPending.offerId),
+      action: String(state._shopActPending.action || 'buy'),
+      offerId: String(state._shopActPending.offerId || ''),
       replaceKey: (state._shopActPending.replaceKey != null) ? String(state._shopActPending.replaceKey) : null,
       seq: (state._shopActPending.seq | 0) || 0,
     };
@@ -1991,9 +1795,12 @@ function serializePlayerState(state) {
       from: (o.from | 0) || 0,
       to: (o.to | 0) || 0,
       c: (o.spCost | 0) || 0,
+      rr: offerNeedsReplace(p, o),
+      fm: String(o.family || ""),
+      bm: String(o.biome || ""),
     }));
     const sold = Array.isArray(fs.sold) ? fs.sold.slice(0, 3).map((v) => (v ? 1 : 0)) : [0, 0, 0];
-    return { f: (fs.floor | 0) || 0, o: offers, s: sold };
+    return { f: (fs.floor | 0) || 0, o: offers, s: sold, ru: (fs.rerollsUsed | 0) || 0 };
   };
 
   return {
@@ -2009,8 +1816,8 @@ function serializePlayerState(state) {
       level: p.level,
       // Pixel_GO v0.4: Skill Points (SP)
       sp: (p.skillPoints | 0) || 0,
-      // Pending in-run upgrade choices (kept in sync for joiners)
-      pu: (p._pendingLevelUps || 0) | 0,
+      // Legacy pending level-up UI is disabled; keep field at 0 for backward-compatible snapshots.
+      pu: 0,
       // Joiners do not run weapon sim; sync these so their camera/aim feels correct.
       weaponStage: p.weaponStage || 1,
       range: q(Number.isFinite(p.range) ? p.range : getAttackRangeForPlayer(p)),
@@ -2032,6 +1839,21 @@ function serializePlayerState(state) {
             r: q(p._energyBarrierVis.radius),
             sh: q(Number(p._energyBarrierShield || p._energyBarrierVis.shield || 0)),
             ms: q(Number(p._energyBarrierMaxShield || p._energyBarrierVis.maxShield || 0)),
+          }
+        : null,
+
+      sv: (p._satelliteVis && (p._satelliteVis.count | 0) > 0)
+        ? {
+            c: (p._satelliteVis.count | 0) || 0,
+            r: q(Number(p._satelliteVis.orbitR || 0)),
+            o: q(Number(p._satelliteVis.orbR || 0)),
+            s: q(Number(p._satelliteVis.speed || 0)),
+          }
+        : null,
+
+      spv: (p._spiritVis && Array.isArray(p._spiritVis.list) && p._spiritVis.list.length)
+        ? {
+            c: p._spiritVis.list.length | 0,
           }
         : null,
 
@@ -2155,9 +1977,12 @@ function applyPlayerStateToClient(state, pstate) {
         from: (o.from | 0) || 0,
         to: (o.to | 0) || 0,
         spCost: (o.c | 0) || 0,
+        requiresReplace: !!o.rr,
+        family: String(o.fm || ""),
+        biome: String(o.bm || ""),
       }));
       const sold = Array.isArray(sp.fs.s) ? sp.fs.s.slice(0, 3).map((v) => !!v) : offers.map(() => false);
-      p.floorShop = { floor: (sp.fs.f | 0) || 0, offers, sold };
+      p.floorShop = { floor: (sp.fs.f | 0) || 0, offers, sold, rerollsUsed: (sp.fs.ru | 0) || 0 };
     } else {
       // If host isn't sending a shop, clear stale one on joiners.
       const curFloor = (state.currentRoomIndex != null ? (state.currentRoomIndex | 0) : 0);
@@ -2166,10 +1991,11 @@ function applyPlayerStateToClient(state, pstate) {
       }
     }
     if (typeof sp.pu === "number" && Number.isFinite(sp.pu)) {
-      p._pendingLevelUps = sp.pu | 0;
-      p._netHostPending = p._pendingLevelUps;
+      p._pendingLevelUps = 0;
+      p._netHostPending = 0;
     } else {
-      p._netHostPending = null;
+      p._pendingLevelUps = 0;
+      p._netHostPending = 0;
     }
     if (typeof sp.weaponStage === "number") p.weaponStage = sp.weaponStage;
     if (typeof sp.range === "number" && Number.isFinite(sp.range)) p.range = sp.range;
@@ -2230,6 +2056,24 @@ function applyPlayerStateToClient(state, pstate) {
       p._energyBarrierVis = null;
     }
 
+    if (sp.sv && typeof sp.sv === "object" && Number.isFinite(sp.sv.c) && sp.sv.c > 0) {
+      p._satelliteVis = {
+        count: Math.max(1, sp.sv.c | 0),
+        orbitR: Number.isFinite(sp.sv.r) ? sp.sv.r : 60,
+        orbR: Number.isFinite(sp.sv.o) ? sp.sv.o : 10,
+        speed: Number.isFinite(sp.sv.s) ? sp.sv.s : 1.2,
+      };
+    } else {
+      p._satelliteVis = null;
+    }
+
+    if (sp.spv && typeof sp.spv === "object" && Number.isFinite(sp.spv.c) && sp.spv.c > 0) {
+      const count = Math.max(1, sp.spv.c | 0);
+      p._spiritVis = { list: Array.from({ length: count }, (_, i) => ({ i })) };
+    } else {
+      p._spiritVis = null;
+    }
+
     // Laser / Lightning visuals for joiners.
     if (isJoiner) {
       if (sp.lz && typeof sp.lz === "object") {
@@ -2268,12 +2112,8 @@ function applyPlayerStateToClient(state, pstate) {
       }
       if (curLv > prevLv) {
         const diff = curLv - prevLv;
-        // Each level gained usually means one pending run-upgrade choice.
-        // In co-op we prefer host-replicated pending (pu) so the count doesn't get stuck.
-        const hasHostPending = typeof me._netHostPending === "number" && Number.isFinite(me._netHostPending);
-        if (!hasHostPending) {
-          me._pendingLevelUps = (me._pendingLevelUps || 0) + diff;
-        }
+        // Level-ups only grant SP now; do not synthesize legacy pending upgrade choices on joiners.
+        me._pendingLevelUps = 0;
         if (state.floatingTexts) {
           state.floatingTexts.push({
             x: me.x,
@@ -2291,6 +2131,12 @@ function applyPlayerStateToClient(state, pstate) {
       }
       state._netLocalLevel = curLv;
     }
+  }
+
+  if (state._floorShopReopenOnSync && me && canPlayerUseFloorShop(state, me)) {
+    state._floorShopReopenOnSync = false;
+    state._floorShopActive = true;
+    openFloorShopOverlay(state);
   }
 }
 
@@ -3619,9 +3465,9 @@ function updateProjectiles(state, dt) {
     b.y += b.vy * dt;
     b.travel += b.speed * dt;
 
-    // Fireball: explodes on max range.
-    if (b.type === 'fireball' && b.travel >= b.range) {
-      try { explodeFireball(b, state); } catch {}
+    // Fireball / Ice Ball: explode on max range.
+    if ((b.type === 'fireball' || b.type === 'iceball') && b.travel >= b.range) {
+      try { (b.type === 'iceball' ? explodeIceBall : explodeFireball)(b, state); } catch {}
       projectiles.splice(i, 1);
       continue;
     }
@@ -3638,8 +3484,8 @@ function updateProjectiles(state, dt) {
       const dy = e.y - b.y;
       const r = (e.radius || 20) + (b.radius || 4);
       if (dx * dx + dy * dy <= r * r) {
-        // Fireball: explode instead of direct single-target hit.
-        if (b.type === 'fireball') {
+        // Fireball / Ice Ball: explode instead of direct single-target hit.
+        if (b.type === 'fireball' || b.type === 'iceball') {
           hit = true;
           break;
         }
@@ -3722,8 +3568,8 @@ function updateProjectiles(state, dt) {
     }
 
     if (hit) {
-      if (b.type === 'fireball') {
-        try { explodeFireball(b, state); } catch {}
+      if (b.type === 'fireball' || b.type === 'iceball') {
+        try { (b.type === 'iceball' ? explodeIceBall : explodeFireball)(b, state); } catch {}
       }
       projectiles.splice(i, 1);
     }
@@ -4621,12 +4467,13 @@ function renderSkillFx(state, ctx) {
     ctx.stroke();
   }
 
-  // Explosions (fireball)
+  // Explosions (fireball / ice ball)
   for (const ex of exs) {
     const p = 1 - Math.max(0, Math.min(1, (ex.t || 0) / 0.35));
     const rr = (ex.r || 0) * (0.65 + p * 0.55);
+    const isIce = ex.kind === 'ice';
     ctx.beginPath();
-    ctx.strokeStyle = `rgba(255,120,60,${0.55 * (1 - p)})`;
+    ctx.strokeStyle = isIce ? `rgba(130,220,255,${0.55 * (1 - p)})` : `rgba(255,120,60,${0.55 * (1 - p)})`;
     ctx.lineWidth = 4;
     ctx.arc(ex.x, ex.y, rr, 0, Math.PI * 2);
     ctx.stroke();
@@ -4703,8 +4550,9 @@ function renderProjectiles(state, ctx) {
       // Joiners on small mobiles use rectangles for performance; keep bullets readable.
       const r = (b.radius || 4);
       const isFb = (b.type === 'fireball');
-      const s = isFb ? Math.max(6, Math.min(14, r * 2.2)) : Math.max(3, Math.min(8, r * 1.8));
-      ctx.fillStyle = isFb ? "rgba(255,120,60,0.95)" : "#f4e9a3";
+      const isIb = (b.type === 'iceball');
+      const s = (isFb || isIb) ? Math.max(6, Math.min(14, r * 2.2)) : Math.max(3, Math.min(8, r * 1.8));
+      ctx.fillStyle = isFb ? "rgba(255,120,60,0.95)" : (isIb ? "rgba(130,220,255,0.95)" : "#f4e9a3");
       ctx.fillRect(b.x - s * 0.5, b.y - s * 0.5, s, s);
     }
       const maxRockets = 80;
@@ -4727,14 +4575,15 @@ function renderProjectiles(state, ctx) {
     for (const b of projectiles) {
       if (!b) continue;
       const isFb = (b.type === 'fireball');
-      if (isFb) {
+      const isIb = (b.type === 'iceball');
+      if (isFb || isIb) {
         const r = Math.max(6, (b.radius || 10));
         ctx.beginPath();
-        ctx.fillStyle = "rgba(255,120,60,0.92)";
+        ctx.fillStyle = isIb ? "rgba(130,220,255,0.92)" : "rgba(255,120,60,0.92)";
         ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
         ctx.fill();
         ctx.beginPath();
-        ctx.strokeStyle = "rgba(255,220,170,0.55)";
+        ctx.strokeStyle = isIb ? "rgba(225,245,255,0.62)" : "rgba(255,220,170,0.55)";
         ctx.lineWidth = 2;
         ctx.arc(b.x, b.y, r * 0.7, 0, Math.PI * 2);
         ctx.stroke();
@@ -4996,13 +4845,13 @@ function renderPlayers(state, ctx) {
         // Fallback (matches satellitesParams progression).
         const meta = (p._metaSkillMeta && typeof p._metaSkillMeta === "object") ? p._metaSkillMeta : null;
         const metaLvl = meta ? (meta["skill:satellites"] | 0) : 0;
-        const extraAt5 = metaLvl >= 2 ? 1 : 0;
-        const extraAt9 = metaLvl >= 3 ? 1 : 0;
+        const extraAt4 = metaLvl >= 2 ? 1 : 0;
+        const extraAt6 = metaLvl >= 3 ? 1 : 0;
 
-        count = 1;
-        if (satLvl >= 5) count += 1 + extraAt5;
-        if (satLvl >= 9) count += 1 + extraAt9;
-        count = Math.min(5, Math.max(1, count));
+        count = 2;
+        if (satLvl >= 4) count += 1 + extraAt4;
+        if (satLvl >= 6) count += 1 + extraAt6;
+        count = Math.min(6, Math.max(2, count));
 
         orbitR = (56 + (satLvl - 1) * 3.0 + Math.max(0, count - 1) * 2.0) * (0.85 + (rMult - 1) * 0.35);
         orbR = 9 + Math.floor((satLvl - 1) / 3);
@@ -5030,14 +4879,21 @@ function renderPlayers(state, ctx) {
         const spLvl = (s.spirit || 0) | 0;
         if (spLvl > 0) {
           const meta = (p._metaSkillMeta && typeof p._metaSkillMeta === "object") ? p._metaSkillMeta : null;
-          const metaLvl = meta ? (meta["skill:spirit"] | 0) : 0;
-          const extraAt5 = metaLvl >= 2 ? 1 : 0;
-          const extraAt9 = metaLvl >= 3 ? 1 : 0;
+          const vis = p._spiritVis;
+          let count = 0;
+          if (vis && Array.isArray(vis.list) && vis.list.length) {
+            count = Math.max(1, vis.list.length | 0);
+          } else {
+            const meta = (p._metaSkillMeta && typeof p._metaSkillMeta === "object") ? p._metaSkillMeta : null;
+            const metaLvl = meta ? (meta["skill:spirit"] | 0) : 0;
+            const extraAt4 = metaLvl >= 2 ? 1 : 0;
+            const extraAt6 = metaLvl >= 3 ? 1 : 0;
 
-          let count = 1;
-          if (spLvl >= 5) count += 1 + extraAt5;
-          if (spLvl >= 9) count += 1 + extraAt9;
-          count = Math.min(5, Math.max(1, count));
+            count = 2;
+            if (spLvl >= 4) count += 1 + extraAt4;
+            if (spLvl >= 6) count += 1 + extraAt6;
+            count = Math.min(6, Math.max(2, count));
+          }
 
           const baseY = p.y - (p.radius || 18) - 18;
           const step = 12;

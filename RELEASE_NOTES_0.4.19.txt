@@ -1,0 +1,13 @@
+Pixel_GO v0.4.19
+
+Changes in this build
+- Removed wave-based room pacing in floor combat rooms.
+- Room combat now uses continuous escalating pressure with no wave breaks.
+- Enemy spawn tempo ramps up during each room as time/progress increases.
+- Live enemy cap also ramps up during the room to create mounting pressure.
+- Doubled total enemy quota per room (roughly 2x room mob count).
+- Boss/final rooms keep pre-boss pressure, then spawn boss once the room quota is exhausted and the room is temporarily clear.
+
+Notes
+- HUD wave text is hidden because room flow is no longer wave-based.
+- This build is a direct continuation of v0.4.18.

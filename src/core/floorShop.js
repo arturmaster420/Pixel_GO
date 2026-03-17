@@ -2,12 +2,14 @@
 // - Uses Skill Points (SP) earned from level-ups and cleared rooms.
 // - Offers are generated per-player, per-floor (host authoritative in co-op).
 
-import { initRunUpgrades, describeRunUpgrade, applyRunUpgrade, RUN_SKILLS } from "./runUpgrades.js";
+import { initRunUpgrades, describeRunUpgrade, applyRunUpgrade, tryApplyRunUpgrade, RUN_SKILLS, MAX_RUN_SKILL_LEVEL, MAX_RUN_ACTIVE_SKILLS } from "./runUpgrades.js";
 import { STANDARD_SKILL_KEYS, biomeSkillsFor, getSkillFamily } from "../weapons/skillCatalog.js";
 import { biomeName } from "../world/biomes.js";
 
 const MAX_SKILL_LV = 6;
-const MAX_ACTIVE_SKILLS = 6;
+const MAX_ACTIVE_SKILLS = MAX_RUN_ACTIVE_SKILLS;
+
+export const FLOOR_SHOP_REROLL_COSTS = [1, 3, 5];
 
 const SKILL_NAME_BY_KEY = (() => {
   const m = Object.create(null);
@@ -42,8 +44,6 @@ export function getReplaceCandidates(player, newSkillKey) {
     const k = String(def?.key || "");
     if (!k) continue;
     if (k === nk) continue;
-    // Do not allow replacing the base gun.
-    if (k === "bullets") continue;
     const lv = (s[k] | 0) || 0;
     if (lv > 0) {
       out.push({ key: k, name: SKILL_NAME_BY_KEY[k] || k, level: lv });
@@ -56,6 +56,47 @@ const STANDARD_SKILLS = STANDARD_SKILL_KEYS.map((key) => {
   const def = (RUN_SKILLS || []).find((s) => s && s.key === key);
   return { key, name: String(def?.name || key) };
 });
+
+function getFloorShopSkillOfferDefs(player) {
+  const out = STANDARD_SKILLS.slice();
+  const hasRockets = !!(((player?.runSkills?.rockets | 0) > 0) || player?.runEvolutions?.rocketFusion);
+  if (hasRockets && !out.some((def) => def && def.key === "rockets")) {
+    const def = (RUN_SKILLS || []).find((s) => s && s.key === "rockets");
+    out.push({ key: "rockets", name: String(def?.name || "Rockets") });
+  }
+  return out;
+}
+
+
+
+export function offerNeedsReplace(player, offer) {
+  if (!player || !offer) return false;
+  if (String(offer.kind || '') !== 'skill') return false;
+  if (((offer.from | 0) || 0) > 0) return false;
+  return countActiveSkills(player) >= MAX_ACTIVE_SKILLS;
+}
+
+export function getFloorShopRerollCost(fs) {
+  const used = Math.max(0, (fs?.rerollsUsed | 0) || 0);
+  return FLOOR_SHOP_REROLL_COSTS[used] || 0;
+}
+
+export function canRerollFloorShop(fs) {
+  return getFloorShopRerollCost(fs) > 0;
+}
+
+export function rerollFloorShopOffersForPlayer(player, floorIndex, biomeKey, count = 3) {
+  if (!player) return null;
+  initRunUpgrades(player);
+  const floor = floorIndex | 0;
+  const biome = String(biomeKey || "").toLowerCase();
+  const prev = player.floorShop || null;
+  const used = Math.max(0, ((prev?.rerollsUsed | 0) || 0));
+  const offers = rollFloorShopOffers(player, floor, biome, count);
+  const next = { floor, offers, sold: offers.map(() => false), rerollsUsed: used + 1 };
+  player.floorShop = next;
+  return next;
+}
 
 const STANDARD_PASSIVES = [
   { key: "damage", name: "Damage" },
@@ -112,7 +153,7 @@ function makeSkillOffer(player, floor, slot, def) {
   // - unlocking (lv==0) costs 2 SP (except Gun which is always present)
   // - upgrades cost 1 SP
   const isUnlock = lv <= 0;
-  const cost = (def.key === "bullets") ? 1 : (isUnlock ? 2 : 1);
+  const cost = (def.key === "bullets") ? 1 : (def.key === "rockets" ? 2 : (isUnlock ? 2 : 1));
 
   const activeNow = countActiveSkills(player);
   const needsReplace = isUnlock && activeNow >= MAX_ACTIVE_SKILLS;
@@ -174,6 +215,30 @@ function makeAffinityOffer(player, floor, slot, biomeKey) {
   };
 }
 
+function canFuseRockets(player) {
+  const s = player?.runSkills || {};
+  const evo = player?.runEvolutions || {};
+  return !evo.rocketFusion &&
+    ((s.bullets | 0) >= (MAX_RUN_SKILL_LEVEL.bullets || 6)) &&
+    ((s.bombs | 0) >= (MAX_RUN_SKILL_LEVEL.bombs || 6)) &&
+    ((s.rockets | 0) <= 0);
+}
+
+function makeRocketEvolutionOffer(player, floor, slot) {
+  if (!canFuseRockets(player)) return null;
+  return {
+    id: mkOfferId(floor, slot, "evolution", "rocketFusion", 1),
+    kind: "evolution",
+    key: "rocketFusion",
+    name: "Fuse → Rockets",
+    from: 0,
+    to: 1,
+    spCost: 5,
+    family: "evolution",
+    biome: "",
+  };
+}
+
 export function rollFloorShopOffersStandard(player, floorIndex, count = 3) {
   if (!player) return [];
   initRunUpgrades(player);
@@ -181,10 +246,13 @@ export function rollFloorShopOffersStandard(player, floorIndex, count = 3) {
   const floor = floorIndex | 0;
   const offers = [];
 
-  // Slot 0: Prefer a skill (keeps the build moving)
-  const skillPool = STANDARD_SKILLS
+  // Slot 0: Prefer a skill (keeps the build moving). Evolution can also appear here.
+  const skillDefs = getFloorShopSkillOfferDefs(player);
+  const evoOffer = makeRocketEvolutionOffer(player, floor, 0);
+  const skillPool = skillDefs
     .map((def, i) => makeSkillOffer(player, floor, 0, def))
     .filter(Boolean);
+  if (evoOffer) skillPool.unshift(evoOffer);
   if (skillPool.length) {
     offers.push(skillPool[(Math.random() * skillPool.length) | 0]);
   }
@@ -195,7 +263,9 @@ export function rollFloorShopOffersStandard(player, floorIndex, count = 3) {
 
   // Slot 2: Mixed (skill/passive), avoid duplicates
   const remaining = [];
-  for (const def of STANDARD_SKILLS) {
+  const evoOffer2 = makeRocketEvolutionOffer(player, floor, 2);
+  if (evoOffer2) remaining.push(evoOffer2);
+  for (const def of skillDefs) {
     const o = makeSkillOffer(player, floor, 2, def);
     if (o) remaining.push(o);
   }
@@ -226,6 +296,7 @@ export function rollFloorShopOffers(player, floorIndex, biomeKey, count = 3) {
   const hasBiome = !!biome;
 
   const offers = [];
+  const skillDefs = getFloorShopSkillOfferDefs(player);
 
   const addLabeledBiomeOffer = (offer) => {
     if (!offer) return null;
@@ -236,7 +307,10 @@ export function rollFloorShopOffers(player, floorIndex, biomeKey, count = 3) {
     return picked;
   };
 
-  if (hasBiome) {
+  const evoOffer = makeRocketEvolutionOffer(player, floor, 0);
+  if (evoOffer) offers.push(evoOffer);
+
+  if (hasBiome && offers.length < count) {
     const biomeSkillDefs = biomeSkillsFor(biome) || [];
     const biomeSkillOffers = biomeSkillDefs
       .map((def) => makeSkillOffer(player, floor, 0, def))
@@ -249,7 +323,9 @@ export function rollFloorShopOffers(player, floorIndex, biomeKey, count = 3) {
   }
 
   const mixedPool = [];
-  for (const def of STANDARD_SKILLS) {
+  const evoOfferMixed = makeRocketEvolutionOffer(player, floor, offers.length);
+  if (evoOfferMixed) mixedPool.push(evoOfferMixed);
+  for (const def of skillDefs) {
     const o = makeSkillOffer(player, floor, offers.length, def);
     if (o) mixedPool.push(o);
   }
@@ -285,7 +361,7 @@ export function describeFloorShopOffer(player, offer) {
   // Reuse run-upgrade descriptions where possible.
   try {
     const base = describeRunUpgrade(player, offer);
-    if (offer.kind === 'skill' && offer.from <= 0 && offer.requiresReplace) {
+    if (offerNeedsReplace(player, offer)) {
       return `${base} (Max ${MAX_ACTIVE_SKILLS} active skills: will replace one)`;
     }
     return base;
@@ -303,7 +379,7 @@ export function tryBuyFloorShopOfferEx(player, offer, replaceKey) {
   initRunUpgrades(player);
 
   // Enforce max active skills (unlocking a new skill may require replacing an existing one).
-  if (offer.kind === 'skill' && (offer.from | 0) <= 0) {
+  if (String(offer.kind || '') === 'skill' && ((offer.from | 0) || 0) <= 0) {
     const activeNow = countActiveSkills(player);
     if (activeNow >= MAX_ACTIVE_SKILLS) {
       const rk = String(replaceKey || "");
@@ -320,6 +396,10 @@ export function tryBuyFloorShopOfferEx(player, offer, replaceKey) {
   const sp = (player.skillPoints | 0) || 0;
   if (sp < cost) return { ok: false, reason: "no_sp" };
   player.skillPoints = sp - cost;
-  applyRunUpgrade(player, offer);
+  const applied = tryApplyRunUpgrade(player, offer, replaceKey);
+  if (!applied || !applied.ok) {
+    player.skillPoints = sp;
+    return applied || { ok: false, reason: "apply_failed" };
+  }
   return { ok: true };
 }

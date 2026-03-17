@@ -10,7 +10,7 @@ export const BIOME_SKILLS_BY_BIOME = {
     { key: "laser", name: "Solar Beam" },
   ],
   ice: [
-    { key: "iceWall", name: "Ice Wall" },
+    { key: "iceWall", name: "Ice Ball" },
     { key: "satellites", name: "Frost Orbit" },
   ],
   dark: [

@@ -224,11 +224,14 @@ export class Player {
       this.level += 1;
       leveled = true;
 
-      // Pixel_GO v0.4: Level-up grants Skill Points (SP) instead of auto-upgrade choices.
+      // Pixel_GO v0.4.15: level-ups only grant Skill Points (SP).
+      // In-run growth is bought at the floor shop; the old pending level-up UI stays disabled.
       this.skillPoints = (this.skillPoints | 0) + 1;
 
-      // Keep legacy field at 0 (we no longer use level-up upgrade UI).
+      // Hard-reset any legacy level-up UI state so host/joiner logic stays on a single progression model.
       this._pendingLevelUps = 0;
+      this._lvlUpChoosing = false;
+      this._lvlUpInvuln = false;
 
       // Full HP restore on each level up
       this.hp = this.maxHP;

@@ -224,8 +224,12 @@ export function createNetClient() {
     });
   };
 
-  net.sendRunPick = function sendRunPick(choiceId) {
-    send({ type: "runPick", choiceId: choiceId || "" });
+  net.sendRunPick = function sendRunPick(choiceId, replaceKey = null) {
+    send({
+      type: "runPick",
+      choiceId: choiceId || "",
+      replaceKey: replaceKey != null ? String(replaceKey) : null,
+    });
   };
 
   // Joiner -> host: ask the host to send us run-upgrade choices.

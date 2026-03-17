@@ -838,6 +838,8 @@ export class RoomSpawnSystem {
     this._waveRestLeft = 0;
     this._pendingWaveAdvance = false;
     this._spawnTimer = 0;
+    this._roomElapsed = 0;
+    this._baseAliveCap = 0;
     this._bossSpawned = false;
     this._bossId = null;
     this.isBossRoom = false;
@@ -882,7 +884,8 @@ export class RoomSpawnSystem {
     this._bossId = null;
     this.waveIndex = 0;
     this.waveSpawned = 0;
-    this._waveRestLeft = this.roomIndex > 0 ? (1.2 * (this._encounterProfile?.waveRestMul || 1)) : 0;
+    this._waveRestLeft = 0;
+    this._roomElapsed = 0;
     this._spawnAnchorUse = new Map();
     this._pendingWaveAdvance = false;
 
@@ -901,20 +904,12 @@ export class RoomSpawnSystem {
       const pressure = Math.max(0, this.roomDifficultyScale - 1);
       const pressureFlags = this._roomPressureFlags || getRoomPressureFlags(room, this.roomDifficultyScale);
       const base = 3.8 + floorNo * 1.30 + roomOrd * 1.28 + (this.isBossRoom ? 3.0 : 0);
-      this.quotaTotal = clamp(Math.round(base * partyScale * this.roomDifficultyScale * (ep.quotaMul || 1)), 4, this.isBossRoom ? 72 : 60);
-      this.aliveCap = clamp(Math.round(4 + floorNo * 0.42 + roomOrd * 0.18 + (this.isBossRoom ? 2 : 0) + (ep.aliveAdd || 0) + pressure * 1.85 + (pressureFlags.secondRoomSpike ? 0.5 : 0) + (pressureFlags.evenRoomSpike ? 0.4 : 0)), 3, 22);
-      this.wavesTotal = this.isBossRoom
-        ? clamp(2 + Math.floor(floorNo / 4) + Math.round(pressure * 0.55), 2, 5)
-        : clamp(1 + Math.floor((floorNo - 1) / 4) + (ep.waveDelta || 0) + (pressureFlags.secondRoomSpike ? 1 : 0) + (pressureFlags.lateFloorSpike ? 1 : 0) + (pressureFlags.evenRoomSpike && floorNo >= 6 ? 1 : 0), 1, 6);
-      let left = this.quotaTotal;
+      this.quotaTotal = clamp(Math.round(base * partyScale * this.roomDifficultyScale * (ep.quotaMul || 1) * 2.0), 8, this.isBossRoom ? 144 : 120);
+      this._baseAliveCap = clamp(Math.round((4 + floorNo * 0.42 + roomOrd * 0.18 + (this.isBossRoom ? 2 : 0) + (ep.aliveAdd || 0) + pressure * 1.85 + (pressureFlags.secondRoomSpike ? 0.5 : 0) + (pressureFlags.evenRoomSpike ? 0.4 : 0)) * 1.35), 4, 30);
+      this.aliveCap = this._baseAliveCap;
+      this.wavesTotal = 0;
       this._waveSizes = [];
-      for (let i = 0; i < this.wavesTotal; i++) {
-        const remainWaves = this.wavesTotal - i;
-        const size = i === this.wavesTotal - 1 ? left : Math.max(1, Math.round(left / remainWaves));
-        this._waveSizes.push(size);
-        left -= size;
-      }
-      this.waveTarget = this._waveSizes[0] || 0;
+      this.waveTarget = this.quotaTotal;
     }
 
     const st = this.state;
@@ -926,7 +921,7 @@ export class RoomSpawnSystem {
       st._roomIsMiniBoss = false;
       st._roomBossAlive = false;
       st._roomBossArenaType = String(room?.arenaSpec?.bossArena?.arenaType || '');
-      st._roomWavesTotal = this.wavesTotal | 0;
+      st._roomWavesTotal = 0;
       st._roomWaveIndex = 0;
       st._roomEncounter = this.encounterType;
       st._roomEncounterLabel = this.encounterLabel;
@@ -948,35 +943,19 @@ export class RoomSpawnSystem {
 
     const players = getPlayers(state);
     const aliveInRoom = countAliveInRoom(state, this.roomIndex);
+    this._roomElapsed += Math.max(0, dt || 0);
 
-    if (this.waveSpawned >= this.waveTarget && aliveInRoom === 0) {
-      if (this.waveIndex < this.wavesTotal - 1) {
-        this._pendingWaveAdvance = true;
-        if (this._waveRestLeft <= 0) this._waveRestLeft = 2.0 * (this._encounterProfile?.waveRestMul || 1);
-      } else {
-        this.waveIndex = this.wavesTotal;
-        this.waveSpawned = 0;
-        this.waveTarget = 0;
-        if (state) state._roomWaveIndex = this.waveIndex | 0;
-      }
-    }
+    const quota = Math.max(1, this.quotaTotal | 0);
+    const spawnedProgress = clamp01((this.spawned | 0) / quota);
+    const killedProgress = clamp01((this.killed | 0) / quota);
+    const timePressure = clamp01(this._roomElapsed / (18 + this.floorNumber * 1.6 + this.roomOrdinal * 1.2));
+    const pressureRamp = clamp01(Math.max(spawnedProgress, killedProgress * 0.92, timePressure * 0.88));
+    const pressureBonus = Math.round((2 + this.floorNumber * 0.10 + this.roomOrdinal * 0.08 + (this.isBossRoom ? 1 : 0)) * pressureRamp);
+    const liveCapNow = clamp((this._baseAliveCap || this.aliveCap || 4) + pressureBonus, 4, this.isBossRoom ? 34 : 32);
+    this.aliveCap = liveCapNow;
+    if (state) state._roomAliveCap = this.aliveCap | 0;
 
-    if (this._waveRestLeft > 0) {
-      this._waveRestLeft -= dt;
-      if (this._waveRestLeft <= 0) {
-        this._waveRestLeft = 0;
-        if (this._pendingWaveAdvance) {
-          this._pendingWaveAdvance = false;
-          this.waveIndex++;
-          this.waveSpawned = 0;
-          this.waveTarget = this._waveSizes[this.waveIndex] || 0;
-          if (state) state._roomWaveIndex = this.waveIndex | 0;
-        }
-      }
-      return;
-    }
-
-    if (this.waveIndex >= this.wavesTotal) {
+    if ((this.spawned | 0) >= quota) {
       if (this.isBossRoom && !this._bossSpawned && aliveInRoom === 0) {
         const floorNo = Math.max(1, room.floorNumber || 1);
         const zone = 1 + Math.floor((floorNo - 1) / 3);
@@ -1003,31 +982,31 @@ export class RoomSpawnSystem {
       return;
     }
 
-    const remainingInWave = (this.waveTarget | 0) - (this.waveSpawned | 0);
-    if (remainingInWave <= 0) return;
+    const remainingToSpawn = quota - (this.spawned | 0);
     const freeSlots = this.aliveCap - aliveInRoom;
-    if (freeSlots <= 0) return;
+    if (remainingToSpawn <= 0 || freeSlots <= 0) return;
 
     const floorNo = Math.max(1, room.floorNumber || 1);
     const zone = 1 + Math.floor((floorNo - 1) / 3);
     const ep = this._encounterProfile || getEncounterProfile(room);
     const pressureFlags = this._roomPressureFlags || getRoomPressureFlags(room, this.roomDifficultyScale);
     const pressure = Math.max(0, this.roomDifficultyScale - 1);
-    const minDist = clamp((200 + floorNo * 8) * (ep.minDistMul || 1) * (1 - Math.min(0.12, pressure * 0.04)), 150, 320);
-    const spawnInterval = clamp((0.92 - floorNo * 0.018) * (ep.spawnIntervalMul || 1) * (1 - Math.min(0.30, pressure * 0.07 + (pressureFlags.secondRoomSpike ? 0.03 : 0) + (pressureFlags.evenRoomSpike ? 0.03 : 0))), 0.22, 1.05);
+    const minDist = clamp((200 + floorNo * 8) * (ep.minDistMul || 1) * (1 - Math.min(0.18, pressure * 0.04 + pressureRamp * 0.08)), 135, 320);
+    const spawnIntervalBase = (0.88 - floorNo * 0.018) * (ep.spawnIntervalMul || 1) * (1 - Math.min(0.32, pressure * 0.07 + (pressureFlags.secondRoomSpike ? 0.03 : 0) + (pressureFlags.evenRoomSpike ? 0.03 : 0)));
+    const spawnInterval = clamp(spawnIntervalBase * (1 - pressureRamp * 0.42), 0.12, 0.95);
     this._spawnTimer += dt;
     if (this._spawnTimer < spawnInterval) return;
     this._spawnTimer = 0;
 
     const dynamicBatchCap = this.isBossRoom
-      ? 3
-      : clamp((this._encounterProfile?.spawnBatchCap || 4) + Math.floor(pressure * 0.6) + (pressureFlags.secondRoomSpike && floorNo >= 3 ? 1 : 0) + (pressureFlags.lateFloorSpike ? 1 : 0), 1, 7);
-    const batch = Math.min(remainingInWave, freeSlots, dynamicBatchCap);
+      ? clamp(3 + Math.floor(pressureRamp * 2), 3, 5)
+      : clamp((this._encounterProfile?.spawnBatchCap || 4) + 1 + Math.floor(pressure * 0.6) + Math.floor(pressureRamp * 3) + (pressureFlags.secondRoomSpike && floorNo >= 3 ? 1 : 0) + (pressureFlags.lateFloorSpike ? 1 : 0), 2, 10);
+    const batch = Math.min(remainingToSpawn, freeSlots, dynamicBatchCap);
     for (let i = 0; i < batch; i++) {
       const choice = pickSpawnPos(room, players, minDist, 16, ep, this._spawnAnchorUse);
       const pos = { x: Number(choice?.x) || room.centerX, y: Number(choice?.y) || room.centerY };
       const biomeKey = String(room.biomeKey || '').toLowerCase();
-      const eliteChance = clamp((0.04 + floorNo * 0.01) * (ep.eliteChanceMul || 1) + pressure * 0.07 + (pressureFlags.secondRoomSpike ? 0.03 : 0) + (pressureFlags.evenRoomSpike ? 0.03 : 0), 0.03, 0.78);
+      const eliteChance = clamp((0.04 + floorNo * 0.01) * (ep.eliteChanceMul || 1) + pressure * 0.07 + pressureRamp * 0.08 + (pressureFlags.secondRoomSpike ? 0.03 : 0) + (pressureFlags.evenRoomSpike ? 0.03 : 0), 0.03, 0.82);
       const useElite = (this._forcedElitesLeft > 0) || (Math.random() < eliteChance);
       if (useElite && this._forcedElitesLeft > 0) this._forcedElitesLeft--;
       const useBiome = biomeKey && Math.random() < clamp((ep.biomeChance || 0.55) + pressure * 0.08 + (floorNo >= 2 ? 0.04 : 0) + (pressureFlags.lateFloorSpike ? 0.03 : 0), 0.18, 0.98);
@@ -1048,8 +1027,9 @@ export class RoomSpawnSystem {
     if (state) {
       state._roomKilled = this.killed | 0;
       state._roomQuota = this.quotaTotal | 0;
-      state._roomWavesTotal = this.wavesTotal | 0;
-      state._roomWaveIndex = this.waveIndex | 0;
+      state._roomAliveCap = this.aliveCap | 0;
+      state._roomWavesTotal = 0;
+      state._roomWaveIndex = 0;
     }
   }
 

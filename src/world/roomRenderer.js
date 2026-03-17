@@ -37,16 +37,99 @@ function drawImageCoverScreen(ctx, entry, x, y, w, h, alpha = 1, ox = 0, oy = 0,
   return true;
 }
 
-function drawImageCoverRect(ctx, entry, x, y, w, h, alpha = 1, ox = 0, oy = 0, scaleMul = 1) {
+function makeLocalCanvas(w, h) {
+  if (typeof document === 'undefined') return null;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.floor(w) || 1);
+  c.height = Math.max(1, Math.floor(h) || 1);
+  return c;
+}
+
+function getApproxAlphaTrim(entry) {
+  if (!entry?.loaded || !entry?.img) return null;
+  if (entry.alphaTrimComputed) return entry.alphaTrim || null;
+  entry.alphaTrimComputed = true;
+  try {
+    const imgW = Math.max(1, Number(entry.img.naturalWidth || entry.img.width) || 1);
+    const imgH = Math.max(1, Number(entry.img.naturalHeight || entry.img.height) || 1);
+    const maxSide = 512;
+    const scale = Math.min(1, maxSide / Math.max(imgW, imgH));
+    const sw = Math.max(1, Math.round(imgW * scale));
+    const sh = Math.max(1, Math.round(imgH * scale));
+    const c = makeLocalCanvas(sw, sh);
+    if (!c) return null;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    if (!g) return null;
+    g.clearRect(0, 0, sw, sh);
+    g.drawImage(entry.img, 0, 0, sw, sh);
+    const data = g.getImageData(0, 0, sw, sh).data;
+    let minX = sw, minY = sh, maxX = -1, maxY = -1;
+    for (let y = 0; y < sh; y++) {
+      const row = y * sw * 4;
+      for (let x = 0; x < sw; x++) {
+        const a = data[row + x * 4 + 3] || 0;
+        if (a <= 12) continue;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (maxX < minX || maxY < minY) {
+      entry.alphaTrim = null;
+      return null;
+    }
+    const padX = Math.max(1, Math.round((maxX - minX + 1) * 0.03));
+    const padY = Math.max(1, Math.round((maxY - minY + 1) * 0.03));
+    minX = Math.max(0, minX - padX);
+    minY = Math.max(0, minY - padY);
+    maxX = Math.min(sw - 1, maxX + padX);
+    maxY = Math.min(sh - 1, maxY + padY);
+    entry.alphaTrim = {
+      sx: (minX / sw) * imgW,
+      sy: (minY / sh) * imgH,
+      sw: ((maxX - minX + 1) / sw) * imgW,
+      sh: ((maxY - minY + 1) / sh) * imgH,
+    };
+    return entry.alphaTrim;
+  } catch {
+    entry.alphaTrim = null;
+    return null;
+  }
+}
+
+function drawImageCoverRect(ctx, entry, x, y, w, h, alpha = 1, ox = 0, oy = 0, scaleMul = 1, cropRect = null) {
   if (!entry?.loaded || !entry?.img) return false;
   const imgW = Math.max(1, Number(entry.img.naturalWidth || entry.img.width) || 1);
   const imgH = Math.max(1, Number(entry.img.naturalHeight || entry.img.height) || 1);
-  const scale = Math.max(w / imgW, h / imgH) * Math.max(0.01, scaleMul);
-  const dw = imgW * scale;
-  const dh = imgH * scale;
+  const sx = Math.max(0, Number(cropRect?.sx) || 0);
+  const sy = Math.max(0, Number(cropRect?.sy) || 0);
+  const sw = Math.max(1, Number(cropRect?.sw) || imgW);
+  const sh = Math.max(1, Number(cropRect?.sh) || imgH);
+  const scale = Math.max(w / sw, h / sh) * Math.max(0.01, scaleMul);
+  const dw = sw * scale;
+  const dh = sh * scale;
   ctx.save();
   ctx.globalAlpha *= alpha;
-  ctx.drawImage(entry.img, x + (w - dw) * 0.5 + ox, y + (h - dh) * 0.5 + oy, dw, dh);
+  ctx.drawImage(entry.img, sx, sy, sw, sh, x + (w - dw) * 0.5 + ox, y + (h - dh) * 0.5 + oy, dw, dh);
+  ctx.restore();
+  return true;
+}
+
+function drawImageContainRect(ctx, entry, x, y, w, h, alpha = 1, ox = 0, oy = 0, scaleMul = 1, cropRect = null) {
+  if (!entry?.loaded || !entry?.img) return false;
+  const imgW = Math.max(1, Number(entry.img.naturalWidth || entry.img.width) || 1);
+  const imgH = Math.max(1, Number(entry.img.naturalHeight || entry.img.height) || 1);
+  const sx = Math.max(0, Number(cropRect?.sx) || 0);
+  const sy = Math.max(0, Number(cropRect?.sy) || 0);
+  const sw = Math.max(1, Number(cropRect?.sw) || imgW);
+  const sh = Math.max(1, Number(cropRect?.sh) || imgH);
+  const scale = Math.min(w / sw, h / sh) * Math.max(0.01, scaleMul);
+  const dw = sw * scale;
+  const dh = sh * scale;
+  ctx.save();
+  ctx.globalAlpha *= alpha;
+  ctx.drawImage(entry.img, sx, sy, sw, sh, x + (w - dw) * 0.5 + ox, y + (h - dh) * 0.5 + oy, dw, dh);
   ctx.restore();
   return true;
 }
@@ -83,7 +166,7 @@ function drawBiomeArenaArt(ctx, room, arenaSpec, bounds, layer = 'bg', time = 0,
   const clipMode = String(options?.clipMode || 'arena').toLowerCase();
   const isSurface = layer === 'surface';
   const alpha = Number.isFinite(Number(options?.alpha)) ? Number(options.alpha) : (isSurface ? 1 : (layer === 'overlay' ? 0.46 : 0.88));
-  const scaleMul = Number.isFinite(Number(options?.scaleMul)) ? Number(options.scaleMul) : (isSurface ? 1 : (layer === 'overlay' ? 1.02 : 1.04));
+  const scaleMul = Number.isFinite(Number(options?.scaleMul)) ? Number(options.scaleMul) : (isSurface ? 1.20 : (layer === 'overlay' ? 1.02 : 1.04));
   const parallax = Number.isFinite(Number(options?.parallax)) ? Number(options.parallax) : (isSurface ? 0 : (layer === 'overlay' ? 0.008 : 0.014));
   const compositeOperation = options?.compositeOperation || (isSurface ? 'source-over' : (layer === 'overlay' ? 'screen' : 'source-over'));
   const driftX = isSurface ? 0 : Math.sin((Number(time) || 0) * (layer === 'overlay' ? 0.12 : 0.08)) * (layer === 'overlay' ? 4 : 2);
@@ -95,12 +178,24 @@ function drawBiomeArenaArt(ctx, room, arenaSpec, bounds, layer = 'bg', time = 0,
     ctx.beginPath();
     ctx.rect(x0, y0, w, h);
     ctx.clip();
+  } else if (clipMode === 'surface_overscan') {
+    const padX = w * 0.18;
+    const padY = h * 0.18;
+    ctx.beginPath();
+    ctx.rect(x0 - padX, y0 - padY, w + padX * 2, h + padY * 2);
+    ctx.clip();
   } else if (!clipToArenaParts(ctx, arenaSpec)) {
     ctx.restore();
     return false;
   }
   ctx.globalCompositeOperation = compositeOperation;
-  const drew = drawImageCoverRect(ctx, entry, x0, y0, w, h, alpha, ox, oy, scaleMul);
+  const cropRect = isSurface ? getApproxAlphaTrim(entry) : null;
+  const drawX = isSurface ? (x0 - w * 0.15) : x0;
+  const drawY = isSurface ? (y0 - h * 0.15) : y0;
+  const drawW = isSurface ? (w * 1.30) : w;
+  const drawH = isSurface ? (h * 1.30) : h;
+  const drawFn = isSurface ? drawImageContainRect : drawImageCoverRect;
+  const drew = drawFn(ctx, entry, drawX, drawY, drawW, drawH, alpha, ox, oy, scaleMul, cropRect);
   ctx.restore();
   return drew;
 }
@@ -853,6 +948,20 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
   const isHubShape = !!arenaSpec?.rules?.isHub || visualPreset === 'hub_core_station' || visualPreset === 'hub_orbital_disc';
   const isNeutralShape = biomeKey === 'neutral' || visualPreset.includes('neutral_') || isHubShape;
   const useLoadedBiomeArtSurface = !isHubShape && hasLoadedBiomeArenaArt(room, 'surface');
+
+  if (useLoadedBiomeArtSurface) {
+    ctx.save();
+    drawBiomeArenaArt(ctx, room, arenaSpec, bounds, 'surface', time, {
+      clipMode: 'surface_overscan',
+      alpha: 1,
+      scaleMul: 1.00,
+      compositeOperation: 'source-over',
+      parallax: 0,
+    });
+    ctx.restore();
+    return true;
+  }
+
   let coreA = 'rgba(84,100,126,0.96)';
   let coreB = 'rgba(32,40,58,0.96)';
   let bridgeA = 'rgba(106,126,154,0.90)';
@@ -896,7 +1005,7 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
     ctx.restore();
     return true;
   }
-  if (!useLoadedBiomeArtSurface && isNeutralShape && !arenaSpec?.rules?.biomeCircularArena) drawStationArtParts(ctx, room, arenaSpec, time, 'under');
+  if (isNeutralShape && !arenaSpec?.rules?.biomeCircularArena) drawStationArtParts(ctx, room, arenaSpec, time, 'under');
   for (const part of parts) {
     const isCircle = String(part?.type || '') === 'circle';
     const x = Number(part?.x) || 0;
@@ -907,11 +1016,9 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
     if (!isCircle && (w <= 0 || h <= 0)) continue;
     if (isCircle && !(r > 0)) continue;
     const isBridge = bridges.includes(part);
-    if (isHubShape) {
-      continue;
-    }
+    if (isHubShape) continue;
     if (isCircle) {
-      if (!useLoadedBiomeArtSurface) drawBiomeOrbCirclePlatform(ctx, part, time, { biomeKey, isHub: false });
+      drawBiomeOrbCirclePlatform(ctx, part, time, { biomeKey, isHub: false });
       continue;
     }
     const shadow = ctx.createRadialGradient(x + w * 0.5, y + h * 0.5, 0, x + w * 0.5, y + h * 0.5, Math.max(w, h) * 0.8);
@@ -919,35 +1026,24 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
     shadow.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = shadow;
     ctx.fillRect(x - 28, y - 28, w + 56, h + 56);
-    if (!useLoadedBiomeArtSurface) {
-      if (isNeutralShape) {
-        const pid = String(part?.id || '').toLowerCase();
-        drawStationLuxuryTrim(ctx, x, y, w, h, { isBridge, isHub: false, pid, time });
-      } else {
-        const g = ctx.createLinearGradient(x, y, x + w, y + h);
-        g.addColorStop(0, isBridge ? bridgeA : coreA);
-        g.addColorStop(1, isBridge ? bridgeB : coreB);
-        ctx.shadowColor = glow;
-        ctx.shadowBlur = isBridge ? 10 : 16;
-        ctx.fillStyle = g;
-        ctx.fillRect(x, y, w, h);
-        ctx.shadowBlur = 0;
-        ctx.strokeStyle = edge;
-        ctx.lineWidth = isBridge ? 2 : 3;
-        ctx.strokeRect(x + 1.5, y + 1.5, Math.max(0, w - 3), Math.max(0, h - 3));
-      }
+    if (isNeutralShape) {
+      const pid = String(part?.id || '').toLowerCase();
+      drawStationLuxuryTrim(ctx, x, y, w, h, { isBridge, isHub: false, pid, time });
+    } else {
+      const g = ctx.createLinearGradient(x, y, x + w, y + h);
+      g.addColorStop(0, isBridge ? bridgeA : coreA);
+      g.addColorStop(1, isBridge ? bridgeB : coreB);
+      ctx.shadowColor = glow;
+      ctx.shadowBlur = isBridge ? 10 : 16;
+      ctx.fillStyle = g;
+      ctx.fillRect(x, y, w, h);
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = edge;
+      ctx.lineWidth = isBridge ? 2 : 3;
+      ctx.strokeRect(x + 1.5, y + 1.5, Math.max(0, w - 3), Math.max(0, h - 3));
     }
   }
-  if (!isHubShape && useLoadedBiomeArtSurface) {
-    drawBiomeArenaArt(ctx, room, arenaSpec, bounds, 'surface', time, {
-      clipMode: 'arena',
-      alpha: 1,
-      scaleMul: 1,
-      compositeOperation: 'source-over',
-      parallax: 0,
-    });
-  }
-  if (!useLoadedBiomeArtSurface && isNeutralShape && !arenaSpec?.rules?.biomeCircularArena) drawStationArtParts(ctx, room, arenaSpec, time, 'over');
+  if (isNeutralShape && !arenaSpec?.rules?.biomeCircularArena) drawStationArtParts(ctx, room, arenaSpec, time, 'over');
   ctx.restore();
   return true;
 }
@@ -964,6 +1060,7 @@ function drawArenaShapeOverlay(ctx, room, arenaSpec, time = 0) {
   const isHubShape = !!arenaSpec?.rules?.isHub || visualPreset === 'hub_core_station' || visualPreset === 'hub_orbital_disc';
   const isNeutralShape = biomeKey === 'neutral' || visualPreset.includes('neutral_') || isHubShape;
   const useLoadedBiomeArtSurface = !isHubShape && hasLoadedBiomeArenaArt(room, 'surface');
+  if (useLoadedBiomeArtSurface) return;
   let panelStroke = 'rgba(255,255,255,0.08)';
   let fillCore = 'rgba(16,18,28,0.16)';
   let fillBridge = 'rgba(160,200,255,0.06)';
@@ -3112,8 +3209,8 @@ function ensureRoomStaticArtCache(state, room, arenaSpec, hue) {
   const h = y1 - y0;
   const useLoadedBiomeArtSurface = !arenaSpec?.rules?.isHub && hasLoadedBiomeArenaArt(room, 'surface');
   drawArenaSolidShape(g, room, arenaSpec, 0, { x0, y0, x1, y1, w, h });
-  drawArenaShapeOverlay(g, room, arenaSpec, 0);
   if (!useLoadedBiomeArtSurface) {
+    drawArenaShapeOverlay(g, room, arenaSpec, 0);
     drawBiomeSurfaceFX(g, room, { x0, x1, y0, y1, w, h }, { biomeKey: room.biomeKey || '', hue, time: 0 });
     if (!String(room.biomeKey || '').toLowerCase() || arenaSpec?.rules?.isHub || String(room.biomeKey || '').toLowerCase() === 'neutral') {
       drawNeutralSpaceSurfaceFX(g, room, { x0, x1, y0, y1, w, h }, { hue, time: 0 });
@@ -3347,9 +3444,9 @@ function drawTile(ctx, room, cam, { alpha = 1, fall = 0, label = "", time = 0, s
       ctx.drawImage(cachedArt.canvas, cachedArt.x, cachedArt.y + fall);
     } else {
       drawArenaSolidShape(ctx, room, arenaSpec, time, { x0, y0, x1, y1, w, h });
-      drawArenaShapeOverlay(ctx, room, arenaSpec, time);
 
       if (!useLoadedBiomeArtSurface) {
+        drawArenaShapeOverlay(ctx, room, arenaSpec, time);
         // Biome-specific surface accents (neon / frost / runes / etc.)
         drawBiomeSurfaceFX(ctx, room, { x0, x1, y0, y1, w, h }, { biomeKey: (room && room.biomeKey) || "", hue, time });
         if (!isHubRoom && (!String((room && room.biomeKey) || '').toLowerCase() || String((room && room.biomeKey) || '').toLowerCase() === 'neutral')) {

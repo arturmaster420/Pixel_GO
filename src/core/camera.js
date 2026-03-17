@@ -81,9 +81,9 @@ export class Camera {
     const fillBias = clamp(((this._aspect - 1) / 1.5), 0, 1) * (isHub ? 0.42 : 0.50);
     let targetZoom = fitZoom + (fillZoom - fitZoom) * fillBias;
 
-    // In HUB we intentionally stop fitting the whole arena to screen.
-    // User request: camera should be about 2x closer to the hero there.
+    // User request: camera should be much closer during runs so the player sees about half the arena.
     if (isHub) targetZoom *= 2.0;
+    else targetZoom *= 2.0;
 
     const MIN_ZOOM = this._isMobile ? 0.34 : 0.28;
     const MAX_ZOOM = this._isMobile ? 2.1 : 2.6;

@@ -4,6 +4,25 @@
 
 import { isStandardSkillKey, getSkillFamily } from "../weapons/skillCatalog.js";
 
+export const MAX_RUN_ACTIVE_SKILLS = 6;
+
+export const MAX_RUN_SKILL_LEVEL = {
+  bullets: 6,
+  bombs: 6,
+  rockets: 6,
+  satellites: 6,
+  energyBarrier: 6,
+  spirit: 6,
+  summon: 6,
+  electricZone: 6,
+  laser: 6,
+  lightning: 6,
+  fireball: 6,
+  iceWall: 6,
+  blackhole: 6,
+  lightHeal: 6,
+};
+
 function pickWeightedUnique(items, count) {
   const out = [];
   const pool = items.slice();
@@ -45,7 +64,7 @@ export const RUN_SKILLS = [
   { key: "bombs", name: "Bombs", kind: "skill" },
   // New early skills (Magic Survival inspired)
   { key: "satellites", name: "Frost Orbit", kind: "skill", biome: "ice" },
-  { key: "energyBarrier", name: "Energy Barrier", kind: "skill" },
+  { key: "energyBarrier", name: "Shield", kind: "skill" },
   { key: "spirit", name: "Shadow Spirit", kind: "skill", biome: "dark" },
   { key: "summon", name: "Light Wardens", kind: "skill", biome: "light" },
   { key: "electricZone", name: "Electric Ring", kind: "skill", biome: "electric" },
@@ -54,7 +73,7 @@ export const RUN_SKILLS = [
   { key: "lightning", name: "Electric Chain", kind: "skill", biome: "electric" },
   // Biome actives (sold via Floor Terminal starting from floor 6)
   { key: "fireball", name: "Fireball", kind: "skill", biome: "fire" },
-  { key: "iceWall", name: "Ice Wall", kind: "skill", biome: "ice" },
+  { key: "iceWall", name: "Ice Ball", kind: "skill", biome: "ice" },
   { key: "blackhole", name: "Blackhole", kind: "skill", biome: "dark" },
   { key: "lightHeal", name: "Light Heal", kind: "skill", biome: "light" },
   // Rockets are obtained via evolution (fusion), not directly.
@@ -169,22 +188,6 @@ export function rollRunUpgrades(player, count = 3) {
   const passiveItems = [];
 
   // Skills (unlock weight high; upgrades stay relevant)
-const MAX_SKILL_LEVEL = {
-  bullets: 6,
-  bombs: 6,
-  rockets: 6,
-  satellites: 6,
-  energyBarrier: 6,
-  spirit: 6,
-  summon: 6,
-  electricZone: 6,
-  laser: 6,
-  lightning: 6,
-  fireball: 6,
-  iceWall: 6,
-  blackhole: 6,
-  lightHeal: 6,
-};
 const evo = player.runEvolutions || {};
 
 const attackKeys = ["bullets", "bombs", "satellites", "energyBarrier", "spirit", "summon", "electricZone", "laser", "lightning", "fireball", "iceWall", "blackhole", "lightHeal", "rockets"];
@@ -193,8 +196,8 @@ const activeAttackSkills = attackKeys.reduce((acc, k) => acc + (((skills[k] || 0
 // Evolution: Bullets MAX + Bombs MAX => Rockets
 const canFuseRockets =
   !evo.rocketFusion &&
-  (skills.bullets | 0) >= (MAX_SKILL_LEVEL.bullets || 6) &&
-  (skills.bombs | 0) >= (MAX_SKILL_LEVEL.bombs || 6) &&
+  (skills.bullets | 0) >= (MAX_RUN_SKILL_LEVEL.bullets || 6) &&
+  (skills.bombs | 0) >= (MAX_RUN_SKILL_LEVEL.bombs || 6) &&
   (skills.rockets | 0) <= 0;
 
 if (canFuseRockets) {
@@ -227,7 +230,7 @@ for (const s of RUN_SKILLS) {
   // Rockets: only appear after evolution has happened (or already owned).
   if (s.key === "rockets" && lvl <= 0 && !evo.rocketFusion) continue;
 
-  const maxLvl = MAX_SKILL_LEVEL[s.key] || 9999;
+  const maxLvl = MAX_RUN_SKILL_LEVEL[s.key] || 9999;
   if (lvl >= maxLvl) continue;
 
   const isBase = s.key === "bullets";
@@ -263,6 +266,7 @@ for (const s of RUN_SKILLS) {
     from: lvl,
     to: lvl + 1,
     weight: w,
+    requiresReplace: lvl <= 0 && activeAttackSkills >= MAX_RUN_ACTIVE_SKILLS,
   });
 }
   // Passives (some appear later to avoid "dead" early picks)
@@ -363,30 +367,60 @@ if (!hasAnyExtraSkill) {
   return picks;
 }
 
-export function applyRunUpgrade(player, upgrade) {
-  if (!player || !upgrade) return;
+function countActiveRunSkills(player) {
+  const s = player?.runSkills || {};
+  let n = 0;
+  for (const def of (RUN_SKILLS || [])) {
+    const k = String(def?.key || "");
+    if (!k) continue;
+    if (((s[k] | 0) || 0) > 0) n++;
+  }
+  return n;
+}
+
+function getRunUpgradeReplaceCandidates(player, newSkillKey) {
   initRunUpgrades(player);
+  const s = player?.runSkills || {};
+  const nk = String(newSkillKey || "");
+  const out = [];
+  for (const def of (RUN_SKILLS || [])) {
+    const k = String(def?.key || "");
+    if (!k || k === nk) continue;
+    const lv = (s[k] | 0) || 0;
+    if (lv > 0) out.push({ key: k, level: lv });
+  }
+  return out;
+}
+
+export function tryApplyRunUpgrade(player, upgrade, replaceKey = null) {
+  if (!player || !upgrade) return { ok: false, reason: "invalid" };
+  initRunUpgrades(player);
+
+  if (upgrade.kind === "skill" && (upgrade.from | 0) <= 0) {
+    const activeNow = countActiveRunSkills(player);
+    if (activeNow >= MAX_RUN_ACTIVE_SKILLS) {
+      const rk = String(replaceKey || "");
+      if (!rk) return { ok: false, reason: "need_replace" };
+      const cand = getRunUpgradeReplaceCandidates(player, upgrade.key);
+      const okCand = cand.some((c) => c && String(c.key) === rk);
+      if (!okCand) return { ok: false, reason: "bad_replace" };
+      player.runSkills[rk] = 0;
+    }
+  }
 
   if (upgrade.kind === "evolution") {
     if (upgrade.key === "rocketFusion") {
       player.runEvolutions = player.runEvolutions || {};
       player.runEvolutions.rocketFusion = true;
-
-      // Consume components and grant rockets.
       player.runSkills.bullets = 0;
       player.runSkills.bombs = 0;
-
-      // Start rockets at level 1. The evolved rockets are tuned to be strong enough
-      // to replace both MAX components, so the transition feels meaningful.
       player.runSkills.rockets = Math.max(player.runSkills.rockets | 0, 1);
-
-      // Make it feel immediate.
       player.attackCooldown = 0;
       player.rocketCooldown = 0;
     }
 
     applyRunDerivedStats(player);
-    return;
+    return { ok: true };
   }
 
   if (upgrade.kind === "skill") {
@@ -396,6 +430,11 @@ export function applyRunUpgrade(player, upgrade) {
   }
 
   applyRunDerivedStats(player);
+  return { ok: true };
+}
+
+export function applyRunUpgrade(player, upgrade, replaceKey = null) {
+  tryApplyRunUpgrade(player, upgrade, replaceKey);
 }
 
 export function describeRunUpgrade(player, up) {
@@ -425,10 +464,10 @@ export function describeRunUpgrade(player, up) {
       return up.from <= 0 ? "Unlock electric chain" : `Lv ${up.from} → ${up.to}: +targets / +damage`;
     }
     if (up.key === "satellites") {
-      return up.from <= 0 ? "Unlock frost orbit (icy shards around you)" : `Lv ${up.from} → ${up.to}: +count / +damage`;
+      return up.from <= 0 ? "Unlock frost orbit (2 icy shards around you)" : `Lv ${up.from} → ${up.to}: +count / +rotation speed / +damage`;
     }
     if (up.key === "energyBarrier") {
-      return up.from <= 0 ? "Unlock shield ring (repel + pulse)" : `Lv ${up.from} → ${up.to}: +radius / +damage`;
+      return up.from <= 0 ? "Unlock shield ring (absorb + pulse)" : `Lv ${up.from} → ${up.to}: +shield absorb / +radius / +damage`;
     }
     if (up.key === "spirit") {
       return up.from <= 0 ? "Unlock shadow spirit (auto shots)" : `Lv ${up.from} → ${up.to}: +range / +atkspd / +dmg (extra spirits at 4 & 6)`;
@@ -443,7 +482,7 @@ export function describeRunUpgrade(player, up) {
       return up.from <= 0 ? "Unlock fireball (AoE + burn)" : `Lv ${up.from} → ${up.to}: +damage / +AoE / faster`;
     }
     if (up.key === "iceWall") {
-      return up.from <= 0 ? "Unlock ice wall (control + slow)" : `Lv ${up.from} → ${up.to}: +size / +control / +damage`;
+      return up.from <= 0 ? "Unlock ice ball (AoE + slow)" : `Lv ${up.from} → ${up.to}: +damage / +AoE / stronger slow`;
     }
     if (up.key === "blackhole") {
       return up.from <= 0 ? "Unlock blackhole (pull + DoT)" : `Lv ${up.from} → ${up.to}: +radius / +pull / +damage`;

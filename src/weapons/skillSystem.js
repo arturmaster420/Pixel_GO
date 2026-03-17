@@ -12,7 +12,7 @@ import { updateSpirit } from "./spirit.js";
 import { updateElectricZone } from "./electricZone.js";
 import { updateSummonTanks } from "./summonTanks.js";
 import { updateFireball } from "./fireball.js";
-import { spawnIceWall } from "./iceWall.js";
+import { updateIceBall } from "./iceBall.js";
 import { spawnBlackhole } from "./blackhole.js";
 import { emitHealPulse } from "./lightHeal.js";
 import { getAimDirectionForPlayer, isFiringActive } from "../core/mouseController.js";
@@ -224,15 +224,16 @@ function iceWallParams(player) {
   const rMult = getTotalRangeMult(player);
   const dMult = getDamageMult(player);
 
-  const cooldown = Math.max(2.5, 4.5 - (lvl - 1) * 0.25);
-  const duration = 3.0 + (lvl - 1) * 0.35;
-  const length = (180 + (lvl - 1) * 12) * (0.95 + (rMult - 1) * 0.25);
-  const thickness = 24 + (lvl - 1) * 2;
-  const placeDist = 150 + (lvl - 1) * 4;
-  const slowMult = 0.22;
-  const pushSpeed = 200 + (lvl - 1) * 20;
-  const damage = (5.2 + (lvl - 1) * 2.1) * dMult;
-  return { level: lvl, cooldown, duration, length, thickness, placeDist, slowMult, pushSpeed, damage };
+  const range = (320 + (lvl - 1) * 16) * rMult;
+  const speed = 500 + (lvl - 1) * 20;
+  const cooldown = Math.max(1.7, 3.0 - (lvl - 1) * 0.18);
+  const damage = (16 + (lvl - 1) * 6.6) * dMult;
+  const splashRadius = 74 + (lvl - 1) * 6;
+  const slowDur = 1.45 + (lvl - 1) * 0.14;
+  const slowMult = Math.max(0.36, 0.72 - (lvl - 1) * 0.045);
+  const frostDur = 1.8 + (lvl - 1) * 0.16;
+  const radius = 10 + Math.floor((lvl - 1) / 2);
+  return { level: lvl, range, speed, cooldown, damage, splashRadius, slowDur, slowMult, frostDur, radius };
 }
 
 function blackholeParams(player) {
@@ -288,10 +289,10 @@ function satellitesParams(player) {
   const extraAt4 = metaLvl >= 2 ? 1 : 0;
   const extraAt6 = metaLvl >= 3 ? 1 : 0;
 
-  let count = 1;
+  let count = 2;
   if (lvl >= 4) count += 1 + extraAt4;
   if (lvl >= 6) count += 1 + extraAt6;
-  count = Math.min(5, Math.max(1, count));
+  count = Math.min(6, Math.max(2, count));
 
   // Orbit radius (acts like range) – grows steadily.
   const orbitR = (PET_FOLLOW_DIST + (lvl - 1) * 1.2 + Math.max(0, count - 1) * 1.8) * (0.92 + (rMult - 1) * 0.25);
@@ -306,7 +307,7 @@ function satellitesParams(player) {
   const tick = Math.max(0.11, 0.24 - (lvl - 1) * 0.011);
 
   // Rotation speed (visual + contact opportunities).
-  const orbitSpeed = 1.1 + (lvl - 1) * 0.06;
+  const orbitSpeed = 1.35 + (lvl - 1) * 0.12;
 
   return { level: lvl, count, orbitR, orbR, hitDamage, tick, orbitSpeed };
 }
@@ -318,8 +319,7 @@ function energyBarrierParams(player) {
   const rMult = getTotalRangeMult(player);
   const dMult = getDamageMult(player);
 
-  // Early levels: utility first (slow + tiny mitigation), then it grows into a real barrier.
-  // This keeps it from hard-locking melee enemies at lvl 1.
+  // Shield ring: keep the utility aura, but no knockback.
   const radiusBase = (lvl <= 3)
     ? (66 + (lvl - 1) * 4)
     : (78 + (lvl - 1) * 5);
@@ -330,26 +330,22 @@ function energyBarrierParams(player) {
   const slowMult = 0.85;     // 15% slow
   const dmgMult = 0.95;      // enemies deal 5% less damage
 
-  // Repel + pulse scale in later (lvl 4+). Lvl 1-3 have no repel and no damage.
-  let pushSpeed = 0;
+  // Damage pulse scales in later. There is no knockback anymore.
   let pulseDamage = 0;
 
   if (lvl >= 4 && lvl <= 6) {
-    pushSpeed = 140 + (lvl - 4) * 35;
     pulseDamage = (10 + (lvl - 4) * 4.0) * dMult;
   } else if (lvl >= 7) {
-    pushSpeed = 260 + (lvl - 7) * 24;
     pulseDamage = (16 + (lvl - 7) * 5.5) * dMult;
   }
 
   const tick = pulseDamage > 0 ? Math.max(0.18, 0.38 - (lvl - 1) * 0.012) : 0.35;
 
-  // Shield durability + cooldown (new):
-  // Barrier absorbs incoming damage until the shield is depleted, then disappears and re-forms after cooldown.
-  const shieldMax = 28 + (lvl - 1) * 22;
+  // Shield durability grows harder now, because it is the main upgrade identity.
+  const shieldMax = 40 + (lvl - 1) * 30;
   const cooldown = Math.max(3.5, 10.5 - (lvl - 1) * 0.65);
 
-  return { level: lvl, radius, pushSpeed, pulseDamage, tick, slowMult, dmgMult, shieldMax, cooldown };
+  return { level: lvl, radius, pulseDamage, tick, slowMult, dmgMult, shieldMax, cooldown };
 }
 
 function spiritParams(player) {
@@ -367,10 +363,10 @@ function spiritParams(player) {
   const extraAt4 = metaLvl >= 2 ? 1 : 0;
   const extraAt6 = metaLvl >= 3 ? 1 : 0;
 
-  let count = 1;
+  let count = 2;
   if (lvl >= 4) count += 1 + extraAt4;
   if (lvl >= 6) count += 1 + extraAt6;
-  count = Math.min(5, Math.max(1, count));
+  count = Math.min(6, Math.max(2, count));
 
   // Same growth curve as Basic Shot, but 30% weaker.
   const baseRate = player.attackSpeed || player.baseAttackSpeed || 2.0;
@@ -407,7 +403,7 @@ function summonParams(player) {
   let count = 1;
   if (lvl >= 4) count += 1 + extraAt4;
   if (lvl >= 6) count += 1 + extraAt6;
-  count = Math.min(5, Math.max(1, count));
+  count = Math.min(6, Math.max(1, count));
 
   // Tank stats scale mostly via HP/DEF and a bit of movespeed.
   // They do NOT attack. They taunt enemies in a radius.
@@ -559,14 +555,10 @@ function _updateSkillsImpl(player, state, dt, { aimDir, firing } = {}) {
     updateFireball(player, state, dt, fb);
   }
 
-  // Ice Wall (creates barrier segments)
+  // Ice Ball (auto-target projectile with AoE slow)
   const iw = iceWallParams(player);
   if (iw && firing) {
-    player.iceWallCooldown = (player.iceWallCooldown || 0) - dt;
-    if (player.iceWallCooldown <= 0) {
-      spawnIceWall(player, state, iw, aimDir || null);
-      player.iceWallCooldown = iw.cooldown;
-    }
+    updateIceBall(player, state, dt, iw);
   }
 
   // Blackhole

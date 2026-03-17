@@ -369,9 +369,10 @@ export class RoomDirector {
       p.skillPoints = ((p.skillPoints | 0) + 1) | 0;
     }
 
+    try { this._ensureFloorShop(); } catch {}
+
     if (room.isFloorFinal) {
       room.exitPortal = resolvePortalPoint(room);
-      try { this._ensureFloorShop(); } catch {}
       this.next = null;
       this.bridge = null;
     } else {
@@ -386,7 +387,7 @@ export class RoomDirector {
   _ensureFloorShop() {
     const st = this.state;
     const room = this.current;
-    if (!st || !room || !room.isFloorFinal || !room.cleared) return;
+    if (!st || !room || (room.index | 0) <= 0 || !room.cleared) return;
 
     const anchor = room?.arenaSpec?.anchors?.shopAnchor || { x: room.centerX, y: room.centerY + room.side * 0.18 };
     room.shopNpc = { x: Number(anchor.x) || room.centerX, y: Number(anchor.y) || room.centerY, r: 20 };
@@ -397,7 +398,54 @@ export class RoomDirector {
       const fs = p.floorShop;
       if (fs && (fs.floor | 0) === (room.index | 0) && Array.isArray(fs.offers) && fs.offers.length) continue;
       const offers = rollFloorShopOffers(p, room.index, room.biomeKey || '', 3);
-      p.floorShop = { floor: room.index | 0, offers, sold: offers.map(() => false) };
+      p.floorShop = { floor: room.index | 0, offers, sold: offers.map(() => false), rerollsUsed: 0 };
+    }
+  }
+
+  _getAlivePlayers() {
+    const ps = (this.state?.players && this.state.players.length) ? this.state.players : (this.state?.player ? [this.state.player] : []);
+    return ps.filter((p) => p && (Number(p.hp) || 0) > 0);
+  }
+
+  _countPlayersInAabb(players, bounds, pad = 0) {
+    if (!Array.isArray(players) || !players.length || !bounds) return 0;
+    let count = 0;
+    for (const p of players) {
+      if (!p) continue;
+      if (pointInAabb(Number(p.x) || 0, Number(p.y) || 0, bounds, pad)) count += 1;
+    }
+    return count;
+  }
+
+  _countPlayersInRadius(players, target, radius) {
+    if (!Array.isArray(players) || !players.length || !target) return 0;
+    const r2 = Math.max(0, Number(radius) || 0) ** 2;
+    let count = 0;
+    for (const p of players) {
+      if (!p) continue;
+      const dx = (Number(p.x) || 0) - (Number(target.x) || 0);
+      const dy = (Number(p.y) || 0) - (Number(target.y) || 0);
+      if (dx * dx + dy * dy <= r2) count += 1;
+    }
+    return count;
+  }
+
+  _snapAlivePlayersIntoCurrentRoom() {
+    if (!this.current) return;
+    const alive = this._getAlivePlayers();
+    if (!alive.length) return;
+    const rects = getRoomWalkRects(this.current);
+    const start = this.current?.arenaSpec?.anchors?.playerStart || { x: this.current.centerX, y: this.current.centerY };
+    for (const p of alive) {
+      if (pointInAabb(Number(p.x) || 0, Number(p.y) || 0, this.current.bounds, 28)) continue;
+      const fixed = clampPointToRects(Number(p.x) || 0, Number(p.y) || 0, rects, {
+        edgePad: 2,
+        coverRadius: Math.max(4, Number(p.radius) || 18),
+        covers: [],
+        prefer: { x: Number(start.x) || this.current.centerX, y: Number(start.y) || this.current.centerY },
+      });
+      p.x = fixed.x;
+      p.y = fixed.y;
     }
   }
 
@@ -416,35 +464,50 @@ export class RoomDirector {
       if (this.bridge.progress >= 0.999) this.bridge.built = true;
     }
 
-    const p = this.state?.player;
-    if (!p || !this.current) {
+    if (!this.current) {
+      this._waitForParty = false;
       this._applyDynamicBounds();
       return;
     }
 
+    const alivePlayers = this._getAlivePlayers();
+    const livingCount = alivePlayers.length;
     const isHubRoom = !!this.current?.arenaSpec?.rules?.isHub;
+    let waitForParty = false;
+
     if (this.current.cleared && this.next && this.bridge?.built) {
       if (isHubRoom) {
         const portal = this.current.exitPortal || resolvePortalPoint(this.current);
         if (portal) {
           this.current.exitPortal = portal;
-          const dx = p.x - portal.x;
-          const dy = p.y - portal.y;
-          if (dx * dx + dy * dy <= HUB_PORTAL_TRIGGER_RADIUS * HUB_PORTAL_TRIGGER_RADIUS) {
+          const readyCount = this._countPlayersInRadius(alivePlayers, portal, HUB_PORTAL_TRIGGER_RADIUS);
+          if (livingCount > 0 && readyCount >= livingCount) {
+            this._waitForParty = false;
             this._enterNextRoom();
+            return;
           }
+          waitForParty = readyCount > 0 && readyCount < livingCount;
         }
-      } else if (pointInAabb(p.x, p.y, this.next.bounds, 12)) {
-        this._enterNextRoom();
+      } else {
+        const readyCount = this._countPlayersInAabb(alivePlayers, this.next.bounds, 12);
+        if (livingCount > 0 && readyCount >= livingCount) {
+          this._waitForParty = false;
+          this._enterNextRoom();
+          return;
+        }
+        waitForParty = readyCount > 0 && readyCount < livingCount;
       }
     } else if (this.current.cleared && this.current.isFloorFinal && this.current.exitPortal) {
-      const dx = p.x - this.current.exitPortal.x;
-      const dy = p.y - this.current.exitPortal.y;
-      if (dx * dx + dy * dy <= FLOOR_EXIT_RADIUS * FLOOR_EXIT_RADIUS) {
+      const readyCount = this._countPlayersInRadius(alivePlayers, this.current.exitPortal, FLOOR_EXIT_RADIUS);
+      if (livingCount > 0 && readyCount >= livingCount) {
+        this._waitForParty = false;
         this._enterNextFloor();
+        return;
       }
+      waitForParty = readyCount > 0 && readyCount < livingCount;
     }
 
+    this._waitForParty = waitForParty;
     this._applyDynamicBounds();
   }
 
@@ -459,7 +522,7 @@ export class RoomDirector {
   applyGateDamage() {}
   tryStartGateRepair() { return false; }
   tryStartGateRewardRepair() { return false; }
-  isWaitingForParty() { return false; }
+  isWaitingForParty() { return !!this._waitForParty; }
 
   _makeNextRoomFromPlan(plan, roomMeta, centerX, centerY) {
     const serial = ++this._serial;
@@ -568,6 +631,8 @@ export class RoomDirector {
     this.current = this.next;
     this.next = null;
     this.bridge = null;
+    this._waitForParty = false;
+    this._snapAlivePlayersIntoCurrentRoom();
 
     try {
       const ss = this.state?.spawnSystem;
@@ -595,6 +660,7 @@ export class RoomDirector {
     this.current = nextRoom;
     this.next = null;
     this.bridge = null;
+    this._waitForParty = false;
 
     const start = this.current?.arenaSpec?.anchors?.playerStart;
     const ps = (this.state?.players && this.state.players.length) ? this.state.players : (this.state?.player ? [this.state.player] : []);
@@ -665,7 +731,13 @@ export class RoomDirector {
       centerY,
     });
     this.current.cleared = !!opts?.cleared;
-    if (this.current.cleared && roomOrdinal >= totalRooms) this.current.exitPortal = resolvePortalPoint(this.current);
+    if (this.current.cleared && (this.current.index | 0) > 0) {
+      if (roomOrdinal >= totalRooms) {
+        this.current.exitPortal = resolvePortalPoint(this.current);
+      }
+      const anchor = this.current?.arenaSpec?.anchors?.shopAnchor || { x: this.current.centerX, y: this.current.centerY + this.current.side * 0.18 };
+      this.current.shopNpc = { x: Number(anchor.x) || this.current.centerX, y: Number(anchor.y) || this.current.centerY, r: 20 };
+    }
     this.prev = null;
     this.next = null;
     this.bridge = null;
@@ -813,7 +885,7 @@ export class RoomDirector {
     st._bridgeToSocket = this.bridge ? String(this.bridge.toSocket || '') : '';
     st._bridgeFromPoint = this.bridge?.fromPoint ? { ...this.bridge.fromPoint } : null;
     st._bridgeToPoint = this.bridge?.toPoint ? { ...this.bridge.toPoint } : null;
-    st._waitForParty = false;
+    st._waitForParty = !!this._waitForParty;
     st._gateButtons = [];
     st._gateHp = [];
     st._gateMax = [];

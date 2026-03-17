@@ -1,6 +1,6 @@
 // Energy Barrier (Magic Survival inspired):
-// Early levels apply a mild debuff (slow + small mitigation) so enemies can still approach.
-// Later levels add repel + damage pulses.
+// Energy Barrier / Shield ring.
+// Provides a shielded ring with debuff + damage pulses, but no knockback.
 
 import { applyCritToDamage, applyLifeSteal } from "../core/progression.js";
 
@@ -70,24 +70,6 @@ export function updateEnergyBarrier(player, state, dt, params) {
     e._barrierDmgMult = dmgMult;
   }
 
-  // Repel only from mid levels. Use an inner radius so mobs can still "touch" the barrier edge.
-  if (pushSpeed > 0) {
-    const inner = Math.max(0, r - 26);
-    const inner2 = inner * inner;
-    for (const e of enemies) {
-      if (!e || e.hp <= 0) continue;
-      const dx = e.x - player.x;
-      const dy = e.y - player.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 > inner2) continue;
-      const d = Math.sqrt(d2) || 0.0001;
-      const nx = dx / d;
-      const ny = dy / d;
-      const push = pushSpeed * dt;
-      e.x += nx * push;
-      e.y += ny * push;
-    }
-  }
 
   // Damage pulse (later levels only)
   if (dmg <= 0) return;

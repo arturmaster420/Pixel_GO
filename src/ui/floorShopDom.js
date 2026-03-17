@@ -6,6 +6,7 @@
 let root = null;
 let onPick = null;
 let onClose = null;
+let onReroll = null;
 let lastChoices = null;
 let _closingByPick = false;
 
@@ -38,6 +39,11 @@ function ensureDom() {
     .tag.passive{ background: rgba(120,255,170,0.10); }
     .tag.biome{ background: rgba(255,170,120,0.10); }
     .desc{ margin-top: 6px; font-size: 12px; opacity: 0.85; line-height: 1.3; }
+    #floorShopOverlay .actions{ display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
+    #floorShopOverlay .btn{ border:1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.05); color:#fff;
+      border-radius:10px; padding:10px 14px; cursor:pointer; font:inherit; }
+    #floorShopOverlay .btn:hover{ background: rgba(120,170,255,0.10); border-color: rgba(200,220,255,0.22); }
+    #floorShopOverlay .btn:disabled{ opacity:0.5; cursor:default; }
     #floorShopOverlay .hint{ margin-top: 10px; font-size: 12px; opacity: 0.72; }
     @media (max-width: 780px){ #floorShopOverlay .cards{ flex-direction: column; } }
   `;
@@ -55,7 +61,11 @@ function ensureDom() {
         <div class="muted" id="floorShopMeta"></div>
       </div>
       <div class="cards" id="floorShopCards"></div>
-      <div class="hint">Tip: press 1 / 2 / 3 (closes after buy)</div>
+      <div class="actions">
+        <button class="btn" id="floorShopRerollBtn" type="button">Reroll</button>
+        <button class="btn" id="floorShopCloseBtn" type="button">Close</button>
+      </div>
+      <div class="hint">Tip: press 1 / 2 / 3 to buy, R to reroll</div>
     </div>
   `;
   document.body.appendChild(root);
@@ -67,6 +77,14 @@ function ensureDom() {
     if (k === "Escape") {
       e.preventDefault();
       hideFloorShopOverlay();
+      return;
+    }
+    if (k === "r" || k === "R") {
+      const btn = root.querySelector("#floorShopRerollBtn");
+      if (btn && !btn.disabled && typeof onReroll === "function") {
+        e.preventDefault();
+        onReroll();
+      }
       return;
     }
     // 1..9 hotkeys
@@ -92,28 +110,26 @@ function ensureDom() {
 
 function pick(choice) {
   if (typeof onPick === "function") {
-    const cb = onPick;
-    _closingByPick = true;
-    onPick = null;
-    hideFloorShopOverlay();
-    _closingByPick = false;
-    cb(choice);
+    onPick(choice);
   }
 }
 
-export function showFloorShopOverlay({ title, subtitle, metaText, choices, onPickCb, onCloseCb, hint } = {}) {
+export function showFloorShopOverlay({ title, subtitle, metaText, choices, onPickCb, onCloseCb, onRerollCb, rerollText, rerollDisabled, hint } = {}) {
   if (typeof document === "undefined") return;
   ensureDom();
   if (!root) return;
 
   onPick = onPickCb;
   onClose = (typeof onCloseCb === 'function') ? onCloseCb : null;
+  onReroll = (typeof onRerollCb === 'function') ? onRerollCb : null;
   lastChoices = Array.isArray(choices) ? choices.slice() : [];
 
   const cardsEl = root.querySelector("#floorShopCards");
   const metaEl = root.querySelector("#floorShopMeta");
   const titleEl = root.querySelector("#floorShopTitle");
   const subEl = root.querySelector("#floorShopSub");
+  const rerollBtn = root.querySelector("#floorShopRerollBtn");
+  const closeBtn = root.querySelector("#floorShopCloseBtn");
 
   cardsEl.innerHTML = "";
   metaEl.textContent = metaText || "";
@@ -144,11 +160,18 @@ export function showFloorShopOverlay({ title, subtitle, metaText, choices, onPic
     cardsEl.appendChild(div);
   }
 
+  if (rerollBtn) {
+    rerollBtn.textContent = rerollText || "Reroll";
+    rerollBtn.disabled = !!rerollDisabled;
+    rerollBtn.onclick = () => { if (!rerollBtn.disabled && typeof onReroll === "function") onReroll(); };
+  }
+  if (closeBtn) closeBtn.onclick = () => hideFloorShopOverlay();
+
   // Hint text
   const hintEl = root.querySelector('.hint');
   const n = lastChoices.length | 0;
   if (hintEl) {
-    hintEl.textContent = hint || (n <= 0 ? '' : `Tip: press 1..${Math.min(9, n)} (closes after pick)`);
+    hintEl.textContent = hint || (n <= 0 ? 'Tip: press R to reroll or Close to leave' : `Tip: press 1..${Math.min(9, n)} to buy, R to reroll`);
   }
 
   root.style.display = "flex";
@@ -166,4 +189,5 @@ export function hideFloorShopOverlay() {
   lastChoices = null;
   onPick = null;
   onClose = null;
+  onReroll = null;
 }
