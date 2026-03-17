@@ -61,6 +61,12 @@ export function buildArenaSpec({ roomIndex = 0, biomeKey = '', templateKey = '',
       visualPreset: profile.visualPreset || '',
       ...generated,
     };
+    if ((roomIndex | 0) > 0) {
+      arenaSpec.anchors = {
+        ...(arenaSpec.anchors || {}),
+        coverAnchors: [],
+      };
+    }
     const validation = validateArenaSpec(arenaSpec);
     arenaSpec.validation = { ...validation, usedFallback: false };
     if (!validation.ok) {
