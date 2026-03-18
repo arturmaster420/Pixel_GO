@@ -110,6 +110,7 @@ export function generateHubArena({ roomIndex = 0, centerX = 0, centerY = 0, side
     rightBottom: relNode(centerX, centerY, artSize, ART_REL.rightBottom),
     start: relNode(centerX, centerY, artSize, ART_REL.start),
   };
+  nodes.basicCore = { x: nodes.portal.x - artSize * 0.072, y: nodes.portal.y + artSize * 0.058 };
   const core = relNode(centerX, centerY, artSize, ART_REL.core);
 
   addEllipseBands(platforms, navZones, 'hub_core_disc', core.x, core.y, centerRx, centerRy, 28, 1);
@@ -118,6 +119,7 @@ export function generateHubArena({ roomIndex = 0, centerX = 0, centerY = 0, side
     portal: { rx: artSize * 0.080, ry: artSize * 0.038, bands: 12, bridgeT: artSize * 0.022 },
     merchant: { rx: artSize * 0.082, ry: artSize * 0.039, bands: 12, bridgeT: artSize * 0.022 },
     tierMaster: { rx: artSize * 0.082, ry: artSize * 0.039, bands: 12, bridgeT: artSize * 0.022 },
+    basicCore: { rx: artSize * 0.060, ry: artSize * 0.031, bands: 10, bridgeT: artSize * 0.018 },
     left: { rx: artSize * 0.055, ry: artSize * 0.030, bands: 10, bridgeT: artSize * 0.019 },
     right: { rx: artSize * 0.055, ry: artSize * 0.030, bands: 10, bridgeT: artSize * 0.019 },
     leftBottom: { rx: artSize * 0.084, ry: artSize * 0.041, bands: 12, bridgeT: artSize * 0.023 },
@@ -150,6 +152,7 @@ export function generateHubArena({ roomIndex = 0, centerX = 0, centerY = 0, side
     { x: nodes.portal.x, y: nodes.portal.y, kind: 'portal_gate', size: 52 },
     { x: nodes.merchant.x, y: nodes.merchant.y, kind: 'shop_terminal', size: 32 },
     { x: nodes.tierMaster.x, y: nodes.tierMaster.y, kind: 'tier_terminal', size: 32 },
+    { x: nodes.basicCore.x, y: nodes.basicCore.y, kind: 'basic_terminal', size: 30 },
     { x: nodes.start.x, y: nodes.start.y, kind: 'spawn_pad', size: 28 },
     { x: nodes.left.x, y: nodes.left.y, kind: 'future_node', size: 18 },
     { x: nodes.right.x, y: nodes.right.y, kind: 'future_node', size: 18 },
@@ -160,6 +163,7 @@ export function generateHubArena({ roomIndex = 0, centerX = 0, centerY = 0, side
   spawnAnchors.push(
     { x: nodes.merchant.x, y: nodes.merchant.y, tag: 'merchant' },
     { x: nodes.tierMaster.x, y: nodes.tierMaster.y, tag: 'tier' },
+    { x: nodes.basicCore.x, y: nodes.basicCore.y, tag: 'basic' },
     { x: nodes.portal.x, y: nodes.portal.y, tag: 'portal' },
     { x: nodes.start.x, y: nodes.start.y, tag: 'start' },
     { x: core.x, y: core.y, tag: 'core' },
@@ -220,6 +224,7 @@ export function generateHubArena({ roomIndex = 0, centerX = 0, centerY = 0, side
       hubNpcAnchors: {
         shop: nodes.merchant,
         tier: nodes.tierMaster,
+        basic: nodes.basicCore,
         portal: nodes.portal,
         spawn: nodes.start,
       },

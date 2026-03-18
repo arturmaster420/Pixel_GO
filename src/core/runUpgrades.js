@@ -21,6 +21,11 @@ export const MAX_RUN_SKILL_LEVEL = {
   iceWall: 6,
   blackhole: 6,
   lightHeal: 6,
+  stormStrike: 6,
+  flameNova: 6,
+  iceShards: 6,
+  voidBurst: 6,
+  holyNova: 6,
 };
 
 function pickWeightedUnique(items, count) {
@@ -76,6 +81,11 @@ export const RUN_SKILLS = [
   { key: "iceWall", name: "Ice Ball", kind: "skill", biome: "ice" },
   { key: "blackhole", name: "Blackhole", kind: "skill", biome: "dark" },
   { key: "lightHeal", name: "Light Heal", kind: "skill", biome: "light" },
+  { key: "stormStrike", name: "Storm Strike", kind: "skill", biome: "electric" },
+  { key: "flameNova", name: "Flame Nova", kind: "skill", biome: "fire" },
+  { key: "iceShards", name: "Glacial Shards", kind: "skill", biome: "ice" },
+  { key: "voidBurst", name: "Void Burst", kind: "skill", biome: "dark" },
+  { key: "holyNova", name: "Holy Nova", kind: "skill", biome: "light" },
   // Rockets are obtained via evolution (fusion), not directly.
   { key: "rockets", name: "Rockets", kind: "skill" },
 ];
@@ -116,6 +126,11 @@ export function initRunUpgrades(player) {
     iceWall: (s.iceWall ?? 0) | 0,
     blackhole: (s.blackhole ?? 0) | 0,
     lightHeal: (s.lightHeal ?? 0) | 0,
+    stormStrike: (s.stormStrike ?? 0) | 0,
+    flameNova: (s.flameNova ?? 0) | 0,
+    iceShards: (s.iceShards ?? 0) | 0,
+    voidBurst: (s.voidBurst ?? 0) | 0,
+    holyNova: (s.holyNova ?? 0) | 0,
   };
   player.runEvolutions = player.runEvolutions || {};
   // Passives start at 0 (merge defaults).
@@ -146,6 +161,20 @@ export function initRunUpgrades(player) {
     player._runBaseMaxHP = Number.isFinite(player.maxHP) ? player.maxHP : (player.baseMaxHP || 100);
   }
 
+  // Per-damage-type multipliers (starter cores / future systems).
+  player.runDamageTypeMults = {
+    mecha: 1,
+    electric: 1,
+    fire: 1,
+    ice: 1,
+    light: 1,
+    dark: 1,
+  };
+  player._starterAttackSpeedBonus = 0;
+  player._starterDamageBonus = 0;
+  player._starterLoadoutKey = '';
+  player._starterSkillKey = '';
+
   // Derived cached multipliers (used by updateBuffs and combat helpers)
   applyRunDerivedStats(player);
 }
@@ -157,7 +186,7 @@ export function applyRunDerivedStats(player) {
 
   // Multipliers are intentionally modest (tuned to reduce snowball / upgrade spam).
   player.runDamageMult = 1 + (p.damage || 0) * 0.08;
-  player.runAttackMult = 1 + (p.attackSpeed || 0) * 0.05;
+  player.runAttackMult = (1 + (p.attackSpeed || 0) * 0.05) * (1 + Math.max(0, Number(player._starterAttackSpeedBonus || 0)));
   player.runMoveMult = 1 + (p.moveSpeed || 0) * 0.05;
   player.runRangeMult = 1 + (p.range || 0) * 0.045;
 
@@ -190,7 +219,7 @@ export function rollRunUpgrades(player, count = 3) {
   // Skills (unlock weight high; upgrades stay relevant)
 const evo = player.runEvolutions || {};
 
-const attackKeys = ["bullets", "bombs", "satellites", "energyBarrier", "spirit", "summon", "electricZone", "laser", "lightning", "fireball", "iceWall", "blackhole", "lightHeal", "rockets"];
+const attackKeys = ["bullets", "bombs", "satellites", "energyBarrier", "spirit", "summon", "electricZone", "laser", "lightning", "fireball", "iceWall", "blackhole", "lightHeal", "stormStrike", "flameNova", "iceShards", "voidBurst", "holyNova", "rockets"];
 const activeAttackSkills = attackKeys.reduce((acc, k) => acc + (((skills[k] || 0) > 0) ? 1 : 0), 0);
 
 // Evolution: Bullets MAX + Bombs MAX => Rockets
@@ -316,6 +345,15 @@ for (const s of RUN_SKILLS) {
     (skills.electricZone || 0) > 0 ||
     (skills.laser || 0) > 0 ||
     (skills.lightning || 0) > 0 ||
+    (skills.fireball || 0) > 0 ||
+    (skills.iceWall || 0) > 0 ||
+    (skills.blackhole || 0) > 0 ||
+    (skills.lightHeal || 0) > 0 ||
+    (skills.stormStrike || 0) > 0 ||
+    (skills.flameNova || 0) > 0 ||
+    (skills.iceShards || 0) > 0 ||
+    (skills.voidBurst || 0) > 0 ||
+    (skills.holyNova || 0) > 0 ||
     (skills.rockets || 0) > 0;
 
   // Composition for readability: 1 skill + 1 passive + (rest any)
@@ -489,6 +527,21 @@ export function describeRunUpgrade(player, up) {
     }
     if (up.key === "lightHeal") {
       return up.from <= 0 ? "Unlock light heal (pulse heal)" : `Lv ${up.from} → ${up.to}: +heal / +radius / faster`;
+    }
+    if (up.key === "stormStrike") {
+      return up.from <= 0 ? "Unlock storm strike (targeted lightning burst)" : `Lv ${up.from} → ${up.to}: +damage / +AoE / faster`;
+    }
+    if (up.key === "flameNova") {
+      return up.from <= 0 ? "Unlock flame nova (close AoE + burn)" : `Lv ${up.from} → ${up.to}: +damage / +radius / burn`;
+    }
+    if (up.key === "iceShards") {
+      return up.from <= 0 ? "Unlock glacial shards (spread volley)" : `Lv ${up.from} → ${up.to}: +shards / +damage / faster`;
+    }
+    if (up.key === "voidBurst") {
+      return up.from <= 0 ? "Unlock void burst (curse blast)" : `Lv ${up.from} → ${up.to}: +damage / +radius / faster`;
+    }
+    if (up.key === "holyNova") {
+      return up.from <= 0 ? "Unlock holy nova (AoE + heal)" : `Lv ${up.from} → ${up.to}: +damage / +heal / +radius`;
     }
     return `Lv ${up.from} → ${up.to}`;
   }

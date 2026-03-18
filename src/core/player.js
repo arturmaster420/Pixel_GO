@@ -76,6 +76,11 @@ export class Player {
       iceWall: 0,
       blackhole: 0,
       lightHeal: 0,
+      stormStrike: 0,
+      flameNova: 0,
+      iceShards: 0,
+      voidBurst: 0,
+      holyNova: 0,
     };
     this.runEvolutions = {};
     this.runPassives = {
@@ -164,6 +169,11 @@ export class Player {
       iceWall: 0,
       blackhole: 0,
       lightHeal: 0,
+      stormStrike: 0,
+      flameNova: 0,
+      iceShards: 0,
+      voidBurst: 0,
+      holyNova: 0,
     };
     this.runEvolutions = {};
     this.runPassives = {

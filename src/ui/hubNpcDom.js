@@ -2,6 +2,8 @@
 // Keeps systems intact; only adds UI to access existing meta shop from inside the Hub.
 
 import { saveProgression } from "../core/progression.js";
+import { STARTER_LOADOUTS, ensureStarterLoadoutProgression, normalizeStarterLoadoutKey, applyStarterLoadoutToPlayer } from "../core/starterLoadouts.js";
+import { applyRunDerivedStats } from "../core/runUpgrades.js";
 import {
   ensureShopMeta,
   ensureShopOffers,
@@ -67,10 +69,23 @@ function closeShop(state) {
 }
 
 function openTier(state) {
-  // Tier/Meta upgrades screen (canvas). Use overlayMode so co-op host sim keeps running.
+  // Death Shop~Up screen (canvas). Use overlayMode so co-op host sim keeps running.
   state.overlayMode = "stats";
   // Close shop if open
   closeShop(state);
+}
+
+function openBasicSelector(state) {
+  if (!state?.progression) return;
+  ensureStarterLoadoutProgression(state.progression);
+  state.overlayMode = "basic";
+  closeShop(state);
+  renderBasicSelector(state);
+}
+
+function closeBasicSelector(state) {
+  if (el.basicOverlay) el.basicOverlay.style.display = "none";
+  if (state && state.overlayMode === "basic") state.overlayMode = null;
 }
 
 
@@ -85,11 +100,61 @@ function maybeSendMeta(state) {
       avatarIndex: prog.avatarIndex || 0,
       resurrectedTier: prog.resurrectedTier || 1,
       totalScore: prog.totalScore || 0,
-      upgradePoints: prog.upgradePoints || 0,
+      upgradePoints: (typeof prog.deathPoints === "number" ? prog.deathPoints : prog.upgradePoints) || 0,
+      deathPoints: (typeof prog.deathPoints === "number" ? prog.deathPoints : prog.upgradePoints) || 0,
       limits: prog.limits || {},
       skillMeta: prog.skillMeta || {},
+      selectedStarterLoadout: prog.selectedStarterLoadout || "mecha",
     });
   } catch {}
+}
+
+function renderBasicSelector(state) {
+  const prog = state?.progression;
+  if (!prog || !el.basicGrid) return;
+  ensureStarterLoadoutProgression(prog);
+  const selected = normalizeStarterLoadoutKey(prog.selectedStarterLoadout);
+  el.basicGrid.innerHTML = "";
+  for (const def of STARTER_LOADOUTS) {
+    const card = make("button", {
+      type: "button",
+      className: "shopCard" + (def.key === selected ? " sel" : ""),
+      style: {
+        textAlign: "left",
+        cursor: "pointer",
+        border: def.key === selected ? "2px solid rgba(160,235,255,0.95)" : "1px solid rgba(255,255,255,0.20)",
+        background: def.key === selected ? "linear-gradient(180deg, rgba(24,44,64,0.98), rgba(10,18,28,0.98))" : "rgba(16,22,34,0.96)",
+        color: "#eef8ff",
+        boxShadow: def.key === selected ? "0 0 0 1px rgba(255,245,180,0.35), 0 12px 28px rgba(0,0,0,0.35)" : "0 8px 22px rgba(0,0,0,0.26)",
+      },
+    });
+    card.appendChild(make("div", { className: "top" }, [
+      make("div", { className: "name", text: `${def.name} — ${def.skillName}`, style: { color: "#f4fbff", textShadow: "0 1px 0 rgba(0,0,0,0.35)" } }),
+      make("div", { className: "lvl", text: def.key === selected ? "SELECTED" : "Pick", style: { color: def.key === selected ? "#ffe79a" : "#bfe9ff", fontWeight: "700" } }),
+    ]));
+    card.appendChild(make("div", { className: "muted", text: def.desc, style: { marginTop: "8px", fontSize: "12px", lineHeight: "1.4", color: "rgba(232,245,255,0.9)", opacity: "1" } }));
+    card.addEventListener("click", () => {
+      prog.selectedStarterLoadout = def.key;
+      try { saveProgression(prog); } catch {}
+
+      // Apply immediately while we are still in the HUB / pre-run preview.
+      // This keeps the current session, floor terminal pool and host preview world in sync
+      // without requiring a full page reload.
+      try {
+        const inHub = !!(state?.roomDirector?.current && ((state.roomDirector.current.index | 0) <= 0));
+        if (inHub && state?.player) {
+          state.player._selectedStarterLoadout = def.key;
+          applyStarterLoadoutToPlayer(state.player, def.key);
+          applyRunDerivedStats(state.player);
+        }
+      } catch {}
+
+      maybeSendMeta(state);
+      renderBasicSelector(state);
+      setShopMsg(`Starter ready now: ${def.skillName}`);
+    });
+    el.basicGrid.appendChild(card);
+  }
 }
 
 function renderShop(state) {
@@ -263,13 +328,40 @@ export function initHubNpcDom(game) {
   panel.appendChild(make("div", { className: "shopLabel", text: "Пассивки", style: { marginTop: "10px" } }));
   panel.appendChild(make("div", { className: "shopGrid", id: "hubShopGridPassive" }));
 
-  panel.appendChild(make("div", { className: "shopLabel", text: "Новые скиллы", style: { marginTop: "10px" } }));
+  panel.appendChild(make("div", { className: "shopLabel", text: "2nd Rank Skill Up", style: { marginTop: "10px" } }));
   panel.appendChild(make("div", { className: "shopGrid", id: "hubShopGridNew" }));
 
-  panel.appendChild(make("div", { className: "muted", style: { marginTop: "10px", fontSize: "12px", opacity: "0.85" }, text: "Подойди к NPC в хабе и нажми E/Interact. Покупка открывает/прокачивает скиллы навсегда." }));
+  panel.appendChild(make("div", { className: "muted", style: { marginTop: "10px", fontSize: "12px", opacity: "0.85" }, text: "Подойди к NPC в хабе и нажми E/Interact. 3-й ряд — только для уже открытых в ранах 2nd Rank skills." }));
 
   el.shopOverlay.appendChild(panel);
   document.body.appendChild(el.shopOverlay);
+
+  el.basicOverlay = make("div", {
+    id: "hubBasicOverlay",
+    style: {
+      position: "fixed",
+      inset: "0",
+      zIndex: 10000,
+      display: "none",
+      alignItems: "center",
+      justifyContent: "center",
+      background: "rgba(0,0,0,0.72)",
+      padding: "14px",
+    },
+  });
+  const basicPanel = make("div", { className: "panel", style: { width: "min(680px, 96vw)", maxHeight: "92vh", overflow: "auto" } });
+  const basicHeader = make("div", { className: "header" });
+  basicHeader.appendChild(make("h2", { text: "Basic Core Selector" }));
+  const basicCloseBtn = make("button", { className: "btn", type: "button", text: "Close", style: { padding: "7px 10px", fontSize: "12px" } });
+  basicCloseBtn.addEventListener("click", () => closeBasicSelector(game.state));
+  basicHeader.appendChild(basicCloseBtn);
+  basicPanel.appendChild(basicHeader);
+  basicPanel.appendChild(make("div", { className: "muted", style: { marginTop: "8px", marginBottom: "12px", fontSize: "13px", lineHeight: "1.45", color: "rgba(240,248,255,0.95)", opacity: "1" }, text: "Выбери 1 стартовый core. На следующем ране он даст тебе свой базовый скилл Lv1 и бонусы к скорости атаки + урону своей стихии/типа." }));
+  el.basicGrid = make("div", { className: "shopGrid", id: "hubBasicGrid" });
+  basicPanel.appendChild(el.basicGrid);
+  basicPanel.appendChild(make("div", { className: "muted", style: { marginTop: "12px", fontSize: "12px", color: "rgba(232,245,255,0.9)", opacity: "1" }, text: "Сейчас доступны: Mecha / Electric / Fire / Ice. Light и Dark добавим позже." }));
+  el.basicOverlay.appendChild(basicPanel);
+  document.body.appendChild(el.basicOverlay);
 
   // Bind elements
   el.shopCoins = panel.querySelector("#hubShopCoins");
@@ -306,6 +398,7 @@ export function initHubNpcDom(game) {
     if (!n) return;
     if (n.kind === "shop") openShop(state);
     else if (n.kind === "tier") openTier(state);
+    else if (n.kind === "basic") openBasicSelector(state);
   });
 
   // Keyboard: E to interact, Esc to close overlays.
@@ -318,6 +411,9 @@ export function initHubNpcDom(game) {
     if (e.code === "Escape") {
       if (state.overlayMode === "shop") {
         closeShop(state);
+        e.preventDefault();
+      } else if (state.overlayMode === "basic") {
+        closeBasicSelector(state);
         e.preventDefault();
       } else if (state.overlayMode === "stats") {
         state.overlayMode = null;
@@ -332,6 +428,7 @@ export function initHubNpcDom(game) {
       if (!n) return;
       if (n.kind === "shop") openShop(state);
       else if (n.kind === "tier") openTier(state);
+      else if (n.kind === "basic") openBasicSelector(state);
       e.preventDefault();
     }
   });
@@ -346,6 +443,7 @@ export function tickHubNpcDom(state) {
     state._hubNpcTap = null;
     if (k === "shop") openShop(state);
     else if (k === "tier") openTier(state);
+    else if (k === "basic") openBasicSelector(state);
   }
 
   const showInteract = state.mode === "playing" && !state.overlayMode && !!state._hubNearbyNpc;
@@ -353,11 +451,15 @@ export function tickHubNpcDom(state) {
 
   if (showInteract && el.interactBtn) {
     const n = state._hubNearbyNpc;
-    el.interactBtn.textContent = n.kind === "tier" ? "Tier / Upgrades (E)" : "Shop (E)";
+    el.interactBtn.textContent = n.kind === "tier" ? "Death Shop~Up (E)" : (n.kind === "basic" ? "Basic Core (E)" : "Shop (E)");
   }
 
   // Shop overlay visibility
   const showShop = state.overlayMode === "shop";
   if (el.shopOverlay) el.shopOverlay.style.display = showShop ? "flex" : "none";
   if (showShop) renderShop(state);
+
+  const showBasic = state.overlayMode === "basic";
+  if (el.basicOverlay) el.basicOverlay.style.display = showBasic ? "flex" : "none";
+  if (showBasic) renderBasicSelector(state);
 }

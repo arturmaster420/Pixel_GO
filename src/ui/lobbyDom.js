@@ -4,7 +4,7 @@
 import { saveProgression, getStartLevel } from "../core/progression.js";
 import { AVATARS, getUnlockedAvatarCount, isAvatarUnlocked } from "../core/avatars.js";
 import { AURA_NAMES, clampAuraId } from "../core/auras.js";
-import { getDefaultWsUrl } from "../net/netClient.js";
+import { getDefaultWsUrl, setRelayUrlOverride, getRelayUrlOverride } from "../net/netClient.js";
 import { ensureShopMeta, ensureShopOffers, rerollShopOffers, replaceOfferSlot, getItemById, getMetaLevel, setMetaLevel, getPriceFor, getMaxMetaLevel } from "../meta/shopMeta.js";
 
 let _inited = false;
@@ -32,6 +32,33 @@ function fmtRoom(v) {
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "")
     .slice(0, 8);
+}
+
+
+function parseRoomTarget(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return { roomCode: '', relayUrl: '' };
+
+  // Full invite link support.
+  try {
+    if (/^https?:\/\//i.test(text)) {
+      const u = new URL(text);
+      const roomRaw = u.searchParams.get('code') || u.searchParams.get('room') || '';
+      const relayRaw = u.searchParams.get('ws') || u.searchParams.get('relay') || '';
+      return { roomCode: fmtRoom(roomRaw), relayUrl: relayRaw || '' };
+    }
+  } catch {}
+
+  // ROOM@host[:port] or ROOM@ws://host:port
+  const at = text.indexOf('@');
+  if (at > 0) {
+    return {
+      roomCode: fmtRoom(text.slice(0, at)),
+      relayUrl: text.slice(at + 1).trim(),
+    };
+  }
+
+  return { roomCode: fmtRoom(text), relayUrl: '' };
 }
 
 function setTab(tab) {
@@ -88,7 +115,9 @@ function connectAndDo(state, action) {
         .toString()
         .trim()
         .slice(0, 16) || "Player";
-      state.progression.roomCode = fmtRoom(el.roomCodeInput?.value || state.progression.roomCode || "");
+      const roomTarget = parseRoomTarget(el.roomCodeInput?.value || state.progression.roomCode || "");
+      state.progression.roomCode = roomTarget.roomCode;
+      if (roomTarget.relayUrl) setRelayUrlOverride(roomTarget.relayUrl);
       if (el.roomCodeInput) el.roomCodeInput.value = state.progression.roomCode;
       if (el.nameInput) el.nameInput.value = state.progression.nickname;
       try { saveProgression(state.progression); } catch {}
@@ -99,6 +128,7 @@ function connectAndDo(state, action) {
   const avatarIndex = state.progression?.avatarIndex || 0;
   const auraId = state.progression?.auraId || 0;
   const roomCode = state.progression?.roomCode || "";
+  const resolvedRelayUrl = getRelayUrlOverride() || getDefaultWsUrl();
 
   // Remember the latest requested action.
   // This prevents "double host/join" if the user clicks buttons while WS is still connecting.
@@ -114,7 +144,7 @@ function connectAndDo(state, action) {
     } catch {}
   };
 
-  net.connect(getDefaultWsUrl());
+  net.connect(resolvedRelayUrl);
 
   if (net.ws && net.ws.readyState === 1) {
     const req = _pendingNetAction;
@@ -256,7 +286,9 @@ export function initLobbyDom(game) {
   el.btnRoomApply?.addEventListener("click", () => {
     const state = _game?.state;
     if (!state || !state.progression) return;
-    state.progression.roomCode = fmtRoom(el.roomCodeInput?.value || "");
+    const roomTarget = parseRoomTarget(el.roomCodeInput?.value || "");
+    state.progression.roomCode = roomTarget.roomCode;
+    if (roomTarget.relayUrl) setRelayUrlOverride(roomTarget.relayUrl);
     if (el.roomCodeInput) el.roomCodeInput.value = state.progression.roomCode;
     try { saveProgression(state.progression); } catch {}
   });
@@ -265,7 +297,8 @@ export function initLobbyDom(game) {
   el.btnCopyInvite?.addEventListener("click", async () => {
     const state = _game?.state;
     const room = (state?.net?.roomCode || state?.progression?.roomCode || "").toString();
-    const url = `${location.origin}/?code=${encodeURIComponent(room)}`;
+    const relay = getRelayUrlOverride() || getDefaultWsUrl();
+    const url = `${location.origin}/?code=${encodeURIComponent(room)}&ws=${encodeURIComponent(relay)}`;
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(url);
@@ -547,7 +580,7 @@ export function tickLobbyDom(state) {
     } else if (net.status === "connecting") {
       el.lobbyInfo.textContent = "Connecting...";
     } else if (net.status === "connected") {
-      el.lobbyInfo.textContent = net.isHost ? "Connected (Host)." : "Connected (Join).";
+      el.lobbyInfo.textContent = net.isHost ? `Connected (Host) • ${net.url || getDefaultWsUrl()}` : `Connected (Join) • ${net.url || getDefaultWsUrl()}`;
     } else {
       el.lobbyInfo.textContent = net.status;
     }

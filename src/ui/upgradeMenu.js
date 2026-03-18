@@ -58,7 +58,7 @@ export function renderUpgradeMenu(ctx, state) {
 
   const headerY0 = isMobile && !isLandscape ? h * 0.15 : h * 0.12;
   const isStatsScreen = state.mode === "stats";
-  ctx.fillText(isStatsScreen ? "STATS & UP" : "YOU DIED", w / 2, headerY0);
+  ctx.fillText(isStatsScreen ? "DEATH SHOP~UP" : "YOU DIED", w / 2, headerY0);
 
   ctx.font = headerFontSize + "px sans-serif";
 
@@ -81,11 +81,12 @@ export function renderUpgradeMenu(ctx, state) {
   yHeader += headerFontSize * 1.5;
 
   if (!isStatsScreen) {
-    ctx.fillText("Upgrade Points earned: +" + gained, w / 2, yHeader);
+    ctx.fillText("Death Points earned: +" + gained, w / 2, yHeader);
     yHeader += headerFontSize * 1.5;
   }
 
-  ctx.fillText("Available Points: " + progression.upgradePoints, w / 2, yHeader);
+  const deathPoints = (typeof progression.deathPoints === "number" ? progression.deathPoints : progression.upgradePoints) || 0;
+  ctx.fillText("Death Points: " + deathPoints, w / 2, yHeader);
 
   if (isStatsScreen) {
     yHeader += headerFontSize * 1.5;
@@ -197,7 +198,7 @@ export function renderUpgradeMenu(ctx, state) {
       const isCapped =
         Number.isFinite(maxForStat) && val >= maxForStat;
       const canUpgrade =
-        progression.upgradePoints > 0 && !isCapped;
+        ((typeof progression.deathPoints === "number" ? progression.deathPoints : progression.upgradePoints) > 0) && !isCapped;
 
       ctx.fillStyle = canUpgrade ? "#3cff9f" : "#555555";
       ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
@@ -256,7 +257,7 @@ export function renderUpgradeMenu(ctx, state) {
       const isCapped =
         Number.isFinite(maxForStat) && val >= maxForStat;
       const canUpgrade =
-        progression.upgradePoints > 0 && !isCapped;
+        ((typeof progression.deathPoints === "number" ? progression.deathPoints : progression.upgradePoints) > 0) && !isCapped;
 
       ctx.fillStyle = canUpgrade ? "#3cff9f" : "#555555";
       ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
@@ -298,7 +299,7 @@ export function renderUpgradeMenu(ctx, state) {
       const isCapped =
         Number.isFinite(maxForStat) && val >= maxForStat;
       const canUpgrade =
-        progression.upgradePoints > 0 && !isCapped;
+        ((typeof progression.deathPoints === "number" ? progression.deathPoints : progression.upgradePoints) > 0) && !isCapped;
 
       ctx.fillStyle = canUpgrade ? "#3cff9f" : "#555555";
       ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
@@ -403,7 +404,8 @@ export function handleUpgradeClick(x, y, state) {
     const progression = state.progression;
     const limits = progression.limits || {};
 
-    if (progression.upgradePoints <= 0) return null;
+    const deathPoints = (typeof progression.deathPoints === "number" ? progression.deathPoints : progression.upgradePoints) || 0;
+    if (deathPoints <= 0) return null;
 
     const key = btn.key;
     const step = btn.step;
@@ -419,7 +421,8 @@ export function handleUpgradeClick(x, y, state) {
 
     limits[key] = next;
     progression.limits = limits;
-    progression.upgradePoints -= 1;
+    progression.upgradePoints = Math.max(0, ((typeof progression.deathPoints === "number" ? progression.deathPoints : progression.upgradePoints) | 0) - 1);
+    progression.deathPoints = progression.upgradePoints;
 
 
     saveProgression(progression);

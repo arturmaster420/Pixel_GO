@@ -1,7 +1,55 @@
 // Lightweight WS client for Co-op.
 // Host simulates the world and broadcasts snapshots; joiners send only input.
 
+
+function normalizeRelayUrl(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return '';
+  try {
+    if (/^wss?:\/\//i.test(text)) {
+      const u = new URL(text);
+      return `${u.protocol}//${u.host}`;
+    }
+    if (/^https?:\/\//i.test(text)) {
+      const u = new URL(text);
+      const proto = u.protocol === 'https:' ? 'wss:' : 'ws:';
+      const port = u.port ? `:${u.port}` : '';
+      return `${proto}//${u.hostname}${port}`;
+    }
+    const host = text.replace(/^\/+/, '').replace(/\/$/, '');
+    return `ws://${host}`;
+  } catch {
+    return '';
+  }
+}
+
+export function getRelayUrlOverride() {
+  try {
+    const params = new URLSearchParams(location.search || '');
+    const fromQuery = params.get('ws') || params.get('relay') || '';
+    const q = normalizeRelayUrl(fromQuery);
+    if (q) return q;
+  } catch {}
+  try {
+    const fromStorage = localStorage.getItem('pixelgo_ws_url') || '';
+    const s = normalizeRelayUrl(fromStorage);
+    if (s) return s;
+  } catch {}
+  return '';
+}
+
+export function setRelayUrlOverride(raw) {
+  const normalized = normalizeRelayUrl(raw);
+  try {
+    if (normalized) localStorage.setItem('pixelgo_ws_url', normalized);
+    else localStorage.removeItem('pixelgo_ws_url');
+  } catch {}
+  return normalized;
+}
+
 export function getDefaultWsUrl() {
+  const override = getRelayUrlOverride();
+  if (override) return override;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const host = location.hostname || "localhost";
   return `${proto}://${host}:8080`;
@@ -200,8 +248,12 @@ export function createNetClient() {
     send({ type: "syncMeta", meta: meta || null });
   };
 
-  net.requestRespawn = function requestRespawn(meta) {
-    send({ type: "respawn", meta: meta || null });
+  net.requestRespawn = function requestRespawn(payload) {
+    if (payload && typeof payload === 'object' && ('action' in payload || 'cost' in payload || 'meta' in payload)) {
+      send({ type: "respawn", payload: payload || null });
+      return;
+    }
+    send({ type: "respawn", meta: payload || null });
   };
 
   // --- Run upgrade flow (host-authoritative) ---

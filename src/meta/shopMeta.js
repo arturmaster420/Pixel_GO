@@ -5,7 +5,7 @@ import { RUN_SKILLS, RUN_PASSIVES } from "../core/runUpgrades.js";
 
 const MAX_META_LEVEL = 10;
 // Bump when we need to migrate shop defaults.
-const SHOP_META_VERSION = 7;
+const SHOP_META_VERSION = 8;
 
 // Defaults:
 // - only Gun (basic shot) is available by default
@@ -21,6 +21,15 @@ const DEFAULT_SKILL_META = {
   "skill:electricZone": 0,
   "skill:laser": 0,
   "skill:lightning": 0,
+  "skill:fireball": 0,
+  "skill:iceWall": 0,
+  "skill:blackhole": 0,
+  "skill:lightHeal": 0,
+  "skill:stormStrike": 0,
+  "skill:flameNova": 0,
+  "skill:iceShards": 0,
+  "skill:voidBurst": 0,
+  "skill:holyNova": 0,
   "skill:rockets": 0,
 };
 
@@ -84,8 +93,17 @@ export function ensureShopMeta(prog) {
 function buildCatalog() {
   const active = RUN_SKILLS
     .filter((s) => s && s.kind === "skill")
-    // Rockets are an evolution (fusion). Keep it out of shop table for now.
     .filter((s) => s.key !== "rockets")
+    .map((s) => ({
+      id: `skill:${s.key}`,
+      key: s.key,
+      kind: "skill",
+      name: s.name || s.key,
+    }));
+
+  const evolved = RUN_SKILLS
+    .filter((s) => s && s.kind === "skill")
+    .filter((s) => s.key === "rockets")
     .map((s) => ({
       id: `skill:${s.key}`,
       key: s.key,
@@ -103,8 +121,8 @@ function buildCatalog() {
     }));
 
   const byId = new Map();
-  for (const it of [...active, ...passive]) byId.set(it.id, it);
-  return { active, passive, byId };
+  for (const it of [...active, ...evolved, ...passive]) byId.set(it.id, it);
+  return { active, passive, evolved, byId };
 }
 
 const CATALOG = buildCatalog();
@@ -170,13 +188,13 @@ export function ensureShopOffers(prog) {
   offers.newSkills = offers.newSkills.filter((id) => CATALOG.byId.has(id));
 
   // Enforce rows intent:
-  // - active: only unlocked skills (meta > 0)
-  // - newSkills: only locked skills (meta <= 0)
-  offers.active = offers.active.filter((id) => getMetaLevel(prog, id) > 0);
-  offers.newSkills = offers.newSkills.filter((id) => getMetaLevel(prog, id) <= 0);
+  // - active: only unlocked base skills (meta > 0)
+  // - newSkills: now used as 2nd-rank/evolved upgrades already unlocked in runs
+  offers.active = offers.active.filter((id) => getMetaLevel(prog, id) > 0 && CATALOG.active.some((it) => it.id === id));
+  offers.newSkills = offers.newSkills.filter((id) => getMetaLevel(prog, id) > 0 && CATALOG.evolved.some((it) => it.id === id));
 
   const unlockedActivePool = CATALOG.active.filter((it) => getMetaLevel(prog, it.id) > 0);
-  const lockedActivePool = CATALOG.active.filter((it) => getMetaLevel(prog, it.id) <= 0);
+  const evolvedPool = CATALOG.evolved.filter((it) => getMetaLevel(prog, it.id) > 0);
 
   for (const id of offers.active) used.add(id);
   for (const id of offers.passive) used.add(id);
@@ -196,7 +214,7 @@ export function ensureShopOffers(prog) {
   }
 
   while (offers.newSkills.length < 3) {
-    const it = pickRandom(lockedActivePool, used);
+    const it = pickRandom(evolvedPool, used);
     if (!it) break;
     offers.newSkills.push(it.id);
     used.add(it.id);
@@ -226,10 +244,10 @@ export function replaceOfferSlot(prog, kind, idx) {
   const offers = ensureShopOffers(prog);
 
   const unlockedActivePool = CATALOG.active.filter((it) => getMetaLevel(prog, it.id) > 0);
-  const lockedActivePool = CATALOG.active.filter((it) => getMetaLevel(prog, it.id) <= 0);
+  const evolvedPool = CATALOG.evolved.filter((it) => getMetaLevel(prog, it.id) > 0);
 
   const list = kind === "passive" ? offers.passive : (kind === "new" ? offers.newSkills : offers.active);
-  const pool = kind === "passive" ? CATALOG.passive : (kind === "new" ? lockedActivePool : unlockedActivePool);
+  const pool = kind === "passive" ? CATALOG.passive : (kind === "new" ? evolvedPool : unlockedActivePool);
 
   const used = new Set([...offers.active, ...offers.passive, ...(offers.newSkills || [])]);
   // Remove current slot from used so it can be replaced (but we are going to replace it anyway).

@@ -13,11 +13,12 @@ import { explodeIceBall } from "../weapons/iceBall.js";
 import { RoomSpawnSystem } from "../world/roomSpawnSystem.js";
 import { RoomDirector } from "../world/roomDirector.js";
 import { renderRoomsBackground } from "../world/roomRenderer.js";
-import { clampPlayerToActiveWalkable } from "../world/floorCollision.js";
+import { clampPlayerToActiveWalkable, clampEntityToRoomWalkable } from "../world/floorCollision.js";
 import { renderBiomeUnit, biomeKeyFromKind, biomeStyleForKey, biomeRoleFromKind } from "../enemies/biomeVisuals.js";
 import { renderHUD } from "../ui/hud.js";
 import { renderUpgradeMenu, handleUpgradeClick } from "../ui/upgradeMenu.js";
 import { renderResurrectionScreen, handleResurrectionClick } from "../ui/resurrectionScreen.js";
+import { renderDeathContinueScreen, handleDeathContinueClick } from "../ui/deathContinueScreen.js";
 import { renderSettingsMenu, handleSettingsClick } from "../ui/canvasMenuStubs.js";
 import {
   saveProgression,
@@ -26,7 +27,7 @@ import {
   applyCritToDamage,
   applyLifeSteal,
 } from "./progression.js";
-import { initRunUpgrades } from "./runUpgrades.js";
+import { initRunUpgrades, applyRunDerivedStats } from "./runUpgrades.js";
 import { rollFloorShopOffersStandard, rollFloorShopOffers, describeFloorShopOffer, tryBuyFloorShopOfferEx, getFloorShopRerollCost, rerollFloorShopOffersForPlayer, offerNeedsReplace } from "./floorShop.js";
 import { biomeName } from "../world/biomes.js";
 import { updateBuffs } from "../buffs/buffs.js";
@@ -34,8 +35,9 @@ import { getZone, ZONE_RADII, ZONE6_SQUARE_HALF, WORLD_SQUARE_HALF, HUB_HALF, HU
 import { WORLD_HEIGHT, WORLD_WIDTH } from "../world/mapGenerator.js";
 import { createNetClient, getDefaultWsUrl } from "../net/netClient.js";
 import { hideRunUpgradeOverlay } from "../ui/runUpgradeDom.js";
-import { showFloorShopOverlay, hideFloorShopOverlay } from "../ui/floorShopDom.js";
+import { showFloorShopOverlay, hideFloorShopOverlay, isFloorShopOverlayVisible, handleFloorShopHotkey } from "../ui/floorShopDom.js";
 import { ensureShopMeta } from "../meta/shopMeta.js";
+import { applyStarterLoadoutToPlayer, ensureStarterLoadoutProgression } from "./starterLoadouts.js";
 import {
   renderHubNpcs,
   getNearbyHubNpcForPlayer,
@@ -47,6 +49,7 @@ export function createGame(canvas, ctx, progression) {
   initInput();
   // Ensure shop meta fields exist (coins, skill meta levels, offers).
   try { ensureShopMeta(progression); } catch {}
+  try { ensureStarterLoadoutProgression(progression); } catch {}
 
   const state = {
     canvas,
@@ -99,7 +102,7 @@ export function createGame(canvas, ctx, progression) {
     _netLastSnapshotSendAt: 0,
 
     // Online-only overlays (so host can keep simulating the world while showing UI)
-    overlayMode: null, // 'resurrection' | 'upgrade' | null
+    overlayMode: null, // 'deathContinue' | 'resurrection' | 'upgrade' | null
     _deathHandled: false,
     _waitingRespawnAck: false,
 
@@ -155,6 +158,13 @@ export function createGame(canvas, ctx, progression) {
 
       // Enter the run immediately (Host/Join/FastJoin -> gameplay).
       // Start Menu is only for setup / fallback Start button.
+      clearLegacyRunUpgradeState(state, { clearSessions: true });
+      state._floorShopActive = false;
+      state.overlayMode = null;
+      if (state.player) {
+        state.player._lvlUpChoosing = false;
+        state.player._lvlUpInvuln = false;
+      }
       if (state.net.isHost) {
         // Host immediately plays. Keep existing world, but ensure local player id matches server id.
         if (state.player) {
@@ -219,14 +229,19 @@ export function createGame(canvas, ctx, progression) {
     }
 
     if (msg.type === "respawn") {
-      // Host: a player finished death screens and requests respawn.
+      // Host: a player requested a death-flow action (continue / hub / legacy respawn).
       if (!state.net.isHost) return;
       const from = String(msg.from || "");
       if (!from) return;
-      const meta = msg.meta || null;
+      const payload = msg.payload || null;
+      const legacyMeta = msg.meta || null;
+      const meta = payload?.meta || legacyMeta || null;
       if (meta) state._netMetaById.set(from, meta);
       const p = getPlayerById(state, from);
-      if (p) p._netRespawnRequested = true;
+      if (p) {
+        p._netRespawnRequested = true;
+        p._netRespawnRequest = payload || { action: 'legacy', meta };
+      }
       return;
     }
 
@@ -366,6 +381,10 @@ export function createGame(canvas, ctx, progression) {
         state.paused = false;
       }
 
+      // Clear stale local-only overlays that can block joiner movement after connect.
+      if (state._floorShopActive && !isFloorShopOverlayVisible()) state._floorShopActive = false;
+      if (state._runUpgradeActive) clearLegacyRunUpgradeState(state);
+
       // Lightweight client-side prediction for our own movement
       // (we still rely on host for all combat/world state).
       if (state.mode === "playing" && !state.paused && !state._runUpgradeActive && !state._floorShopActive && state.player && typeof state.player.update === "function") {
@@ -399,6 +418,8 @@ export function createGame(canvas, ctx, progression) {
         if (state.camera && state.player) {
           state.camera.update(state.player, dt, state);
         }
+
+        syncPersistentRunUnlocks(state);
 
         // Compute nearby Hub NPC for joiners too (client-side only)
         if (!state.overlayMode && state.player) {
@@ -495,18 +516,17 @@ export function createGame(canvas, ctx, progression) {
 
     state.camera.update(state.player, dt, state);
 
+    syncPersistentRunUnlocks(state);
+
     // Hub NPC proximity (offline + host)
     if (!state.overlayMode && state.player) {
       state._hubNearbyNpc = getNearbyHubNpcForPlayer(state.player, state);
     }
+    maybeEnterDeathContinueOverlay(state);
     if (online) {
-      // Online: no auto-respawn; show local death overlays and wait for respawn requests.
-      maybeEnterOnlineDeathOverlay(state);
       processRespawnRequests(state);
-        maybeSendPlayerState(state, dt);
-        maybeSendSnapshot(state, dt);
-    } else {
-      checkPlayerDeath(state);
+      maybeSendPlayerState(state, dt);
+      maybeSendSnapshot(state, dt);
     }
   }
 
@@ -577,6 +597,10 @@ function render() {
     renderPopups(ctx, state);
 
     // Online overlays (death screens) that must not stop the host simulation.
+    if (state.overlayMode === "deathContinue") {
+      renderDeathContinueScreen(ctx, state);
+      return;
+    }
     if (state.overlayMode === "resurrection") {
       renderResurrectionScreen(ctx, state);
       return;
@@ -604,6 +628,15 @@ function render() {
 
   function handlePointerDown(x, y) {
     // Online overlays (death screens) have priority.
+    if (state.overlayMode === "deathContinue") {
+      const a = handleDeathContinueClick(x, y, state);
+      if (a === "continue") {
+        handleDeathContinueAction(state, 'continue');
+      } else if (a === "hub") {
+        handleDeathContinueAction(state, 'hub');
+      }
+      return;
+    }
     if (state.overlayMode === "resurrection") {
       const a = handleResurrectionClick(x, y, state);
       if (a === "resurrect") {
@@ -881,6 +914,10 @@ function render() {
       if (!state || state.mode !== "playing") return;
       if (isTypingFocus()) return;
       if (state.overlayMode) return;
+      if (tryOpenFloorShop(state)) {
+        e.preventDefault();
+        return;
+      }
       const rd = state.roomDirector;
       const p = state.player;
       if (!rd || !p || typeof rd.performGateAction !== "function") return;
@@ -907,6 +944,19 @@ function render() {
       const did = rd.performGateAction(best.id, action, p);
       if (did) {
         state._breachPatchedFlash = 0.6;
+        e.preventDefault();
+      }
+    });
+  }
+
+  if (typeof window !== "undefined" && !state._floorShopHotkeyBound) {
+    state._floorShopHotkeyBound = true;
+    window.addEventListener("keydown", (e) => {
+      if (!state || state.mode !== "playing") return;
+      if (isTypingFocus()) return;
+      if (!state._floorShopActive || !isFloorShopOverlayVisible()) return;
+      const code = e.code || e.key;
+      if (handleFloorShopHotkey(code) || handleFloorShopHotkey(e.key)) {
         e.preventDefault();
       }
     });
@@ -979,6 +1029,7 @@ function startNewRun(state) {
   player.auraId = state.progression?.auraId || 0;
   // Meta shop levels used to gate in-run upgrade pool.
   player._metaSkillMeta = state.progression?.skillMeta || {};
+  player._selectedStarterLoadout = state.progression?.selectedStarterLoadout || "mecha";
   const meta = applyLimitsToPlayer(player, state.progression.limits);
 
   state.player = player;
@@ -991,6 +1042,14 @@ function startNewRun(state) {
 
   // Init in-run upgrades (skills/passives)
   initRunUpgrades(player);
+  applyStarterLoadoutToPlayer(player, player._selectedStarterLoadout);
+  applyRunDerivedStats(player);
+  player._deathContinueCount = 0;
+
+  state._deathContinueCount = 0;
+  state._deathHandled = false;
+  state._waitingRespawnAck = false;
+  state.overlayMode = null;
 
   state.camera = new Camera(state.canvas);
   state.currentZone = 0;
@@ -1047,6 +1106,30 @@ function isOnline(state) {
   return !!(state.net && state.net.status === "connected" && state.net.roomCode);
 }
 
+function syncPersistentRunUnlocks(state) {
+  const prog = state?.progression;
+  const p = state?.player;
+  if (!prog || !p) return;
+  try { ensureShopMeta(prog); } catch {}
+  let changed = false;
+  if (((p.runSkills?.rockets | 0) > 0) || p.runEvolutions?.rocketFusion) {
+    const cur = Number(prog.skillMeta?.["skill:rockets"] || 0) || 0;
+    if (cur < 1) {
+      prog.skillMeta["skill:rockets"] = 1;
+      changed = true;
+    }
+  }
+  const pts = Math.max(0, Math.floor((typeof prog.deathPoints === "number" ? prog.deathPoints : prog.upgradePoints) || 0));
+  if ((prog.upgradePoints | 0) !== pts || (prog.deathPoints | 0) !== pts) {
+    prog.upgradePoints = pts;
+    prog.deathPoints = pts;
+    changed = true;
+  }
+  if (changed) {
+    try { saveProgression(prog); } catch {}
+  }
+}
+
 function getPlayersArr(state) {
   return state.players && state.players.length ? state.players : (state.player ? [state.player] : []);
 }
@@ -1076,10 +1159,12 @@ function getNetMetaPayload(prog) {
     auraId: prog.auraId || 0,
     resurrectedTier: prog.resurrectedTier || 1,
     totalScore: prog.totalScore || 0,
-    upgradePoints: prog.upgradePoints || 0,
+    upgradePoints: (typeof prog.deathPoints === "number" ? prog.deathPoints : prog.upgradePoints) || 0,
+    deathPoints: (typeof prog.deathPoints === "number" ? prog.deathPoints : prog.upgradePoints) || 0,
     limits: prog.limits || {},
     // Meta shop unlocks used for in-run upgrade pool gating.
     skillMeta: prog.skillMeta || {},
+    selectedStarterLoadout: prog.selectedStarterLoadout || "mecha",
   };
 }
 
@@ -1088,12 +1173,16 @@ function applyNetMetaToPlayer(state, player, meta) {
   if (typeof meta.nickname === "string") player.nickname = meta.nickname;
   if (typeof meta.avatarIndex === "number") player.avatarIndex = meta.avatarIndex | 0;
   if (typeof meta.auraId === "number") player.auraId = meta.auraId | 0;
+  if (typeof meta.deathPoints === "number" && state?.progression) { state.progression.deathPoints = meta.deathPoints | 0; state.progression.upgradePoints = meta.deathPoints | 0; }
   if (meta.limits) {
     // Apply permanent meta bonuses directly (affects crit, damage mult, maxHP, etc.).
     applyLimitsToPlayer(player, meta.limits);
   }
   if (meta.skillMeta && typeof meta.skillMeta === "object") {
     player._metaSkillMeta = meta.skillMeta;
+  }
+  if (typeof meta.selectedStarterLoadout === "string") {
+    player._selectedStarterLoadout = meta.selectedStarterLoadout;
   }
 }
 
@@ -1117,6 +1206,7 @@ function syncHostPlayersFromRoomInfo(state) {
       // Skill meta can be per-player (shop unlocks). If we have it from syncMeta, use it.
       const stored = state._netMetaById?.get(id) || null;
       p._metaSkillMeta = (stored && stored.skillMeta && typeof stored.skillMeta === "object") ? stored.skillMeta : (state.progression?.skillMeta || {});
+      p._selectedStarterLoadout = (stored && typeof stored.selectedStarterLoadout === "string") ? stored.selectedStarterLoadout : (state.progression?.selectedStarterLoadout || "mecha");
       p.nickname = meta.nickname || `P${id}`;
       p.avatarIndex = meta.avatarIndex || 0;
       p.auraId = (typeof meta.auraId === "number") ? (meta.auraId | 0) : 0;
@@ -1126,6 +1216,8 @@ function syncHostPlayersFromRoomInfo(state) {
       if (storedMeta) applyNetMetaToPlayer(state, p, storedMeta);
       else applyLimitsToPlayer(p, state.progression.limits);
       initRunUpgrades(p);
+      applyStarterLoadoutToPlayer(p, p._selectedStarterLoadout);
+      applyRunDerivedStats(p);
       state.players.push(p);
     } else {
       const p = getPlayerById(state, id);
@@ -1476,6 +1568,62 @@ function buildFloorShopChoices(player) {
   return choices.slice(0, 3);
 }
 
+function getLiveFloorShopOfferForPlayer(player, offerLike) {
+  const fs = player?.floorShop;
+  if (!fs || !Array.isArray(fs.offers) || !offerLike) return null;
+  const offerId = String(offerLike?.id || "");
+  if (!offerId) return null;
+  return fs.offers.find((o) => o && String(o.id || "") === offerId) || null;
+}
+
+function openFloorShopReplaceOverlay(state, player, pick) {
+  if (!state || !player || !pick) return false;
+  const livePick = getLiveFloorShopOfferForPlayer(player, pick) || pick;
+  const needsReplace = offerNeedsReplace(player, livePick);
+  if (!(String(livePick.kind || '') === 'skill' && ((livePick.from | 0) <= 0) && needsReplace)) return false;
+
+  const cand = getReplaceCandidates(player, livePick.key);
+  if (!cand || !cand.length) {
+    if (state.popups) state.popups.push({ text: 'No skill to replace', time: 1.1 });
+    return true;
+  }
+
+  const online = isOnline(state);
+  const isJoiner = !!(online && state.net && !state.net.isHost);
+
+  showFloorShopOverlay({
+    title: 'Replace Skill',
+    subtitle: `Max 6 active skills • Replace one with ${livePick.name}`,
+    metaText: `SP: ${(player.skillPoints | 0) || 0}`,
+    hint: 'Pick a skill to remove (Esc returns)',
+    choices: cand.map((c) => ({
+      id: `rep_${c.key}`,
+      replaceKey: c.key,
+      name: `${c.name}  Lv${c.level}`,
+      desc: 'Will be removed to make room',
+      spCost: null,
+    })),
+    onCloseCb: () => { openFloorShopOverlay(state); },
+    onPickCb: (rep) => {
+      if (!rep || !rep.replaceKey) return;
+      const replaceKey = String(rep.replaceKey);
+      if (isJoiner) {
+        state._shopActSeq = (state._shopActSeq || 0) + 1;
+        state._shopActPending = { action: 'buy', offerId: String(livePick.id || ''), replaceKey, seq: state._shopActSeq };
+        state._floorShopReopenOnSync = true;
+        hideFloorShopOverlay();
+        state._floorShopActive = false;
+        if (state.popups) state.popups.push({ text: 'Buying…', time: 0.8 });
+        return;
+      }
+      const ok = performFloorShopPurchase(state, player, String(livePick.id || ''), replaceKey);
+      if (!ok && state.popups) state.popups.push({ text: 'Cannot buy', time: 1.2 });
+      openFloorShopOverlay(state);
+    },
+  });
+  return true;
+}
+
 function openFloorShopOverlay(state) {
   if (!state || state.mode !== 'playing') return false;
   const p = state.player;
@@ -1531,50 +1679,12 @@ function openFloorShopOverlay(state) {
       const online = isOnline(state);
       const isJoiner = !!(online && state.net && !state.net.isHost);
 
-      const needsReplace = offerNeedsReplace(p, pick);
-      if (pick.kind === 'skill' && (pick.from | 0) <= 0 && needsReplace) {
-        const cand = getReplaceCandidates(p, pick.key);
-        if (!cand || !cand.length) {
-          if (state.popups) state.popups.push({ text: 'No skill to replace', time: 1.1 });
-          return;
-        }
-
-        showFloorShopOverlay({
-          title: 'Replace Skill',
-          subtitle: `Max 6 active skills • Replace one with ${pick.name}`,
-          metaText: `SP: ${(p.skillPoints | 0) || 0}`,
-          hint: 'Pick a skill to remove (Esc returns)',
-          choices: cand.map((c) => ({
-            id: `rep_${c.key}`,
-            replaceKey: c.key,
-            name: `${c.name}  Lv${c.level}`,
-            desc: 'Will be removed to make room',
-            spCost: null,
-          })),
-          onCloseCb: () => { openFloorShopOverlay(state); },
-          onPickCb: (rep) => {
-            if (!rep || !rep.replaceKey) return;
-            const replaceKey = String(rep.replaceKey);
-            if (isJoiner) {
-              state._shopActSeq = (state._shopActSeq || 0) + 1;
-              state._shopActPending = { action: 'buy', offerId: String(pick.id || ''), replaceKey, seq: state._shopActSeq };
-              state._floorShopReopenOnSync = true;
-              hideFloorShopOverlay();
-              state._floorShopActive = false;
-              if (state.popups) state.popups.push({ text: 'Buying…', time: 0.8 });
-              return;
-            }
-            const ok = performFloorShopPurchase(state, p, String(pick.id || ''), replaceKey);
-            if (!ok && state.popups) state.popups.push({ text: 'Cannot buy', time: 1.2 });
-            openFloorShopOverlay(state);
-          },
-        });
-        return;
-      }
+      const livePick = getLiveFloorShopOfferForPlayer(p, pick) || pick;
+      if (openFloorShopReplaceOverlay(state, p, livePick)) return;
 
       if (isJoiner) {
         state._shopActSeq = (state._shopActSeq || 0) + 1;
-        state._shopActPending = { action: 'buy', offerId: String(pick.id || ''), replaceKey: null, seq: state._shopActSeq };
+        state._shopActPending = { action: 'buy', offerId: String(livePick.id || ''), replaceKey: null, seq: state._shopActSeq };
         state._floorShopReopenOnSync = true;
         hideFloorShopOverlay();
         state._floorShopActive = false;
@@ -1582,8 +1692,11 @@ function openFloorShopOverlay(state) {
         return;
       }
 
-      const ok = performFloorShopPurchase(state, p, String(pick.id || ''), null);
-      if (!ok && state.popups) state.popups.push({ text: 'Not enough SP', time: 1.2 });
+      const ok = performFloorShopPurchase(state, p, String(livePick.id || ''), null);
+      if (!ok) {
+        if (openFloorShopReplaceOverlay(state, p, livePick)) return;
+        if (state.popups) state.popups.push({ text: 'Not enough SP', time: 1.2 });
+      }
       openFloorShopOverlay(state);
     },
   });
@@ -1626,6 +1739,17 @@ function performFloorShopPurchase(state, buyer, offerId, replaceKey) {
   if (Array.isArray(state.floatingTexts)) {
     state.floatingTexts.push({ x: buyer.x, y: buyer.y - 34, text: `-${offer.spCost | 0} SP`, time: 0.8 });
   }
+  if (offer && (String(offer.key || '') === 'rocketFusion' || String(offer.key || '') === 'rockets')) {
+    try {
+      ensureShopMeta(state.progression);
+      const cur = Number(state.progression?.skillMeta?.['skill:rockets'] || 0) || 0;
+      if (state.progression && cur < 1) {
+        state.progression.skillMeta['skill:rockets'] = 1;
+        saveProgression(state.progression);
+      }
+    } catch {}
+  }
+  try { syncPersistentRunUnlocks(state); } catch {}
   if (Array.isArray(state.popups)) {
     state.popups.push({ text: `Bought: ${offer.name}`, time: 1.1 });
   }
@@ -1762,7 +1886,7 @@ function serializePlayerState(state) {
 
   const encSkills = (p) => {
     const s = p?.runSkills || {};
-    // bullets,bombs,rockets,satellites,energyBarrier,spirit,summon,electricZone,laser,lightning,fireball,iceWall,blackhole,lightHeal
+    // bullets,bombs,rockets,satellites,energyBarrier,spirit,summon,electricZone,laser,lightning,fireball,iceWall,blackhole,lightHeal,stormStrike,flameNova,iceShards,voidBurst,holyNova
     return [
       s.bullets | 0,
       s.bombs | 0,
@@ -1778,6 +1902,11 @@ function serializePlayerState(state) {
       s.iceWall | 0,
       s.blackhole | 0,
       s.lightHeal | 0,
+      s.stormStrike | 0,
+      s.flameNova | 0,
+      s.iceShards | 0,
+      s.voidBurst | 0,
+      s.holyNova | 0,
     ].join(",");
   };
 
@@ -1932,6 +2061,7 @@ function applyPlayerStateToClient(state, pstate) {
       // Skill meta can be per-player (shop unlocks). If we have it from syncMeta, use it.
       const stored = state._netMetaById?.get(id) || null;
       p._metaSkillMeta = (stored && stored.skillMeta && typeof stored.skillMeta === "object") ? stored.skillMeta : (state.progression?.skillMeta || {});
+      p._selectedStarterLoadout = (stored && typeof stored.selectedStarterLoadout === "string") ? stored.selectedStarterLoadout : (state.progression?.selectedStarterLoadout || "mecha");
       initRunUpgrades(p);
       p._netTx = p.x;
       p._netTy = p.y;
@@ -2011,7 +2141,7 @@ function applyPlayerStateToClient(state, pstate) {
       // Sync run skill levels from host (for HUD + visuals consistency on joiners).
     if (typeof sp.rs === "string" && sp.rs.length) {
       const parts = sp.rs.split(",");
-      // bullets,bombs,rockets,satellites,energyBarrier,spirit,summon,electricZone,laser,lightning,fireball,iceWall,blackhole,lightHeal
+      // bullets,bombs,rockets,satellites,energyBarrier,spirit,summon,electricZone,laser,lightning,fireball,iceWall,blackhole,lightHeal,stormStrike,flameNova,iceShards,voidBurst,holyNova
       if (parts.length >= 10) {
         const b = parts[0] | 0;
         const bo = parts[1] | 0;
@@ -2027,6 +2157,11 @@ function applyPlayerStateToClient(state, pstate) {
         const iw = parts.length >= 12 ? (parts[11] | 0) : 0;
         const bh = parts.length >= 13 ? (parts[12] | 0) : 0;
         const lh = parts.length >= 14 ? (parts[13] | 0) : 0;
+        const ss = parts.length >= 15 ? (parts[14] | 0) : 0;
+        const fn = parts.length >= 16 ? (parts[15] | 0) : 0;
+        const ish = parts.length >= 17 ? (parts[16] | 0) : 0;
+        const vb = parts.length >= 18 ? (parts[17] | 0) : 0;
+        const hn = parts.length >= 19 ? (parts[18] | 0) : 0;
         p.runSkills = p.runSkills || {};
         p.runSkills.bullets = b;
         p.runSkills.bombs = bo;
@@ -2042,6 +2177,11 @@ function applyPlayerStateToClient(state, pstate) {
         p.runSkills.iceWall = iw;
         p.runSkills.blackhole = bh;
         p.runSkills.lightHeal = lh;
+        p.runSkills.stormStrike = ss;
+        p.runSkills.flameNova = fn;
+        p.runSkills.iceShards = ish;
+        p.runSkills.voidBurst = vb;
+        p.runSkills.holyNova = hn;
       }
     }
 
@@ -2171,12 +2311,12 @@ function serializeSnapshot(state) {
   };
 
   // Soft caps to avoid spikes (server will also apply per-client interest).
-  const capEnemies = isMobileHost ? 260 : 420;
-  const capProj = isMobileHost ? 220 : 420;
-  const capRockets = isMobileHost ? 90 : 160;
-  const capOrbs = isMobileHost ? 260 : 420;
-  const capSummons = isMobileHost ? 120 : 220;
-  const capFx = isMobileHost ? 28 : 48;
+  const capEnemies = isMobileHost ? 160 : 220;
+  const capProj = isMobileHost ? 120 : 180;
+  const capRockets = isMobileHost ? 54 : 84;
+  const capOrbs = isMobileHost ? 160 : 220;
+  const capSummons = isMobileHost ? 56 : 84;
+  const capFx = isMobileHost ? 18 : 24;
 
   // Enemies (filtered + capped by distance to nearest player)
   const enemySrc = [];
@@ -2477,6 +2617,122 @@ function serializeSnapshot(state) {
   };
 }
 
+function netRoomTopologySignature(r) {
+  if (!r || typeof r !== "object") return "";
+  return [
+    (r.i | 0) || 0,
+    String(r.biome || ""),
+    String(r.nextBiome || ""),
+    String(r.prevBiome || ""),
+    (r.side | 0) || 0,
+    !!r.cleared ? 1 : 0,
+    !!r.hasNext ? 1 : 0,
+    (r.floorNumber | 0) || 0,
+    (r.roomOrdinal | 0) || 0,
+    (r.totalRooms | 0) || 0,
+    String(r.templateKey || ""),
+    String(r.templateRole || ""),
+    String(r.entrySocket || ""),
+    String(r.exitSocket || ""),
+    String(r.portalSocket || ""),
+    String(r.routeStyle || ""),
+    (typeof r.lateralOffset === "number" ? r.lateralOffset : 0),
+    (typeof r.centerX === "number" ? r.centerX : 0),
+    (typeof r.centerY === "number" ? r.centerY : 0),
+    String(r.nextTemplateKey || ""),
+    String(r.nextTemplateRole || ""),
+    String(r.nextEntrySocket || ""),
+    String(r.nextRouteStyle || ""),
+    (typeof r.nextLateralOffset === "number" ? r.nextLateralOffset : 0),
+    (typeof r.nextCenterX === "number" ? r.nextCenterX : 0),
+    (typeof r.nextCenterY === "number" ? r.nextCenterY : 0),
+    String(r.nextEncounterType || ""),
+    String(r.nextEncounterLabel || ""),
+  ].join("|");
+}
+
+function syncRoomDirectorFromNetRoom(state, r) {
+  const rd = state?.roomDirector;
+  if (!rd || typeof rd.forceSetCurrent !== 'function' || !r || typeof r !== 'object') return;
+  const sig = netRoomTopologySignature(r);
+  if (state._netRoomTopologySig !== sig) {
+    state._netRoomTopologySig = sig;
+    try {
+      rd.forceSetCurrent((r.i | 0) || 0, {
+        biome: state._roomBiome,
+        nextBiome: state._nextRoomBiome,
+        prevBiome: state._prevRoomBiome,
+        cleared: state._roomCleared,
+        hasNext: state._roomHasNext,
+        bridgeP: state._bridgeP,
+        gateHp: state._gateHp,
+        gateMax: state._gateMax,
+        gateReward: state._gateReward,
+        gateRepair: state._gateRepair,
+        gateRepairMode: state._gateRepairMode,
+        gatePressure: state._gatePressure,
+        gateUsed: state._gateUsed,
+        prevI: (r.prevI | 0) || 0,
+        prevT: (typeof r.prevT === 'number' ? r.prevT : 0),
+        prevCollapsing: !!r.prevC,
+        bridgeFrom: (r.bridgeFrom | 0) || 0,
+        bridgeTo: (r.bridgeTo | 0) || 0,
+        waitForParty: !!r.wait,
+        floorNumber: (r.floorNumber | 0) || 0,
+        roomOrdinal: (r.roomOrdinal | 0) || 0,
+        totalRooms: (r.totalRooms | 0) || 0,
+        encounterType: String(r.encounterType || ''),
+        encounterLabel: String(r.encounterLabel || ''),
+        templateKey: String(r.templateKey || ''),
+        templateRole: String(r.templateRole || ''),
+        entrySocket: String(r.entrySocket || ''),
+        exitSocket: String(r.exitSocket || ''),
+        portalSocket: String(r.portalSocket || ''),
+        routeStyle: String(r.routeStyle || ''),
+        lateralOffset: (typeof r.lateralOffset === 'number' ? r.lateralOffset : 0),
+        centerX: (typeof r.centerX === 'number' ? r.centerX : 0),
+        centerY: (typeof r.centerY === 'number' ? r.centerY : 0),
+        bridgeFromSocket: String(r.bridgeFromSocket || ''),
+        bridgeToSocket: String(r.bridgeToSocket || ''),
+        bridgeFromPoint: (r.bridgeFromPoint && typeof r.bridgeFromPoint === 'object') ? r.bridgeFromPoint : null,
+        bridgeToPoint: (r.bridgeToPoint && typeof r.bridgeToPoint === 'object') ? r.bridgeToPoint : null,
+        nextTemplateKey: String(r.nextTemplateKey || ''),
+        nextTemplateRole: String(r.nextTemplateRole || ''),
+        nextEntrySocket: String(r.nextEntrySocket || ''),
+        nextRouteStyle: String(r.nextRouteStyle || ''),
+        nextLateralOffset: (typeof r.nextLateralOffset === 'number' ? r.nextLateralOffset : 0),
+        nextCenterX: (typeof r.nextCenterX === 'number' ? r.nextCenterX : 0),
+        nextCenterY: (typeof r.nextCenterY === 'number' ? r.nextCenterY : 0),
+        nextEncounterType: String(r.nextEncounterType || ''),
+        nextEncounterLabel: String(r.nextEncounterLabel || ''),
+      });
+    } catch {}
+  }
+  try {
+    rd._waitForParty = !!r.wait;
+    if (rd.current) {
+      rd.current.cleared = !!r.cleared;
+      if (rd.current.cleared && (rd.current.index | 0) > 0) {
+        const anchor = rd.current?.arenaSpec?.anchors?.shopAnchor || { x: rd.current.centerX, y: rd.current.centerY + rd.current.side * 0.18 };
+        rd.current.shopNpc = { x: Number(anchor.x) || rd.current.centerX, y: Number(anchor.y) || rd.current.centerY, r: 20 };
+      } else if (rd.current) {
+        rd.current.shopNpc = null;
+      }
+    }
+    if (rd.bridge) {
+      const bp = (typeof r.bridgeP === 'number') ? r.bridgeP : 0;
+      rd.bridge.t = bp;
+      rd.bridge.progress = bp;
+      rd.bridge.built = !!r.bridgeBuilt;
+    }
+    if (rd.prev) {
+      rd.prev.collapsing = !!r.prevC;
+      rd.prev.collapseT = (typeof r.prevT === 'number') ? r.prevT : (rd.prev.collapseT || 0);
+    }
+    if (typeof rd._applyDynamicBounds === 'function') rd._applyDynamicBounds();
+  } catch {}
+}
+
 function applySnapshotToClient(state, snap) {
   if (!snap || typeof snap !== "object") return;
   // Apply only when snapshot is newer (avoid re-applying the same snap every frame).
@@ -2532,6 +2788,7 @@ function applySnapshotToClient(state, snap) {
       // Skill meta can be per-player (shop unlocks). If we have it from syncMeta, use it.
       const stored = state._netMetaById?.get(id) || null;
       p._metaSkillMeta = (stored && stored.skillMeta && typeof stored.skillMeta === "object") ? stored.skillMeta : (state.progression?.skillMeta || {});
+      p._selectedStarterLoadout = (stored && typeof stored.selectedStarterLoadout === "string") ? stored.selectedStarterLoadout : (state.progression?.selectedStarterLoadout || "mecha");
       // net smoothing targets
       p._netTx = p.x;
       p._netTy = p.y;
@@ -2879,55 +3136,7 @@ function applySnapshotToClient(state, snap) {
     state._nextRoomCenterY = (typeof r.nextCenterY === 'number') ? r.nextCenterY : (state._nextRoomCenterY || 0);
     state._nextRoomEncounter = String(r.nextEncounterType || state._nextRoomEncounter || '');
     state._nextRoomEncounterLabel = String(r.nextEncounterLabel || state._nextRoomEncounterLabel || '');
-    if (state.roomDirector && typeof state.roomDirector.forceSetCurrent === 'function') {
-      try {
-        state.roomDirector.forceSetCurrent(state.currentRoomIndex, {
-          biome: state._roomBiome,
-          nextBiome: state._nextRoomBiome,
-          prevBiome: state._prevRoomBiome,
-          cleared: state._roomCleared,
-          hasNext: state._roomHasNext,
-          bridgeP: state._bridgeP,
-          gateHp: state._gateHp,
-          gateMax: state._gateMax,
-          gateReward: state._gateReward,
-          gateRepair: state._gateRepair,
-          gateRepairMode: state._gateRepairMode,
-          gatePressure: state._gatePressure,
-          gateUsed: state._gateUsed,
-          prevI: (r.prevI | 0) || 0,
-          prevT: (typeof r.prevT === 'number' ? r.prevT : 0),
-          prevCollapsing: !!r.prevC,
-          bridgeFrom: (r.bridgeFrom | 0) || 0,
-          bridgeTo: (r.bridgeTo | 0) || 0,
-          waitForParty: !!r.wait,
-          floorNumber: (r.floorNumber | 0) || 0,
-          roomOrdinal: (r.roomOrdinal | 0) || 0,
-          totalRooms: (r.totalRooms | 0) || 0,
-          encounterType: String(r.encounterType || ''),
-          encounterLabel: String(r.encounterLabel || ''),
-          templateKey: String(r.templateKey || ''),
-          templateRole: String(r.templateRole || ''),
-          entrySocket: String(r.entrySocket || ''),
-          exitSocket: String(r.exitSocket || ''),
-          portalSocket: String(r.portalSocket || ''),
-          routeStyle: String(r.routeStyle || ''),
-          lateralOffset: (typeof r.lateralOffset === 'number' ? r.lateralOffset : 0),
-          centerX: (typeof r.centerX === 'number' ? r.centerX : 0),
-          centerY: (typeof r.centerY === 'number' ? r.centerY : 0),
-          nextTemplateKey: String(r.nextTemplateKey || ''),
-          nextTemplateRole: String(r.nextTemplateRole || ''),
-          nextEntrySocket: String(r.nextEntrySocket || ''),
-          nextRouteStyle: String(r.nextRouteStyle || ''),
-          nextLateralOffset: (typeof r.nextLateralOffset === 'number' ? r.nextLateralOffset : 0),
-          nextCenterX: (typeof r.nextCenterX === 'number' ? r.nextCenterX : 0),
-          nextCenterY: (typeof r.nextCenterY === 'number' ? r.nextCenterY : 0),
-          nextEncounterType: String(r.nextEncounterType || ''),
-          nextEncounterLabel: String(r.nextEncounterLabel || '')
-
-        });
-      } catch {}
-    }
+    syncRoomDirectorFromNetRoom(state, r);
   }
   // If host indicates we were left behind, return to start menu.
   if (r && Array.isArray(r.kickIds) && r.kickIds.length) {
@@ -3168,8 +3377,8 @@ function maybeSendSnapshot(state, dt = 0) {
 
   // Requested net cadence:
   // - 60 Hz authoritative sim (host)
-  // - 40 Hz snapshots (SNAP_DT = 1/40)
-  const SNAP_DT = 1 / 40;
+  // - 24 Hz full snapshots; 40 Hz players-only state stays separate for smoother movement.
+  const SNAP_DT = 1 / 24;
   state._netSnapAcc = (state._netSnapAcc || 0) + (Number.isFinite(dt) ? dt : 0);
 
   // Prevent huge catch-up spikes if the tab hiccups.
@@ -3182,51 +3391,154 @@ function maybeSendSnapshot(state, dt = 0) {
   state.net.sendSnapshot(serializeSnapshot(state));
 }
 
-function maybeEnterOnlineDeathOverlay(state) {
-  if (!isOnline(state)) return;
-  // Pixel_GO uses downed+revive instead of the old death overlay.
-  if (state.roomDirector) return;
-  if (state.mode !== "playing") return;
-  if (!state.player) return;
+function getAliveOtherPlayersCount(state, self) {
+  const ps = getPlayersArr(state);
+  let alive = 0;
+  const selfId = String(self?.id || '');
+  for (const p of ps) {
+    if (!p) continue;
+    if (String(p.id || '') === selfId) continue;
+    if ((p.hp || 0) > 0 && !p._kicked) alive++;
+  }
+  return alive;
+}
 
-  // If we already requested a respawn, don't re-open death UI until host revives us.
-  if (state._waitingRespawnAck) {
-    if (state.player.hp > 0) {
-      state._waitingRespawnAck = false;
-      state._deathHandled = false;
+function getCurrentDeathContinueCost(state, player = null) {
+  const p = player || state?.player || null;
+  const used = Math.max(0, (p?._deathContinueCount | 0) || (state?._deathContinueCount | 0) || 0);
+  if (used <= 0) return 10;
+  if (used === 1) return 20;
+  return 50;
+}
+
+function revivePlayerIntoCurrentRun(state, p) {
+  if (!state || !p) return false;
+  const room = state.roomDirector?.current || null;
+  const start = room?.arenaSpec?.anchors?.playerStart || null;
+  p.hp = Math.max(1, p.maxHP | 0);
+  p.vx = 0;
+  p.vy = 0;
+  p._reviving = null;
+  p._kicked = false;
+  if (start && Number.isFinite(Number(start.x)) && Number.isFinite(Number(start.y))) {
+    p.x = Number(start.x);
+    p.y = Number(start.y);
+  } else if (room) {
+    p.x = Number(room.centerX) || 0;
+    p.y = Number(room.centerY) || 0;
+  } else {
+    p.x = 0;
+    p.y = 0;
+  }
+  return true;
+}
+
+function returnRunToHub(state) {
+  if (!state) return false;
+  startNewRun(state);
+  if (state.roomDirector && typeof state.roomDirector.forceSetCurrent === 'function') {
+    try { state.roomDirector.forceSetCurrent(0); } catch {}
+    try { if (typeof state.roomDirector._ensureNextSpawned === 'function') state.roomDirector._ensureNextSpawned(); } catch {}
+    try { if (typeof state.roomDirector._ensureBridge === 'function') state.roomDirector._ensureBridge(); } catch {}
+    try { if (typeof state.roomDirector._applyDynamicBounds === 'function') state.roomDirector._applyDynamicBounds(); } catch {}
+  }
+  try {
+    const ss = state.spawnSystem;
+    if (ss && typeof ss.onRoomChanged === 'function') ss.onRoomChanged(state.roomDirector?.current || null);
+  } catch {}
+  const room = state.roomDirector?.current || null;
+  const start = room?.arenaSpec?.anchors?.playerStart || room?.exitPortal || { x: 0, y: 0 };
+  const ps = getPlayersArr(state);
+  for (const p of ps) {
+    if (!p) continue;
+    p.hp = Math.max(1, p.maxHP | 0);
+    p.vx = 0;
+    p.vy = 0;
+    p._reviving = null;
+    p._kicked = false;
+    p._deathContinueCount = 0;
+    if (start && Number.isFinite(Number(start.x)) && Number.isFinite(Number(start.y))) {
+      p.x = Number(start.x) || 0;
+      p.y = Number(start.y) || 0;
     } else {
-      return;
+      p.x = Number(room?.centerX) || 0;
+      p.y = Number(room?.centerY) || 0;
     }
   }
+  state._deathContinueCount = 0;
+  state._deathHandled = false;
+  state._waitingRespawnAck = false;
+  state.overlayMode = null;
+  state._runUpgradeActive = false;
+  state._runUpgradeChoices = null;
+  state._floorShopActive = false;
+  try { hideFloorShopOverlay(); } catch {}
+  try { syncPersistentRunUnlocks(state); } catch {}
+  return true;
+}
 
-  // reset when alive
-  if (state.player.hp > 0) {
+function maybeEnterDeathContinueOverlay(state) {
+  if (!state || state.mode !== 'playing' || !state.player) return;
+
+  const player = state.player;
+  if ((player.hp || 0) > 0) {
     state._deathHandled = false;
+    state._waitingRespawnAck = false;
+    if (state.overlayMode === 'deathContinue') state.overlayMode = null;
+    state._deathContinueCount = Math.max(0, (player._deathContinueCount | 0) || 0);
     return;
   }
 
-  if (state._deathHandled || state.overlayMode) return;
+  if (state._waitingRespawnAck) return;
+  if (state.overlayMode) return;
 
-  // Award score/points since last life (delta runScore)
-  const nowScore = Math.floor(state.runScore || 0);
-  const prev = Math.floor(state._lastDeathAwardScore || 0);
-  const delta = Math.max(0, nowScore - prev);
-  state._lastDeathAwardScore = nowScore;
+  // In co-op, let living teammates attempt a manual revive first.
+  if (getAliveOtherPlayersCount(state, player) > 0) return;
 
-  state.progression.totalScore = Math.max(0, (state.progression.totalScore || 0) + delta);
-  const gainedPoints = Math.max(0, Math.floor(delta / 400));
-  state.progression.upgradePoints = Math.max(0, (state.progression.upgradePoints || 0) + gainedPoints);
-
-  state.lastRunSummary = {
-    runScore: delta,
-    gainedPoints,
-    startLevel: state.player.level || getStartLevel(state.progression),
-  };
-  try { saveProgression(state.progression); } catch {}
-
-  // Show resurrection screen if available, otherwise upgrade screen.
-  state.overlayMode = state.flags?.resGuardianKilledThisRun ? "resurrection" : "upgrade";
+  if (state._deathHandled) return;
+  state._deathContinueCount = Math.max(0, (player._deathContinueCount | 0) || 0);
+  state.overlayMode = 'deathContinue';
   state._deathHandled = true;
+}
+
+function handleDeathContinueAction(state, action) {
+  if (!state || !state.player) return false;
+  const player = state.player;
+  const cost = getCurrentDeathContinueCost(state, player);
+  if (action === 'continue') {
+    if (((player.skillPoints | 0) || 0) < cost) {
+      if (state.popups) state.popups.push({ text: 'Not enough SP', time: 1.0 });
+      return false;
+    }
+    if (isOnline(state) && state.net && !state.net.isHost) {
+      player._deathContinueCount = Math.max(0, (player._deathContinueCount | 0) || 0) + 1;
+      state._deathContinueCount = player._deathContinueCount | 0;
+      state._waitingRespawnAck = true;
+      state.overlayMode = null;
+      state.net.requestRespawn({ action: 'continue', cost, meta: null });
+      return true;
+    }
+    player.skillPoints = Math.max(0, ((player.skillPoints | 0) || 0) - cost);
+    player._deathContinueCount = Math.max(0, (player._deathContinueCount | 0) || 0) + 1;
+    state._deathContinueCount = player._deathContinueCount | 0;
+    revivePlayerIntoCurrentRun(state, player);
+    state.overlayMode = null;
+    state._deathHandled = false;
+    state._waitingRespawnAck = false;
+    if (state.popups) state.popups.push({ text: `Continue -${cost} SP`, time: 1.0 });
+    return true;
+  }
+  if (action === 'hub') {
+    if (isOnline(state) && state.net && !state.net.isHost) {
+      state._waitingRespawnAck = true;
+      state.overlayMode = null;
+      state.net.requestRespawn({ action: 'hub', meta: null });
+      return true;
+    }
+    returnRunToHub(state);
+    return true;
+  }
+  return false;
 }
 
 function respawnPlayerToHub(state, p, meta) {
@@ -3237,13 +3549,11 @@ function respawnPlayerToHub(state, p, meta) {
   p.vx = 0;
   p.vy = 0;
   p.hp = p.maxHP;
-  // Keep level/xp as-is (co-op world continues)
 }
 
 function processRespawnRequests(state) {
   if (!isOnline(state)) return;
   if (!state.net?.isHost) {
-    // Joiner respawn is applied by host; locally we only clear overlays.
     return;
   }
 
@@ -3251,12 +3561,27 @@ function processRespawnRequests(state) {
     if (!p) continue;
     if (!p._netRespawnRequested) continue;
     p._netRespawnRequested = false;
-    const id = String(p.id);
-    const meta = state._netMetaById?.get(id) || null;
+    const req = p._netRespawnRequest || null;
+    p._netRespawnRequest = null;
+    const meta = req?.meta || state._netMetaById?.get(String(p.id)) || null;
+    const action = String(req?.action || 'legacy');
+    if (action === 'continue') {
+      const cost = Math.max(0, Number(req?.cost) || getCurrentDeathContinueCost(state, p));
+      const sp = Math.max(0, (p.skillPoints | 0) || 0);
+      if (sp >= cost) {
+        p.skillPoints = sp - cost;
+        p._deathContinueCount = Math.max(0, (p._deathContinueCount | 0) || 0) + 1;
+        revivePlayerIntoCurrentRun(state, p);
+      }
+      continue;
+    }
+    if (action === 'hub') {
+      returnRunToHub(state);
+      continue;
+    }
     respawnPlayerToHub(state, p, meta);
   }
 }
-
 
 // --- Revive system (Pixel_GO co-op) ----------------------------------------
 // When a player dies (hp<=0), they stay as a corpse. Teammates can revive them by channeling.
@@ -3365,6 +3690,9 @@ function updateEnemies(state, dt) {
       }
     } catch {}
 
+    const _prevEnemyX = Number(e?.x) || 0;
+    const _prevEnemyY = Number(e?.y) || 0;
+
     if (e.update) {
       // Defensive: a single enemy script error must not freeze the whole run.
       // If an enemy update throws, remove that enemy and continue.
@@ -3420,6 +3748,12 @@ function updateEnemies(state, dt) {
         e.y = ny;
       }
     }
+
+    try {
+      const curRoom = state?.roomDirector?.current || null;
+      if (curRoom) clampEntityToRoomWalkable(e, curRoom, { pad: 1, prevX: _prevEnemyX, prevY: _prevEnemyY });
+      else clampPlayerToActiveWalkable(e, state, { pad: 1, prevX: _prevEnemyX, prevY: _prevEnemyY });
+    } catch {}
 
     if (e.hp <= 0 || e._remove) {
       // Light affinity: heal the killer on kill.
@@ -3491,6 +3825,10 @@ function updateProjectiles(state, dt) {
         }
         const owner = getPlayerById(state, b.ownerId) || state.player;
         let dmg = applyCritToDamage(owner, b.damage);
+        if (b.type === 'iceShard') {
+          e._frostLeft = Math.max((e._frostLeft || 0), 1.6);
+          e._frostLv = Math.max((e._frostLv || 0), 1);
+        }
 
         // Biome marks (Ice/Dark) increase damage vs marked targets.
         try {
@@ -4467,13 +4805,17 @@ function renderSkillFx(state, ctx) {
     ctx.stroke();
   }
 
-  // Explosions (fireball / ice ball)
+  // Burst rings (fire / ice / electric / dark / light)
   for (const ex of exs) {
     const p = 1 - Math.max(0, Math.min(1, (ex.t || 0) / 0.35));
     const rr = (ex.r || 0) * (0.65 + p * 0.55);
-    const isIce = ex.kind === 'ice';
+    let stroke = `rgba(255,120,60,${0.55 * (1 - p)})`;
+    if (ex.kind === 'ice') stroke = `rgba(130,220,255,${0.55 * (1 - p)})`;
+    else if (ex.kind === 'electric') stroke = `rgba(170,245,255,${0.56 * (1 - p)})`;
+    else if (ex.kind === 'dark') stroke = `rgba(186,120,255,${0.56 * (1 - p)})`;
+    else if (ex.kind === 'light') stroke = `rgba(255,244,176,${0.56 * (1 - p)})`;
     ctx.beginPath();
-    ctx.strokeStyle = isIce ? `rgba(130,220,255,${0.55 * (1 - p)})` : `rgba(255,120,60,${0.55 * (1 - p)})`;
+    ctx.strokeStyle = stroke;
     ctx.lineWidth = 4;
     ctx.arc(ex.x, ex.y, rr, 0, Math.PI * 2);
     ctx.stroke();
@@ -4551,8 +4893,9 @@ function renderProjectiles(state, ctx) {
       const r = (b.radius || 4);
       const isFb = (b.type === 'fireball');
       const isIb = (b.type === 'iceball');
-      const s = (isFb || isIb) ? Math.max(6, Math.min(14, r * 2.2)) : Math.max(3, Math.min(8, r * 1.8));
-      ctx.fillStyle = isFb ? "rgba(255,120,60,0.95)" : (isIb ? "rgba(130,220,255,0.95)" : "#f4e9a3");
+      const isIceShard = (b.type === 'iceShard');
+      const s = (isFb || isIb || isIceShard) ? Math.max(6, Math.min(14, r * 2.2)) : Math.max(3, Math.min(8, r * 1.8));
+      ctx.fillStyle = isFb ? "rgba(255,120,60,0.95)" : ((isIb || isIceShard) ? "rgba(130,220,255,0.95)" : "#f4e9a3");
       ctx.fillRect(b.x - s * 0.5, b.y - s * 0.5, s, s);
     }
       const maxRockets = 80;
@@ -4576,14 +4919,15 @@ function renderProjectiles(state, ctx) {
       if (!b) continue;
       const isFb = (b.type === 'fireball');
       const isIb = (b.type === 'iceball');
-      if (isFb || isIb) {
-        const r = Math.max(6, (b.radius || 10));
+      const isIceShard = (b.type === 'iceShard');
+      if (isFb || isIb || isIceShard) {
+        const r = Math.max(isIceShard ? 4 : 6, (b.radius || (isIceShard ? 5 : 10)));
         ctx.beginPath();
-        ctx.fillStyle = isIb ? "rgba(130,220,255,0.92)" : "rgba(255,120,60,0.92)";
+        ctx.fillStyle = (isIb || isIceShard) ? "rgba(130,220,255,0.92)" : "rgba(255,120,60,0.92)";
         ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
         ctx.fill();
         ctx.beginPath();
-        ctx.strokeStyle = isIb ? "rgba(225,245,255,0.62)" : "rgba(255,220,170,0.55)";
+        ctx.strokeStyle = (isIb || isIceShard) ? "rgba(225,245,255,0.62)" : "rgba(255,220,170,0.55)";
         ctx.lineWidth = 2;
         ctx.arc(b.x, b.y, r * 0.7, 0, Math.PI * 2);
         ctx.stroke();
@@ -5134,27 +5478,6 @@ function renderPopups(ctx, state) {
 }
 
 function checkPlayerDeath(state) {
-  const { player, progression } = state;
-  if (player.hp > 0) return;
-  if (state.mode !== "playing") return;
-
-  const runScore = Math.floor(state.runScore);
-  const gainedPoints = Math.max(1, Math.floor(runScore / 400));
-
-  progression.totalScore += runScore;
-  progression.upgradePoints += gainedPoints;
-
-  if (state.flags && state.flags.resGuardianKilledThisRun) {
-    state.mode = "resurrection";
-  } else {
-    state.mode = "upgrade";
-  }
-
-  state.lastRunSummary = {
-    runScore,
-    totalScore: progression.totalScore,
-    gainedPoints,
-  };
-
-  saveProgression(progression);
+  // Retired for Pixel_GO room-runs. Death is now handled by the in-run continue / hub overlay.
+  maybeEnterDeathContinueOverlay(state);
 }

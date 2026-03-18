@@ -1278,7 +1278,10 @@ function drawArenaSpecDecor(ctx, room, arenaSpec, time = 0) {
     const isRelayBalcony = kind === 'relay_balcony';
     const isLightningRod = kind === 'lightning_rod';
     const isHubSealRoom = !!arenaSpec?.rules?.isHub || String(room?.biomeKey || '').toLowerCase() === 'hub';
-    if (isHubSealRoom && (isReactor || isPortal || isShop || isTier || isSpawn)) {
+    // Keep the central hub core visible even when the camera moves behind the center.
+    // Other large hub anchors are already covered by the baked hub art, but the core gets an
+    // extra world-space glow here so it never seems to disappear near the portal side.
+    if (isHubSealRoom && (isPortal || isShop || isTier || isSpawn)) {
       continue;
     }
     const isCapacitorPetal = kind === 'capacitor_petal';

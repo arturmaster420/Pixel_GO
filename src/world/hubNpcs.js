@@ -22,12 +22,22 @@ export const HUB_NPCS = (() => {
     {
       id: "tier",
       kind: "tier",
-      name: "Tier Master",
+      name: "Death Shop~Up",
       emoji: "🧙",
       x: xCorner,
       y: yCorner,
       r: Math.max(90, Math.round(HUB_HALF * 0.35)),
       scale: 0.5,
+    },
+    {
+      id: "basic",
+      kind: "basic",
+      name: "Basic Core",
+      emoji: "⚙️",
+      x: 0,
+      y: yCorner + Math.round(HUB_HALF * 0.08),
+      r: Math.max(132, Math.round(HUB_HALF * 0.38)),
+      scale: 0.92,
     },
   ];
 })();
@@ -39,7 +49,8 @@ function getActiveHubNpcs(state = null) {
 
   const npcById = {
     shop: { id: "shop", kind: "shop", name: "Merchant", emoji: "🛒", scale: 0.54, r: 96 },
-    tier: { id: "tier", kind: "tier", name: "Tier Master", emoji: "🧙", scale: 0.54, r: 96 },
+    tier: { id: "tier", kind: "tier", name: "Death Shop~Up", emoji: "🧙", scale: 0.54, r: 96 },
+    basic: { id: "basic", kind: "basic", name: "Basic Core", emoji: "⚙️", scale: 0.96, r: 138 },
   };
 
   const out = [];
@@ -88,25 +99,66 @@ export function renderHubNpcs(ctx, state) {
     const base = 46 * sc;
     const ring = 54 * sc;
 
+    const isBasic = n.kind === "basic";
+    const pulse = 0.82 + 0.18 * Math.sin((state.time || 0) * 3.4);
+
+    // Glow / beacon for high-importance NPCs.
+    if (isBasic) {
+      const glow = ctx.createRadialGradient(n.x, n.y, ring * 0.18, n.x, n.y, ring * 1.95);
+      glow.addColorStop(0, `rgba(120,220,255,${0.28 * pulse})`);
+      glow.addColorStop(0.42, `rgba(120,220,255,${0.16 * pulse})`);
+      glow.addColorStop(1, 'rgba(120,220,255,0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, ring * 2.0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     // Ring
     ctx.beginPath();
-    ctx.strokeStyle = "rgba(255,255,255,0.22)";
-    ctx.lineWidth = 4 * sc;
-    ctx.arc(n.x, n.y, ring, 0, Math.PI * 2);
+    ctx.strokeStyle = isBasic ? `rgba(150,240,255,${0.62 + 0.14 * pulse})` : "rgba(255,255,255,0.22)";
+    ctx.lineWidth = (isBasic ? 6 : 4) * sc;
+    ctx.arc(n.x, n.y, ring * (isBasic ? (1.02 + 0.06 * pulse) : 1), 0, Math.PI * 2);
     ctx.stroke();
 
+    if (isBasic) {
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(255,245,180,${0.45 + 0.10 * pulse})`;
+      ctx.lineWidth = 2.5 * sc;
+      ctx.arc(n.x, n.y, ring * 1.28, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     // Emoji
-    ctx.font = base + "px sans-serif";
+    ctx.font = (isBasic ? base * 1.16 : base) + "px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+    ctx.strokeStyle = isBasic ? 'rgba(0,20,28,0.95)' : 'rgba(0,0,0,0.65)';
+    ctx.lineWidth = (isBasic ? 6 : 4) * sc;
+    ctx.strokeText(n.emoji || "🙂", n.x, n.y + 2 * sc);
     ctx.fillStyle = "#fff";
     ctx.fillText(n.emoji || "🙂", n.x, n.y + 2 * sc);
 
-    // Small name label
-    ctx.globalAlpha = 0.75;
-    ctx.font = (16 * sc) + "px sans-serif";
-    ctx.fillStyle = "rgba(255,255,255,0.9)";
-    ctx.fillText(n.name || "", n.x, n.y + 56 * sc);
+    // Small name label with contrast backing.
+    const label = n.name || "";
+    ctx.font = ((isBasic ? 18 : 16) * sc) + "px sans-serif";
+    const tw = ctx.measureText(label).width;
+    const padX = 10 * sc;
+    const padY = 5 * sc;
+    const lx = n.x - tw * 0.5 - padX;
+    const ly = n.y + 46 * sc;
+    const lw = tw + padX * 2;
+    const lh = (isBasic ? 24 : 22) * sc;
+    ctx.fillStyle = isBasic ? 'rgba(8,22,32,0.88)' : 'rgba(0,0,0,0.45)';
+    ctx.beginPath();
+    if (typeof ctx.roundRect === 'function') ctx.roundRect(lx, ly, lw, lh, 8 * sc);
+    else ctx.rect(lx, ly, lw, lh);
+    ctx.fill();
+    ctx.strokeStyle = isBasic ? 'rgba(150,240,255,0.65)' : 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1.5 * sc;
+    ctx.stroke();
+    ctx.fillStyle = isBasic ? 'rgba(245,252,255,0.98)' : 'rgba(255,255,255,0.9)';
+    ctx.fillText(label, n.x, ly + lh * 0.5 + 0.5 * sc);
 
     ctx.restore();
   }

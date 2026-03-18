@@ -3,7 +3,8 @@
 // - Offers are generated per-player, per-floor (host authoritative in co-op).
 
 import { initRunUpgrades, describeRunUpgrade, applyRunUpgrade, tryApplyRunUpgrade, RUN_SKILLS, MAX_RUN_SKILL_LEVEL, MAX_RUN_ACTIVE_SKILLS } from "./runUpgrades.js";
-import { STANDARD_SKILL_KEYS, biomeSkillsFor, getSkillFamily } from "../weapons/skillCatalog.js";
+import { biomeSkillsFor, getSkillFamily } from "../weapons/skillCatalog.js";
+import { getStarterLoadoutDef } from "./starterLoadouts.js";
 import { biomeName } from "../world/biomes.js";
 
 const MAX_SKILL_LV = 6;
@@ -52,13 +53,33 @@ export function getReplaceCandidates(player, newSkillKey) {
   return out;
 }
 
-const STANDARD_SKILLS = STANDARD_SKILL_KEYS.map((key) => {
-  const def = (RUN_SKILLS || []).find((s) => s && s.key === key);
-  return { key, name: String(def?.name || key) };
-});
+const STARTER_STANDARD_SKILL_KEYS = ["bullets", "lightning", "fireball", "iceWall"];
+
+function getStarterStandardSkillDef(player) {
+  const requestedKey = String(player?._starterSkillKey || '').trim();
+  const loadoutKey = String(player?._selectedStarterLoadout || '').trim();
+  const fallbackKey = String(getStarterLoadoutDef(loadoutKey).skillKey || '').trim();
+  const starterKey = STARTER_STANDARD_SKILL_KEYS.includes(requestedKey)
+    ? requestedKey
+    : (STARTER_STANDARD_SKILL_KEYS.includes(fallbackKey) ? fallbackKey : 'bullets');
+  const def = (RUN_SKILLS || []).find((s) => s && s.key === starterKey);
+  return def ? { key: starterKey, name: String(def.name || starterKey) } : null;
+}
+
+function getBiomeSkillOfferDefsForPlayer(player, biomeKey) {
+  const biome = String(biomeKey || '').toLowerCase();
+  const out = [...(biomeSkillsFor(biome) || [])];
+  if (biome === 'neutral' || biome === 'mecha' || biome === 'mechanoid' || biome === '') {
+    const starterDef = getStarterStandardSkillDef(player);
+    if (starterDef && !out.some((def) => def && def.key === starterDef.key)) out.push(starterDef);
+  }
+  return out;
+}
 
 function getFloorShopSkillOfferDefs(player) {
-  const out = STANDARD_SKILLS.slice();
+  const out = [];
+  const starterDef = getStarterStandardSkillDef(player);
+  if (starterDef) out.push(starterDef);
   const hasRockets = !!(((player?.runSkills?.rockets | 0) > 0) || player?.runEvolutions?.rocketFusion);
   if (hasRockets && !out.some((def) => def && def.key === "rockets")) {
     const def = (RUN_SKILLS || []).find((s) => s && s.key === "rockets");
@@ -292,7 +313,8 @@ export function rollFloorShopOffers(player, floorIndex, biomeKey, count = 3) {
   if (!player) return [];
   initRunUpgrades(player);
   const floor = floorIndex | 0;
-  const biome = String(biomeKey || "").toLowerCase();
+  const rawBiome = String(biomeKey || "").toLowerCase();
+  const biome = rawBiome || 'neutral';
   const hasBiome = !!biome;
 
   const offers = [];
@@ -311,7 +333,7 @@ export function rollFloorShopOffers(player, floorIndex, biomeKey, count = 3) {
   if (evoOffer) offers.push(evoOffer);
 
   if (hasBiome && offers.length < count) {
-    const biomeSkillDefs = biomeSkillsFor(biome) || [];
+    const biomeSkillDefs = getBiomeSkillOfferDefsForPlayer(player, biome) || [];
     const biomeSkillOffers = biomeSkillDefs
       .map((def) => makeSkillOffer(player, floor, 0, def))
       .filter(Boolean);
@@ -333,7 +355,7 @@ export function rollFloorShopOffers(player, floorIndex, biomeKey, count = 3) {
     mixedPool.push(makePassiveOffer(player, floor, offers.length, def));
   }
   if (hasBiome) {
-    for (const def of (biomeSkillsFor(biome) || [])) {
+    for (const def of (getBiomeSkillOfferDefsForPlayer(player, biome) || [])) {
       const o = makeSkillOffer(player, floor, offers.length, def);
       if (o) mixedPool.push(addLabeledBiomeOffer(o));
     }

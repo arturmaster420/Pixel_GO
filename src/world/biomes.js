@@ -31,7 +31,7 @@ export function biomeByKey(key) {
 
 export function biomeName(key) {
   const b = biomeByKey(key);
-  return b ? b.name : "Neutral";
+  return b ? b.name : "Mechanoid";
 }
 
 export function pickBiome(prevKey) {

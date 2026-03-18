@@ -80,10 +80,12 @@ export function defaultProgression() {
     roomCode: "",
     totalScore: 0,
     upgradePoints: 0,
+    deathPoints: 0,
     coins: 0,
     skillMeta: {},
     shopOffers: { active: [], passive: [] },
     shopRerollCount: 0,
+    selectedStarterLoadout: "mecha",
     metaVersion: 7,
     // Dev override: keep all R-Tiers unlocked by default.
     resurrectedTier: MAX_R_TIER,
@@ -196,11 +198,13 @@ export function loadProgression() {
       auraId: typeof parsed.auraId === "number" && Number.isFinite(parsed.auraId) ? (parsed.auraId|0) : (base.auraId|0),
       roomCode: typeof parsed.roomCode === "string" ? parsed.roomCode.trim().toUpperCase().slice(0, 8) : base.roomCode,
       totalScore: typeof parsed.totalScore === "number" ? parsed.totalScore : base.totalScore,
-      upgradePoints: typeof parsed.upgradePoints === "number" ? parsed.upgradePoints : base.upgradePoints,
+      upgradePoints: typeof parsed.deathPoints === "number" ? parsed.deathPoints : (typeof parsed.upgradePoints === "number" ? parsed.upgradePoints : base.upgradePoints),
+      deathPoints: typeof parsed.deathPoints === "number" ? parsed.deathPoints : (typeof parsed.upgradePoints === "number" ? parsed.upgradePoints : base.deathPoints),
       coins: typeof parsed.coins === "number" && Number.isFinite(parsed.coins) ? Math.max(0, Math.floor(parsed.coins)) : (base.coins || 0),
       skillMeta: (parsed.skillMeta && typeof parsed.skillMeta === "object") ? parsed.skillMeta : (base.skillMeta || {}),
       shopOffers: (parsed.shopOffers && typeof parsed.shopOffers === "object") ? parsed.shopOffers : (base.shopOffers || { active: [], passive: [] }),
       shopRerollCount: typeof parsed.shopRerollCount === "number" && Number.isFinite(parsed.shopRerollCount) ? Math.max(0, Math.floor(parsed.shopRerollCount)) : (base.shopRerollCount || 0),
+      selectedStarterLoadout: typeof parsed.selectedStarterLoadout === "string" ? parsed.selectedStarterLoadout : base.selectedStarterLoadout,
       metaVersion: (typeof parsed.metaVersion === "number" && Number.isFinite(parsed.metaVersion)) ? (parsed.metaVersion | 0) : (base.metaVersion | 0),
       resurrectedTier:
         typeof parsed.resurrectedTier === "number"
@@ -234,6 +238,10 @@ export function loadProgression() {
       }
     }
 
+    // Keep aliases in sync.
+    data.upgradePoints = Math.max(0, Math.floor(data.upgradePoints || 0));
+    data.deathPoints = data.upgradePoints;
+
     // Clamp avatar selection to unlocked range (2 per Start Level)
     const startLevel = Math.min(100, Math.floor((data.totalScore || 0) / 1000));
     data.avatarIndex = clampAvatarIndex(startLevel, data.avatarIndex);
@@ -250,6 +258,11 @@ export function loadProgression() {
 
 export function saveProgression(data) {
   try {
+    if (data && typeof data === "object") {
+      const pts = Math.max(0, Math.floor((typeof data.deathPoints === "number" ? data.deathPoints : data.upgradePoints) || 0));
+      data.upgradePoints = pts;
+      data.deathPoints = pts;
+    }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (err) {
     console.error("[Progression] Failed to save progression", err);

@@ -655,6 +655,17 @@ function chooseSpawnCandidate(room, players, minDist = 220, tuning = null, ancho
     if (outerOnly.length) candidates = outerOnly;
   }
   const side = Math.max(420, Number(room?.side) || 840);
+  const isFirstIntroRoom = Math.max(1, room?.floorNumber || 1) === 1 && Math.max(1, room?.roomOrdinal || 1) === 1;
+  if (isFirstIntroRoom && Array.isArray(candidates) && candidates.length) {
+    const topOnly = candidates.filter((c) => {
+      const cy = Number(c?.y) || 0;
+      const cx = Number(c?.x) || 0;
+      if (cy > (Number(room?.centerY) || 0) + side * 0.12) return false;
+      if (distance(cx, cy, context.entryPoint.x, context.entryPoint.y) < side * 0.26) return false;
+      return true;
+    });
+    if (topOnly.length) candidates = topOnly;
+  }
   const weights = tuning?.scoreWeights || {};
   const jitter = clamp(Number(tuning?.spawnJitter) || 36, 20, 42);
   const minD2 = minDist * minDist;

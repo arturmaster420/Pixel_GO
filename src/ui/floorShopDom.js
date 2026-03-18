@@ -73,30 +73,9 @@ function ensureDom() {
   const panel = root.querySelector(".panel");
   panel.addEventListener("keydown", (e) => {
     if (!root || root.style.display !== "flex") return;
-    const k = e.key;
-    if (k === "Escape") {
+    const key = e.code || e.key;
+    if (triggerHotkey(key) || triggerHotkey(e.key)) {
       e.preventDefault();
-      hideFloorShopOverlay();
-      return;
-    }
-    if (k === "r" || k === "R") {
-      const btn = root.querySelector("#floorShopRerollBtn");
-      if (btn && !btn.disabled && typeof onReroll === "function") {
-        e.preventDefault();
-        onReroll();
-      }
-      return;
-    }
-    // 1..9 hotkeys
-    if (k && k.length === 1) {
-      const cc = k.charCodeAt(0);
-      if (cc >= 49 && cc <= 57) {
-        const idx = (cc - 49) | 0;
-        if (lastChoices && lastChoices[idx]) {
-          e.preventDefault();
-          pick(lastChoices[idx]);
-        }
-      }
     }
   });
 
@@ -110,8 +89,51 @@ function ensureDom() {
 
 function pick(choice) {
   if (typeof onPick === "function") {
-    onPick(choice);
+    _closingByPick = true;
+    try {
+      onPick(choice);
+    } finally {
+      _closingByPick = false;
+    }
   }
+}
+
+function triggerHotkey(key) {
+  if (!root || root.style.display !== "flex") return false;
+  const k = String(key || '');
+  if (k === 'Escape') {
+    hideFloorShopOverlay();
+    return true;
+  }
+  if (k === 'r' || k === 'R' || k === 'KeyR') {
+    const btn = root.querySelector("#floorShopRerollBtn");
+    if (btn && !btn.disabled && typeof onReroll === "function") {
+      onReroll();
+      return true;
+    }
+    return false;
+  }
+  let idx = -1;
+  if (k.startsWith('Digit') && k.length === 6) {
+    const n = Number(k.slice(5));
+    if (Number.isFinite(n) && n >= 1 && n <= 9) idx = (n - 1) | 0;
+  } else if (k.length === 1) {
+    const cc = k.charCodeAt(0);
+    if (cc >= 49 && cc <= 57) idx = (cc - 49) | 0;
+  }
+  if (idx >= 0 && lastChoices && lastChoices[idx]) {
+    pick(lastChoices[idx]);
+    return true;
+  }
+  return false;
+}
+
+export function isFloorShopOverlayVisible() {
+  return !!(root && root.style.display === "flex");
+}
+
+export function handleFloorShopHotkey(key) {
+  return triggerHotkey(key);
 }
 
 export function showFloorShopOverlay({ title, subtitle, metaText, choices, onPickCb, onCloseCb, onRerollCb, rerollText, rerollDisabled, hint } = {}) {
@@ -186,6 +208,7 @@ export function hideFloorShopOverlay() {
   if (!_closingByPick && typeof onClose === 'function') {
     try { onClose(); } catch {}
   }
+  _closingByPick = false;
   lastChoices = null;
   onPick = null;
   onClose = null;

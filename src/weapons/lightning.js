@@ -37,7 +37,7 @@ export function fireChainLightning(player, state, params, aimDir) {
 
   player._lastCombatAt = state.time;
 
-  const maxTargets = Math.max(2, params.maxTargets || 2);
+  const maxTargets = Math.max(1, params.maxTargets || 1);
   const targets = getChainTargets(origin, enemies, maxTargets, params.chainRange);
   let dmg = params.damage;
 
