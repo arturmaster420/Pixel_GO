@@ -86,11 +86,44 @@ function getCurrentStatsRows(state) {
     ? Math.round(player.nextLevelXp)
     : (typeof player.xpToNext === 'function' ? Math.round(player.xpToNext()) : 0);
 
+  const starterDef = getStarterLoadoutDef(player?._selectedStarterLoadout || state?.progression?.selectedStarterLoadout || 'mecha');
+  const coreName = String(starterDef?.name || 'Mecha Core');
+  const coreSkillName = String(starterDef?.skillName || getSkillName(starterDef?.skillKey || 'bullets'));
+  const coreType = String(player?._starterDamageType || starterDef?.damageType || 'mecha');
+  const baseDamage = Number.isFinite(player.damage) ? Number(player.damage) : Number(player.baseDamage || 4);
+  const damageTypeMults = player?.runDamageTypeMults && typeof player.runDamageTypeMults === 'object' ? player.runDamageTypeMults : {};
+  const passives = player?.runPassives && typeof player.runPassives === 'object' ? player.runPassives : {};
+  const damageTypes = [
+    { key: 'mecha', label: 'Mecha ATK' },
+    { key: 'electric', label: 'Electric ATK' },
+    { key: 'fire', label: 'Fire ATK' },
+    { key: 'ice', label: 'Ice ATK' },
+    { key: 'light', label: 'Light ATK' },
+    { key: 'dark', label: 'Dark ATK' },
+  ];
+  const affinities = [
+    { key: 'affElectric', label: 'Electric Affinity' },
+    { key: 'affFire', label: 'Fire Affinity' },
+    { key: 'affIce', label: 'Ice Affinity' },
+    { key: 'affLight', label: 'Light Affinity' },
+    { key: 'affDark', label: 'Dark Affinity' },
+  ];
+
+  const typeRows = damageTypes.map(({ key, label }) => {
+    const mult = Number.isFinite(damageTypeMults[key]) && damageTypeMults[key] > 0 ? Number(damageTypeMults[key]) : 1;
+    const effective = baseDamage * mult;
+    return { label, value: `${formatStatValue(effective, 1)} (x${mult.toFixed(2)})` };
+  });
+  const affinityRows = affinities.map(({ key, label }) => ({
+    label,
+    value: `Lv ${Math.max(0, passives[key] | 0)}`,
+  }));
+
   return [
     { label: 'Level', value: String(Math.max(0, player.level | 0)) },
     { label: 'Skill Points', value: String(Math.max(0, player.skillPoints | 0)) },
     { label: 'HP', value: `${Math.max(0, Math.round(player.hp || 0))}/${Math.max(1, Math.round(player.maxHP || 1))}` },
-    { label: 'Damage', value: formatStatValue(player.damage || 0, 1) },
+    { label: 'Damage', value: formatStatValue(baseDamage, 1) },
     { label: 'Attack Speed', value: formatStatValue(player.attackSpeed || 0, 2, '/s') },
     { label: 'Move Speed', value: formatStatValue(player.moveSpeed || 0, 0) },
     { label: 'Range', value: formatStatValue(player.range || 0, 2, 'x') },
@@ -101,6 +134,13 @@ function getCurrentStatsRows(state) {
     { label: 'Pickup Radius', value: formatStatValue(pickupRadius, 0) },
     { label: 'XP Gain', value: formatStatValue(xpGain, 1, '%') },
     { label: 'XP', value: levelXpNeed > 0 ? `${Math.max(0, Math.round(player.xp || 0))}/${levelXpNeed}` : String(Math.max(0, Math.round(player.xp || 0))) },
+    { section: 'CORE & TYPE' },
+    { label: 'Starter Core', value: coreName },
+    { label: 'Core Skill', value: coreSkillName },
+    { label: 'Core Type', value: coreType.toUpperCase() },
+    ...typeRows,
+    { section: 'AFFINITIES' },
+    ...affinityRows,
   ];
 }
 
@@ -260,8 +300,11 @@ function drawStatsPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale) {
   }
 
   const rows = getCurrentStatsRows(state);
-  const panelW = Math.min(380, Math.max(300, scaledW * 0.30));
-  const panelH = Math.min(scaledH - (topPanelH + 64), Math.max(340, 82 + rows.length * 28));
+  const dense = rows.length >= 18;
+  const panelW = Math.min(430, Math.max(320, scaledW * 0.33));
+  const rowH = dense ? 18 : 22;
+  const rowGap = dense ? 2 : 4;
+  const panelH = Math.min(scaledH - (topPanelH + 64), Math.max(360, 82 + rows.length * (rowH + rowGap)));
   const x = scaledW - panelW - 14;
   const y = topPanelH + 84;
   const closeSize = 26;
@@ -282,7 +325,7 @@ function drawStatsPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale) {
 
   ctx.fillStyle = 'rgba(255,255,255,0.58)';
   ctx.font = '12px sans-serif';
-  ctx.fillText('Everything your hero has right now', x + 16, y + 38);
+  ctx.fillText('Live stats, core type and affinities', x + 16, y + 38);
 
   const closeX = x + panelW - closeSize - 10;
   const closeY = y + 10;
@@ -299,11 +342,23 @@ function drawStatsPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale) {
   let rowY = y + 68;
   const rowX = x + 16;
   const rowW = panelW - 32;
-  const rowH = 22;
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     if (!row) continue;
-    if (rowY + rowH > y + panelH - 12) break;
+    const isSection = !!row.section;
+    const drawH = isSection ? (dense ? 16 : 20) : rowH;
+    if (rowY + drawH > y + panelH - 12) break;
+    if (isSection) {
+      ctx.fillStyle = 'rgba(160,132,255,0.16)';
+      ctx.fillRect(rowX, rowY - 1, rowW, drawH + 2);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'rgba(194,176,255,0.94)';
+      ctx.font = dense ? 'bold 10px sans-serif' : 'bold 11px sans-serif';
+      ctx.fillText(String(row.section || ''), rowX + 10, rowY + drawH * 0.5);
+      rowY += drawH + rowGap;
+      continue;
+    }
     if (i % 2 === 0) {
       ctx.fillStyle = 'rgba(255,255,255,0.04)';
       ctx.fillRect(rowX, rowY - 2, rowW, rowH + 4);
@@ -311,13 +366,13 @@ function drawStatsPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale) {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = 'rgba(255,255,255,0.66)';
-    ctx.font = '12px sans-serif';
+    ctx.font = dense ? '11px sans-serif' : '12px sans-serif';
     ctx.fillText(String(row.label || ''), rowX + 10, rowY + rowH * 0.5);
     ctx.textAlign = 'right';
     ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    ctx.font = 'bold 12px sans-serif';
+    ctx.font = dense ? 'bold 11px sans-serif' : 'bold 12px sans-serif';
     ctx.fillText(String(row.value || ''), rowX + rowW - 10, rowY + rowH * 0.5);
-    rowY += rowH + 4;
+    rowY += rowH + rowGap;
   }
 
   ctx.restore();

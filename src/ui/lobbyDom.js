@@ -578,9 +578,14 @@ export function tickLobbyDom(state) {
     el.joinError.textContent = net?.error ? String(net.error) : "";
   }
 
+  const hasSavedRun = !!(state._savedRunResumeAvailable && state._hubResumeRunActive && state._hubResumeNextFloor > 0);
+  if (el.btnStart) el.btnStart.textContent = hasSavedRun ? `Resume Floor ${state._hubResumeNextFloor}` : 'Start';
+
   if (el.lobbyInfo) {
     if (!net || net.status === "offline") {
-      el.lobbyInfo.textContent = "Offline. Press Start or connect via Host/Join/Fast-Join.";
+      el.lobbyInfo.textContent = hasSavedRun
+        ? `Saved run ready. Press Resume Floor ${state._hubResumeNextFloor} or connect via Host/Join/Fast-Join.`
+        : "Offline. Press Start or connect via Host/Join/Fast-Join.";
     } else if (net.status === "connecting") {
       el.lobbyInfo.textContent = "Connecting...";
     } else if (net.status === "connected") {

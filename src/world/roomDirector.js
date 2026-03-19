@@ -392,6 +392,15 @@ export class RoomDirector {
       room.hubReturnPortal = resolveHubReturnPortalPoint(room);
       this.next = null;
       this.bridge = null;
+      try {
+        const nextFloorNo = Math.max(1, (room.floorNumber | 0) + 1);
+        const prevBiome = String(this._lastBiomeKey || room.biomeKey || '');
+        const savedPlan = buildFloorPlan(nextFloorNo, prevBiome);
+        this.state._savedRunResumePlan = JSON.parse(JSON.stringify(savedPlan));
+        if (typeof this.state?._saveRunCheckpoint === 'function') {
+          this.state._saveRunCheckpoint({ savedPlan, nextFloor: nextFloorNo });
+        }
+      } catch {}
     } else {
       this._ensureNextSpawned();
       this._ensureBridge();

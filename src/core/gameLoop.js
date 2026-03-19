@@ -46,6 +46,211 @@ import {
   findNpcAtWorldPos,
 } from "../world/hubNpcs.js";
 
+const RUN_CHECKPOINT_STORAGE_KEY = "pixelgo_run_checkpoint_v1";
+
+function cloneJsonSafe(value, fallback = null) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return fallback;
+  }
+}
+
+function clearSavedRunCheckpoint(state = null) {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.removeItem(RUN_CHECKPOINT_STORAGE_KEY);
+  } catch {}
+  if (state) {
+    state._savedRunResumeAvailable = false;
+    state._savedRunCheckpointLoaded = false;
+    state._savedRunResumePlan = null;
+  }
+}
+
+function loadSavedRunCheckpoint() {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(RUN_CHECKPOINT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const plan = (parsed.savedPlan && typeof parsed.savedPlan === "object") ? parsed.savedPlan : null;
+    const player = (parsed.player && typeof parsed.player === "object") ? parsed.player : null;
+    const nextFloor = Math.max(1, Number(parsed.nextFloor || plan?.floorNumber || 1) || 1);
+    if (!plan || !Array.isArray(plan.rooms) || !plan.rooms.length || !player) return null;
+    return {
+      version: Number(parsed.version || 1) || 1,
+      savedAt: Number(parsed.savedAt || 0) || 0,
+      nextFloor,
+      savedPlan: cloneJsonSafe(plan, null),
+      lastBiomeKey: String(parsed.lastBiomeKey || plan.biomeKey || ''),
+      flags: (parsed.flags && typeof parsed.flags === 'object') ? parsed.flags : {},
+      runScore: (parsed.runScore | 0) || 0,
+      deathContinueCount: Math.max(0, (parsed.deathContinueCount | 0) || 0),
+      player: {
+        level: Math.max(1, (player.level | 0) || 1),
+        xp: Math.max(0, Number(player.xp || 0) || 0),
+        skillPoints: Math.max(0, (player.skillPoints | 0) || 0),
+        hp: Math.max(1, Number(player.hp || player.maxHP || 1) || 1),
+        nickname: String(player.nickname || ''),
+        avatarIndex: (player.avatarIndex | 0) || 0,
+        auraId: (player.auraId | 0) || 0,
+        selectedStarterLoadout: String(player.selectedStarterLoadout || 'mecha'),
+        runSkills: (player.runSkills && typeof player.runSkills === 'object') ? player.runSkills : {},
+        runPassives: (player.runPassives && typeof player.runPassives === 'object') ? player.runPassives : {},
+        runEvolutions: (player.runEvolutions && typeof player.runEvolutions === 'object') ? player.runEvolutions : {},
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveRunCheckpointFromState(state, { savedPlan = null, nextFloor = 0 } = {}) {
+  try {
+    if (!state?.player) return false;
+    if (typeof localStorage === "undefined") return false;
+    const planSrc = savedPlan || state._savedRunResumePlan || state.roomDirector?._activeFloorPlan || null;
+    const plan = cloneJsonSafe(planSrc, null);
+    if (!plan || !Array.isArray(plan.rooms) || !plan.rooms.length) return false;
+    const p = state.player;
+    const payload = {
+      version: 1,
+      savedAt: Date.now(),
+      nextFloor: Math.max(1, Number(nextFloor || plan.floorNumber || state._hubResumeNextFloor || 1) || 1),
+      lastBiomeKey: String(state.roomDirector?._lastBiomeKey || plan.biomeKey || ''),
+      savedPlan: plan,
+      flags: {
+        resGuardianKilledThisRun: !!(state.flags && state.flags.resGuardianKilledThisRun),
+      },
+      runScore: (state.runScore | 0) || 0,
+      deathContinueCount: Math.max(0, (p._deathContinueCount | 0) || (state._deathContinueCount | 0) || 0),
+      player: {
+        level: Math.max(1, (p.level | 0) || 1),
+        xp: Math.max(0, Number(p.xp || 0) || 0),
+        skillPoints: Math.max(0, (p.skillPoints | 0) || 0),
+        hp: Math.max(1, Number(p.hp || p.maxHP || 1) || 1),
+        nickname: String(p.nickname || state.progression?.nickname || 'Player'),
+        avatarIndex: (p.avatarIndex | 0) || 0,
+        auraId: (p.auraId | 0) || 0,
+        selectedStarterLoadout: String(p._selectedStarterLoadout || state.progression?.selectedStarterLoadout || 'mecha'),
+        runSkills: cloneJsonSafe(p.runSkills || {}, {}),
+        runPassives: cloneJsonSafe(p.runPassives || {}, {}),
+        runEvolutions: cloneJsonSafe(p.runEvolutions || {}, {}),
+      },
+    };
+    localStorage.setItem(RUN_CHECKPOINT_STORAGE_KEY, JSON.stringify(payload));
+    state._savedRunResumePlan = cloneJsonSafe(plan, null);
+    state._savedRunResumeAvailable = true;
+    state._savedRunCheckpointLoaded = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function restoreRunCheckpointIntoState(state, checkpoint, { showPopup = false } = {}) {
+  if (!state || !checkpoint?.player || !checkpoint?.savedPlan) return false;
+  try { ensureShopMeta(state.progression); } catch {}
+  try { ensureStarterLoadoutProgression(state.progression); } catch {}
+
+  const cp = checkpoint;
+  const playerData = cp.player || {};
+  const startPos = { x: 0, y: 0 };
+  const player = new Player(startPos, Math.max(1, (playerData.level | 0) || 1));
+  if (!player.id) player.id = state.net?.playerId ? String(state.net.playerId) : 'local';
+  player.nickname = playerData.nickname || state.progression?.nickname || 'Player';
+  player.avatarIndex = (playerData.avatarIndex | 0) || (state.progression?.avatarIndex | 0) || 0;
+  player.auraId = (playerData.auraId | 0) || (state.progression?.auraId | 0) || 0;
+  player._metaSkillMeta = state.progression?.skillMeta || {};
+  player._selectedStarterLoadout = String(playerData.selectedStarterLoadout || state.progression?.selectedStarterLoadout || 'mecha');
+  state.progression.selectedStarterLoadout = player._selectedStarterLoadout;
+
+  const meta = applyLimitsToPlayer(player, state.progression.limits);
+  initRunUpgrades(player);
+  applyStarterLoadoutToPlayer(player, player._selectedStarterLoadout);
+  player.runSkills = { ...(player.runSkills || {}), ...(playerData.runSkills || {}) };
+  player.runPassives = { ...(player.runPassives || {}), ...(playerData.runPassives || {}) };
+  player.runEvolutions = { ...(playerData.runEvolutions || {}) };
+  applyRunDerivedStats(player);
+  player.level = Math.max(1, (playerData.level | 0) || player.level || 1);
+  player.xp = Math.max(0, Number(playerData.xp || 0) || 0);
+  player.nextLevelXp = player.xpToNext();
+  player.skillPoints = Math.max(0, (playerData.skillPoints | 0) || 0);
+  player.hp = Math.max(1, player.maxHP | 0);
+  player._deathContinueCount = Math.max(0, (cp.deathContinueCount | 0) || 0);
+
+  state.player = player;
+  state.players = [player];
+  state.meta = {
+    xpGainMult: meta?.xpGainMult ?? 1,
+    scoreMult: meta?.scoreMult ?? 1,
+    pickupBonusRadius: meta?.pickupBonusRadius ?? 0,
+  };
+
+  state._hubResumeRunActive = true;
+  state._hubResumeNextFloor = Math.max(1, (cp.nextFloor | 0) || (cp.savedPlan?.floorNumber | 0) || 1);
+  state._savedRunResumeAvailable = true;
+  state._savedRunCheckpointLoaded = true;
+  state._savedRunResumePlan = cloneJsonSafe(cp.savedPlan, null);
+  state._deathContinueCount = Math.max(0, (cp.deathContinueCount | 0) || 0);
+  state._deathHandled = false;
+  state._waitingRespawnAck = false;
+  state.overlayMode = null;
+  state.currentZone = 0;
+  state.runScore = (cp.runScore | 0) || 0;
+  state.lastRunSummary = null;
+  state.flags = { ...(state.flags || {}), resGuardianKilledThisRun: !!cp.flags?.resGuardianKilledThisRun };
+
+  state.enemies = [];
+  state.projectiles = [];
+  state.rockets = [];
+  state.iceWalls = [];
+  state.blackholes = [];
+  state.healPulses = [];
+  state._explosions = [];
+  state.xpOrbs = [];
+  state.summons = [];
+  state.buffs = [];
+  state.floatingTexts = [];
+  state.popups = [];
+  state._laserVisual = null;
+  state._lightningVisual = null;
+  state._runUpgradeActive = false;
+  state._runUpgradeChoices = null;
+  state._floorShopActive = false;
+  state._buildPanelOpen = false;
+  state._statsPanelOpen = false;
+  try { hideFloorShopOverlay(); } catch {}
+
+  state.camera = new Camera(state.canvas);
+  state.roomDirector = new RoomDirector(state);
+  try { state.roomDirector.forceSetCurrent(0); } catch {}
+  state.roomDirector._activeFloorPlan = cloneJsonSafe(cp.savedPlan, null);
+  state.roomDirector._lastBiomeKey = String(cp.lastBiomeKey || cp.savedPlan?.biomeKey || '');
+  state.roomDirector._waitForParty = false;
+  try { if (typeof state.roomDirector._ensureNextSpawned === 'function') state.roomDirector._ensureNextSpawned(); } catch {}
+  try { if (typeof state.roomDirector._ensureBridge === 'function') state.roomDirector._ensureBridge(); } catch {}
+  try { if (typeof state.roomDirector._applyDynamicBounds === 'function') state.roomDirector._applyDynamicBounds(); } catch {}
+
+  const roomStart = state.roomDirector?.current?.arenaSpec?.anchors?.playerStart;
+  if (roomStart && Number.isFinite(Number(roomStart.x)) && Number.isFinite(Number(roomStart.y))) {
+    player.x = Number(roomStart.x);
+    player.y = Number(roomStart.y);
+  }
+
+  state.spawnSystem = new RoomSpawnSystem(state);
+  try {
+    const ss = state.spawnSystem;
+    if (ss && typeof ss.onRoomChanged === 'function') ss.onRoomChanged(state.roomDirector?.current || null);
+  } catch {}
+
+  if (showPopup && Array.isArray(state.popups)) {
+    state.popups.push({ text: `Saved run restored • Floor ${state._hubResumeNextFloor}`, time: 2.4 });
+  }
+  return true;
+}
+
 export function createGame(canvas, ctx, progression) {
   initInput();
   // Ensure shop meta fields exist (coins, skill meta levels, offers).
@@ -95,6 +300,9 @@ export function createGame(canvas, ctx, progression) {
     _statsPanelRect: null,
     _statsPanelCloseRect: null,
     _statsPanelOpen: false,
+    _savedRunResumeAvailable: false,
+    _savedRunCheckpointLoaded: false,
+    _savedRunResumePlan: null,
     players: [],
     net: null,
     _netLastInputSentAt: 0,
@@ -138,6 +346,9 @@ export function createGame(canvas, ctx, progression) {
   state._getPlayerById = (id) => getPlayerById(state, id);
   state.getPlayersArr = (st) => getPlayersArr(st);
   state._returnRunToHubPreserve = () => returnRunToHubWithProgress(state);
+  state._saveRunCheckpoint = (opts = null) => saveRunCheckpointFromState(state, opts || {});
+  state._restoreSavedRunCheckpoint = (showPopup = false) => restoreRunCheckpointIntoState(state, loadSavedRunCheckpoint(), { showPopup });
+  state._clearSavedRunCheckpoint = () => clearSavedRunCheckpoint(state);
 
   // Net client (optional)
   state.net = createNetClient();
@@ -152,8 +363,10 @@ export function createGame(canvas, ctx, progression) {
       if (cleaned) state.progression.roomCode = cleaned;
     }
   } catch {}
-// Initialize a preview run so the world/player can render behind the menu.
-  startNewRun(state);
+// Initialize either a fresh preview run or the last saved floor-checkpoint run.
+  if (!restoreRunCheckpointIntoState(state, loadSavedRunCheckpoint())) {
+    startNewRun(state);
+  }
   state.mode = "startMenu";
   state.paused = false;
 
@@ -1088,7 +1301,9 @@ function render() {
     // Used by the DOM-based lobby (fallback Start button): start an offline run.
     startOfflineRun() {
       try { state.net?.disconnect?.(); } catch {}
-      startNewRun(state);
+      if (!(state._savedRunResumeAvailable && state._hubResumeRunActive && state.player)) {
+        startNewRun(state);
+      }
       state.mode = "playing";
       state.overlayMode = null;
       state.paused = false;
@@ -1129,13 +1344,15 @@ function clearLegacyRunUpgradeState(state, { clearSessions = false } = {}) {
   }
 }
 
-function startNewRun(state) {
+function startNewRun(state, { preserveSavedCheckpoint = false } = {}) {
   try { ensureShopMeta(state.progression); } catch {}
+  if (!preserveSavedCheckpoint) clearSavedRunCheckpoint(state);
   // Always start the run from the first level (do NOT scale run start level by score).
   const startLevel = 1;
 
   state._hubResumeRunActive = false;
   state._hubResumeNextFloor = 0;
+  state._savedRunResumePlan = null;
 
   if (state.flags) {
     state.flags.resGuardianKilledThisRun = false;
@@ -3624,6 +3841,11 @@ function revivePlayerIntoCurrentRun(state, p) {
 
 function returnRunToHub(state) {
   if (!state) return false;
+  const checkpoint = loadSavedRunCheckpoint();
+  if (checkpoint && restoreRunCheckpointIntoState(state, checkpoint, { showPopup: true })) {
+    state.mode = 'playing';
+    return true;
+  }
   state._hubResumeRunActive = false;
   state._hubResumeNextFloor = 0;
   startNewRun(state);
@@ -3702,7 +3924,7 @@ function returnRunToHubWithProgress(state) {
 
   const nextFloorNo = Math.max(1, (cur.floorNumber | 0) + 1);
   const prevBiome = String(rd._lastBiomeKey || cur.biomeKey || '');
-  const savedPlan = buildFloorPlan(nextFloorNo, prevBiome);
+  const savedPlan = cloneJsonSafe(state._savedRunResumePlan, null) || buildFloorPlan(nextFloorNo, prevBiome);
 
   clearTransientWorldStateForHub(state);
 
@@ -3716,6 +3938,7 @@ function returnRunToHubWithProgress(state) {
   try { rd.forceSetCurrent(0); } catch {}
   rd._activeFloorPlan = savedPlan;
   rd._lastBiomeKey = String(savedPlan?.biomeKey || prevBiome || '');
+  state._savedRunResumePlan = cloneJsonSafe(savedPlan, null);
   rd._waitForParty = false;
   try { if (typeof rd._ensureNextSpawned === 'function') rd._ensureNextSpawned(); } catch {}
   try { if (typeof rd._ensureBridge === 'function') rd._ensureBridge(); } catch {}
@@ -3744,6 +3967,7 @@ function returnRunToHubWithProgress(state) {
     if (ss && typeof ss.onRoomChanged === 'function') ss.onRoomChanged(room);
   } catch {}
 
+  saveRunCheckpointFromState(state, { savedPlan, nextFloor: nextFloorNo });
   if (state.popups) state.popups.push({ text: `Run saved • Hub • Next Floor ${nextFloorNo}`, time: 2.0 });
   try { syncPersistentRunUnlocks(state); } catch {}
   return true;
