@@ -1,0 +1,20 @@
+Pixel_GO v0.4.34 LAN merge patch (built from v0.4.34, LAN skeleton restored toward v0.4.20)
+
+What was changed
+- Restored stable joiner authoritative-snapshot player rebuild behavior from the v0.4.20 line.
+- Fixed sticky relay override behavior so a previous ROOM@host / invite WS target does not silently keep hijacking later LAN joins.
+- Added safe relay URL normalization: ROOM@host now resolves to ws://host:8080 when no port is provided.
+- Kept newer respawn/death-flow payload support from v0.4.34.
+- Fixed co-op meta sync so remote players no longer push their deathPoints into the local progression object.
+- Fixed starter loadout sync so remote players re-apply starter core + derived run stats when their synced meta arrives.
+- Added extra join/host-left cleanup for stale floor-shop overlay state.
+- Removed ws.log / ws.pid from the packaged project.
+
+Files changed
+- src/net/netClient.js
+- src/ui/lobbyDom.js
+- src/core/gameLoop.js
+- dist rebuilt
+
+Build status
+- npm run build: OK

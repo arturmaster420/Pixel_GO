@@ -1,0 +1,32 @@
+Pixel_GO Foundation: v0.5 Stable LAN Base
+
+This is the approved working foundation for дальнейшая разработка.
+
+Why this base exists:
+- A joiner LAN runtime crash was traced to a stale call to
+  maybeEnterOnlineDeathOverlay(...)
+- Host saw the joiner, but the joiner client froze after Join.
+- The crash is fixed in this foundation.
+
+Protection added:
+1) Compatibility alias kept in gameLoop.js
+2) Legacy hook checker runs before dev/build/preview
+3) LAN smoke test is mandatory after risky networking/core changes
+
+Minimal LAN smoke test:
+- Host creates room
+- Joiner enters room
+- Joiner menu disappears and client stays responsive
+- Host sees joiner movement
+- Joiner sees own movement
+- Both can enter run / room together
+
+Risky files (edit carefully, but yes — they can be edited):
+- src/core/gameLoop.js
+- src/net/netClient.js
+- src/ui/lobbyDom.js
+- server/index.mjs
+
+Rule for refactors:
+- If you rename/remove a hook used from multiplayer or overlay flow,
+  either replace all usages project-wide immediately or keep a compatibility alias.
