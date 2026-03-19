@@ -221,6 +221,7 @@ function restoreRunCheckpointIntoState(state, checkpoint, { showPopup = false } 
   state._floorShopActive = false;
   state._buildPanelOpen = false;
   state._statsPanelOpen = false;
+  state._statsPanelExpanded = false;
   try { hideFloorShopOverlay(); } catch {}
 
   state.camera = new Camera(state.canvas);
@@ -299,7 +300,9 @@ export function createGame(canvas, ctx, progression) {
     _statsButtonRect: null,
     _statsPanelRect: null,
     _statsPanelCloseRect: null,
+    _statsPanelToggleRect: null,
     _statsPanelOpen: false,
+    _statsPanelExpanded: false,
     _savedRunResumeAvailable: false,
     _savedRunCheckpointLoaded: false,
     _savedRunResumePlan: null,
@@ -1041,14 +1044,20 @@ function render() {
     const buildButtonRect = state._buildButtonRect;
     if (buildButtonRect && x >= buildButtonRect.x && x <= buildButtonRect.x + buildButtonRect.w && y >= buildButtonRect.y && y <= buildButtonRect.y + buildButtonRect.h) {
       state._buildPanelOpen = !state._buildPanelOpen;
-      if (state._buildPanelOpen) state._statsPanelOpen = false;
+      if (state._buildPanelOpen) {
+        state._statsPanelOpen = false;
+        state._statsPanelExpanded = false;
+      }
       return true;
     }
 
     const statsButtonRect = state._statsButtonRect;
     if (statsButtonRect && x >= statsButtonRect.x && x <= statsButtonRect.x + statsButtonRect.w && y >= statsButtonRect.y && y <= statsButtonRect.y + statsButtonRect.h) {
       state._statsPanelOpen = !state._statsPanelOpen;
-      if (state._statsPanelOpen) state._buildPanelOpen = false;
+      if (state._statsPanelOpen) {
+        state._buildPanelOpen = false;
+        state._statsPanelExpanded = false;
+      }
       return true;
     }
 
@@ -1068,9 +1077,15 @@ function render() {
     }
 
     if (state._statsPanelOpen) {
+      const toggleRect = state._statsPanelToggleRect;
+      if (toggleRect && x >= toggleRect.x && x <= toggleRect.x + toggleRect.w && y >= toggleRect.y && y <= toggleRect.y + toggleRect.h) {
+        state._statsPanelExpanded = !state._statsPanelExpanded;
+        return true;
+      }
       const closeRect = state._statsPanelCloseRect;
       if (closeRect && x >= closeRect.x && x <= closeRect.x + closeRect.w && y >= closeRect.y && y <= closeRect.y + closeRect.h) {
         state._statsPanelOpen = false;
+        state._statsPanelExpanded = false;
         return true;
       }
       const panelRect = state._statsPanelRect;
@@ -1079,6 +1094,7 @@ function render() {
         if (insidePanel) return true;
       }
       state._statsPanelOpen = false;
+      state._statsPanelExpanded = false;
       return true;
     }
 
@@ -3541,6 +3557,7 @@ function applySnapshotToClient(state, snap) {
       state._shopActPending = null;
       state._buildPanelOpen = false;
       state._statsPanelOpen = false;
+      state._statsPanelExpanded = false;
       try { hideFloorShopOverlay(); } catch {}
     }
   }
@@ -3913,6 +3930,7 @@ function clearTransientWorldStateForHub(state) {
   state._floorShopActive = false;
   state._buildPanelOpen = false;
   state._statsPanelOpen = false;
+  state._statsPanelExpanded = false;
   try { hideFloorShopOverlay(); } catch {}
 }
 

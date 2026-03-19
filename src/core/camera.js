@@ -56,12 +56,10 @@ export class Camera {
     const span = Math.max(1, spanW, spanH);
 
     // Hub camera: keep the hero scene tighter instead of fitting the whole HUB.
-    const lookAhead = isHub
-      ? clamp(28 + span * 0.012, 28, 42)
-      : clamp(92 + span * 0.055, 92, 210);
+    const hubLookAhead = clamp(28 + span * 0.012, 28, 42);
 
     const targetX = player.x;
-    const targetY = player.y - lookAhead;
+    const targetY = isHub ? (player.y - hubLookAhead) : player.y;
 
     const lerpPos = dt * this.positionLerp;
     const tPos = lerpPos > 1 ? 1 : lerpPos;
@@ -82,7 +80,7 @@ export class Camera {
     let targetZoom = fitZoom + (fillZoom - fitZoom) * fillBias;
 
     // User request: camera should be much closer during runs so the player sees about half the arena.
-    if (isHub) targetZoom *= 2.0;
+    if (isHub) targetZoom *= 4.0;
     else targetZoom *= 2.0;
 
     const MIN_ZOOM = this._isMobile ? 0.34 : 0.28;

@@ -73,11 +73,13 @@ function formatStatValue(value, digits = 0, suffix = '') {
   return fixed + suffix;
 }
 
-function getCurrentStatsRows(state) {
+function getStatsData(state) {
   const player = state?.player || null;
-  if (!player) return [];
-  const critChance = ((player.metaCritChance || 0) + (player.runCritChanceAdd || 0)) * 100;
-  const critDamage = ((player.metaCritDamageMult || 1) * (player.runCritDamageMult || 1) - 1) * 100;
+  if (!player) return null;
+  const critChanceFrac = (player.metaCritChance || 0) + (player.runCritChanceAdd || 0);
+  const critChance = critChanceFrac * 100;
+  const critDamageBonusFrac = ((player.metaCritDamageMult || 1) * (player.runCritDamageMult || 1) - 1);
+  const critDamage = critDamageBonusFrac * 100;
   const lifeSteal = ((player.metaLifeSteal || 0) + (player.runLifeSteal || 0)) * 100;
   const hpRegen = (player.metaHpRegen || 0) + (player.runHpRegen || 0);
   const pickupRadius = (state?.meta?.pickupBonusRadius || 0) + (player.runPickupBonusRadius || 0);
@@ -91,8 +93,13 @@ function getCurrentStatsRows(state) {
   const coreSkillName = String(starterDef?.skillName || getSkillName(starterDef?.skillKey || 'bullets'));
   const coreType = String(player?._starterDamageType || starterDef?.damageType || 'mecha');
   const baseDamage = Number.isFinite(player.damage) ? Number(player.damage) : Number(player.baseDamage || 4);
+  const attackSpeed = Number.isFinite(player.attackSpeed) ? Number(player.attackSpeed) : 0;
   const damageTypeMults = player?.runDamageTypeMults && typeof player.runDamageTypeMults === 'object' ? player.runDamageTypeMults : {};
   const passives = player?.runPassives && typeof player.runPassives === 'object' ? player.runPassives : {};
+  const coreTypeMult = Number.isFinite(damageTypeMults[coreType]) && damageTypeMults[coreType] > 0 ? Number(damageTypeMults[coreType]) : 1;
+  const critFactor = 1 + Math.max(0, critChanceFrac) * Math.max(0, critDamageBonusFrac);
+  const dps = Math.max(0, baseDamage) * Math.max(0, coreTypeMult) * Math.max(0, attackSpeed) * critFactor;
+
   const damageTypes = [
     { key: 'mecha', label: 'Mecha ATK' },
     { key: 'electric', label: 'Electric ATK' },
@@ -119,18 +126,23 @@ function getCurrentStatsRows(state) {
     value: `Lv ${Math.max(0, passives[key] | 0)}`,
   }));
 
-  return [
+  const mainRows = [
     { label: 'Level', value: String(Math.max(0, player.level | 0)) },
     { label: 'Skill Points', value: String(Math.max(0, player.skillPoints | 0)) },
     { label: 'HP', value: `${Math.max(0, Math.round(player.hp || 0))}/${Math.max(1, Math.round(player.maxHP || 1))}` },
+    { label: 'DPS', value: formatStatValue(dps, 1) },
+    { label: 'HP/s', value: formatStatValue(hpRegen, 2) },
     { label: 'Damage', value: formatStatValue(baseDamage, 1) },
-    { label: 'Attack Speed', value: formatStatValue(player.attackSpeed || 0, 2, '/s') },
+    { label: 'Attack Speed', value: formatStatValue(attackSpeed, 2, '/s') },
     { label: 'Move Speed', value: formatStatValue(player.moveSpeed || 0, 0) },
     { label: 'Range', value: formatStatValue(player.range || 0, 2, 'x') },
     { label: 'Crit Chance', value: formatStatValue(critChance, 1, '%') },
     { label: 'Crit Damage', value: formatStatValue(critDamage, 0, '%') },
+  ];
+
+  const allRows = [
+    ...mainRows,
     { label: 'Life Steal', value: formatStatValue(lifeSteal, 1, '%') },
-    { label: 'HP Regen', value: formatStatValue(hpRegen, 2, '/s') },
     { label: 'Pickup Radius', value: formatStatValue(pickupRadius, 0) },
     { label: 'XP Gain', value: formatStatValue(xpGain, 1, '%') },
     { label: 'XP', value: levelXpNeed > 0 ? `${Math.max(0, Math.round(player.xp || 0))}/${levelXpNeed}` : String(Math.max(0, Math.round(player.xp || 0))) },
@@ -142,6 +154,14 @@ function getCurrentStatsRows(state) {
     { section: 'AFFINITIES' },
     ...affinityRows,
   ];
+
+  return { mainRows, allRows };
+}
+
+function getCurrentStatsRows(state, expanded = false) {
+  const data = getStatsData(state);
+  if (!data) return [];
+  return expanded ? data.allRows : data.mainRows;
 }
 
 function drawHudButton(ctx, active, label, x, y, width, height, uiScale, rectFieldName, accent = 'rgba(126,194,255,0.88)') {
@@ -296,15 +316,18 @@ function drawStatsPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale) {
   if (!state?._statsPanelOpen) {
     state._statsPanelRect = null;
     state._statsPanelCloseRect = null;
+    state._statsPanelToggleRect = null;
     return;
   }
 
-  const rows = getCurrentStatsRows(state);
+  const expanded = !!state?._statsPanelExpanded;
+  const rows = getCurrentStatsRows(state, expanded);
   const dense = rows.length >= 18;
   const panelW = Math.min(430, Math.max(320, scaledW * 0.33));
   const rowH = dense ? 18 : 22;
   const rowGap = dense ? 2 : 4;
-  const panelH = Math.min(scaledH - (topPanelH + 64), Math.max(360, 82 + rows.length * (rowH + rowGap)));
+  const headerH = 102;
+  const panelH = Math.min(scaledH - (topPanelH + 64), Math.max(expanded ? 360 : 320, headerH + rows.length * (rowH + rowGap)));
   const x = scaledW - panelW - 14;
   const y = topPanelH + 84;
   const closeSize = 26;
@@ -325,7 +348,7 @@ function drawStatsPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale) {
 
   ctx.fillStyle = 'rgba(255,255,255,0.58)';
   ctx.font = '12px sans-serif';
-  ctx.fillText('Live stats, core type and affinities', x + 16, y + 38);
+  ctx.fillText(expanded ? 'Main stats + full breakdown' : 'Main stats only', x + 16, y + 38);
 
   const closeX = x + panelW - closeSize - 10;
   const closeY = y + 10;
@@ -339,9 +362,24 @@ function drawStatsPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale) {
   ctx.textBaseline = 'middle';
   ctx.fillText('×', closeX + closeSize * 0.5, closeY + closeSize * 0.5 + 0.5);
 
-  let rowY = y + 68;
+  const toggleW = 88;
+  const toggleH = 24;
+  const toggleX = closeX - toggleW - 10;
+  const toggleY = y + 11;
+  ctx.fillStyle = expanded ? 'rgba(160,132,255,0.88)' : 'rgba(255,255,255,0.08)';
+  ctx.fillRect(toggleX, toggleY, toggleW, toggleH);
+  ctx.strokeStyle = expanded ? 'rgba(255,255,255,0.82)' : 'rgba(255,255,255,0.26)';
+  ctx.strokeRect(toggleX + 0.5, toggleY + 0.5, toggleW - 1, toggleH - 1);
+  ctx.fillStyle = 'rgba(255,255,255,0.96)';
+  ctx.font = 'bold 11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(expanded ? 'SHOW MAIN' : 'SHOW ALL', toggleX + toggleW * 0.5, toggleY + toggleH * 0.5 + 0.5);
+
+  let rowY = y + headerH;
   const rowX = x + 16;
   const rowW = panelW - 32;
+  let stripeIndex = 0;
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     if (!row) continue;
@@ -359,10 +397,11 @@ function drawStatsPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale) {
       rowY += drawH + rowGap;
       continue;
     }
-    if (i % 2 === 0) {
+    if ((stripeIndex % 2) === 0) {
       ctx.fillStyle = 'rgba(255,255,255,0.04)';
       ctx.fillRect(rowX, rowY - 2, rowW, rowH + 4);
     }
+    stripeIndex += 1;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = 'rgba(255,255,255,0.66)';
@@ -379,6 +418,7 @@ function drawStatsPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale) {
 
   state._statsPanelRect = { x: x * uiScale, y: y * uiScale, w: panelW * uiScale, h: panelH * uiScale };
   state._statsPanelCloseRect = { x: closeX * uiScale, y: closeY * uiScale, w: closeSize * uiScale, h: closeSize * uiScale };
+  state._statsPanelToggleRect = { x: toggleX * uiScale, y: toggleY * uiScale, w: toggleW * uiScale, h: toggleH * uiScale };
 }
 
 function clamp01(n) {
