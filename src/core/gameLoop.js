@@ -12,6 +12,7 @@ import { explodeFireball } from "../weapons/fireball.js";
 import { explodeIceBall } from "../weapons/iceBall.js";
 import { RoomSpawnSystem } from "../world/roomSpawnSystem.js";
 import { RoomDirector } from "../world/roomDirector.js";
+import { buildFloorPlan } from "../world/floorPlanBuilder.js";
 import { renderRoomsBackground } from "../world/roomRenderer.js";
 import { clampPlayerToActiveWalkable, clampEntityToRoomWalkable } from "../world/floorCollision.js";
 import { renderBiomeUnit, biomeKeyFromKind, biomeStyleForKey, biomeRoleFromKind } from "../enemies/biomeVisuals.js";
@@ -86,6 +87,14 @@ export function createGame(canvas, ctx, progression) {
     _laserVisual: null,
     _lightningVisual: null,
     _pauseButtonRect: null,
+    _buildButtonRect: null,
+    _buildPanelRect: null,
+    _buildPanelCloseRect: null,
+    _buildPanelOpen: false,
+    _statsButtonRect: null,
+    _statsPanelRect: null,
+    _statsPanelCloseRect: null,
+    _statsPanelOpen: false,
     players: [],
     net: null,
     _netLastInputSentAt: 0,
@@ -117,12 +126,18 @@ export function createGame(canvas, ctx, progression) {
     _runUpNet: {
       sessions: new Map(),
     },
+
+    // Boss-floor safe exit: players can bank the current run in hub and continue
+    // later from the next floor portal without losing in-run skills/SP.
+    _hubResumeRunActive: false,
+    _hubResumeNextFloor: 0,
   };
 
   // Helpers for weapon/FX modules (avoid circular imports).
   // These are used by biome skills to resolve owners and ally lists.
   state._getPlayerById = (id) => getPlayerById(state, id);
   state.getPlayersArr = (st) => getPlayersArr(st);
+  state._returnRunToHubPreserve = () => returnRunToHubWithProgress(state);
 
   // Net client (optional)
   state.net = createNetClient();
@@ -519,7 +534,12 @@ export function createGame(canvas, ctx, progression) {
 
     // Pixel_GO: room transitions + collapse
     if (state.roomDirector && typeof state.roomDirector.update === "function") {
-      try { state.roomDirector.update(dt); } catch {}
+      const canAuthorRooms = !(online && state.net && !state.net.isHost);
+      if (canAuthorRooms) {
+        try { state.roomDirector.update(dt); } catch {}
+      } else {
+        try { if (typeof state.roomDirector._applyDynamicBounds === 'function') state.roomDirector._applyDynamicBounds(); } catch {}
+      }
     }
 
     state.camera.update(state.player, dt, state);
@@ -805,6 +825,50 @@ function render() {
       return;
     }
 
+    const buildButtonRect = state._buildButtonRect;
+    if (buildButtonRect && x >= buildButtonRect.x && x <= buildButtonRect.x + buildButtonRect.w && y >= buildButtonRect.y && y <= buildButtonRect.y + buildButtonRect.h) {
+      state._buildPanelOpen = !state._buildPanelOpen;
+      if (state._buildPanelOpen) state._statsPanelOpen = false;
+      return true;
+    }
+
+    const statsButtonRect = state._statsButtonRect;
+    if (statsButtonRect && x >= statsButtonRect.x && x <= statsButtonRect.x + statsButtonRect.w && y >= statsButtonRect.y && y <= statsButtonRect.y + statsButtonRect.h) {
+      state._statsPanelOpen = !state._statsPanelOpen;
+      if (state._statsPanelOpen) state._buildPanelOpen = false;
+      return true;
+    }
+
+    if (state._buildPanelOpen) {
+      const closeRect = state._buildPanelCloseRect;
+      if (closeRect && x >= closeRect.x && x <= closeRect.x + closeRect.w && y >= closeRect.y && y <= closeRect.y + closeRect.h) {
+        state._buildPanelOpen = false;
+        return true;
+      }
+      const panelRect = state._buildPanelRect;
+      if (panelRect) {
+        const insidePanel = x >= panelRect.x && x <= panelRect.x + panelRect.w && y >= panelRect.y && y <= panelRect.y + panelRect.h;
+        if (insidePanel) return true;
+      }
+      state._buildPanelOpen = false;
+      return true;
+    }
+
+    if (state._statsPanelOpen) {
+      const closeRect = state._statsPanelCloseRect;
+      if (closeRect && x >= closeRect.x && x <= closeRect.x + closeRect.w && y >= closeRect.y && y <= closeRect.y + closeRect.h) {
+        state._statsPanelOpen = false;
+        return true;
+      }
+      const panelRect = state._statsPanelRect;
+      if (panelRect) {
+        const insidePanel = x >= panelRect.x && x <= panelRect.x + panelRect.w && y >= panelRect.y && y <= panelRect.y + panelRect.h;
+        if (insidePanel) return true;
+      }
+      state._statsPanelOpen = false;
+      return true;
+    }
+
     // Pixel_GO: Gate actions (mouse/tap) — must work for host & joiners.
     if (state.mode === "playing" && !state.overlayMode && Array.isArray(state._gateButtons) && state._gateButtons.length) {
       for (const b of state._gateButtons) {
@@ -1069,6 +1133,9 @@ function startNewRun(state) {
   try { ensureShopMeta(state.progression); } catch {}
   // Always start the run from the first level (do NOT scale run start level by score).
   const startLevel = 1;
+
+  state._hubResumeRunActive = false;
+  state._hubResumeNextFloor = 0;
 
   if (state.flags) {
     state.flags.resGuardianKilledThisRun = false;
@@ -2596,6 +2663,8 @@ function serializeSnapshot(state) {
       nextCenterY: (typeof state._nextRoomCenterY === 'number' ? q(state._nextRoomCenterY) : 0),
       nextEncounterType: String(state._nextRoomEncounter || ''),
       nextEncounterLabel: String(state._nextRoomEncounterLabel || ''),
+      resumeActive: !!state._hubResumeRunActive,
+      resumeFloor: (state._hubResumeNextFloor | 0) || 0,
     },
     flags: {
       resGuardianKilledThisRun: !!(state.flags && state.flags.resGuardianKilledThisRun),
@@ -3245,7 +3314,18 @@ function applySnapshotToClient(state, snap) {
     state._nextRoomCenterY = (typeof r.nextCenterY === 'number') ? r.nextCenterY : (state._nextRoomCenterY || 0);
     state._nextRoomEncounter = String(r.nextEncounterType || state._nextRoomEncounter || '');
     state._nextRoomEncounterLabel = String(r.nextEncounterLabel || state._nextRoomEncounterLabel || '');
+    state._hubResumeRunActive = !!r.resumeActive;
+    state._hubResumeNextFloor = (r.resumeFloor | 0) || 0;
     syncRoomDirectorFromNetRoom(state, r);
+    if (((r.i | 0) || 0) <= 0) {
+      state.overlayMode = null;
+      state._floorShopActive = false;
+      state._floorShopReopenOnSync = false;
+      state._shopActPending = null;
+      state._buildPanelOpen = false;
+      state._statsPanelOpen = false;
+      try { hideFloorShopOverlay(); } catch {}
+    }
   }
   // If host indicates we were left behind, return to start menu.
   if (r && Array.isArray(r.kickIds) && r.kickIds.length) {
@@ -3544,6 +3624,8 @@ function revivePlayerIntoCurrentRun(state, p) {
 
 function returnRunToHub(state) {
   if (!state) return false;
+  state._hubResumeRunActive = false;
+  state._hubResumeNextFloor = 0;
   startNewRun(state);
   if (state.roomDirector && typeof state.roomDirector.forceSetCurrent === 'function') {
     try { state.roomDirector.forceSetCurrent(0); } catch {}
@@ -3582,6 +3664,87 @@ function returnRunToHub(state) {
   state._runUpgradeChoices = null;
   state._floorShopActive = false;
   try { hideFloorShopOverlay(); } catch {}
+  try { syncPersistentRunUnlocks(state); } catch {}
+  return true;
+}
+
+function clearTransientWorldStateForHub(state) {
+  if (!state) return;
+  state.enemies = [];
+  state.projectiles = [];
+  state.rockets = [];
+  state.iceWalls = [];
+  state.blackholes = [];
+  state.healPulses = [];
+  state._explosions = [];
+  state.xpOrbs = [];
+  state.summons = [];
+  state.buffs = [];
+  state.floatingTexts = [];
+  state.popups = [];
+  state._laserVisual = null;
+  state._lightningVisual = null;
+  if (state._laserVisuals && typeof state._laserVisuals.clear === 'function') state._laserVisuals.clear();
+  if (state._lightningVisuals && typeof state._lightningVisuals.clear === 'function') state._lightningVisuals.clear();
+  state._runUpgradeActive = false;
+  state._runUpgradeChoices = null;
+  state._floorShopActive = false;
+  state._buildPanelOpen = false;
+  state._statsPanelOpen = false;
+  try { hideFloorShopOverlay(); } catch {}
+}
+
+function returnRunToHubWithProgress(state) {
+  if (!state || !state.roomDirector?.current) return false;
+  const rd = state.roomDirector;
+  const cur = rd.current;
+  if (!cur || !cur.isFloorFinal || !cur.cleared) return false;
+
+  const nextFloorNo = Math.max(1, (cur.floorNumber | 0) + 1);
+  const prevBiome = String(rd._lastBiomeKey || cur.biomeKey || '');
+  const savedPlan = buildFloorPlan(nextFloorNo, prevBiome);
+
+  clearTransientWorldStateForHub(state);
+
+  state._hubResumeRunActive = true;
+  state._hubResumeNextFloor = nextFloorNo;
+  state._deathHandled = false;
+  state._waitingRespawnAck = false;
+  state.overlayMode = null;
+  state.mode = 'playing';
+
+  try { rd.forceSetCurrent(0); } catch {}
+  rd._activeFloorPlan = savedPlan;
+  rd._lastBiomeKey = String(savedPlan?.biomeKey || prevBiome || '');
+  rd._waitForParty = false;
+  try { if (typeof rd._ensureNextSpawned === 'function') rd._ensureNextSpawned(); } catch {}
+  try { if (typeof rd._ensureBridge === 'function') rd._ensureBridge(); } catch {}
+  try { if (typeof rd._applyDynamicBounds === 'function') rd._applyDynamicBounds(); } catch {}
+
+  const room = rd.current || null;
+  const start = room?.arenaSpec?.anchors?.playerStart || room?.exitPortal || { x: 0, y: 0 };
+  for (const p of getPlayersArr(state)) {
+    if (!p) continue;
+    p.hp = Math.max(1, p.maxHP | 0);
+    p.vx = 0;
+    p.vy = 0;
+    p._reviving = null;
+    p._kicked = false;
+    if (start && Number.isFinite(Number(start.x)) && Number.isFinite(Number(start.y))) {
+      p.x = Number(start.x) || 0;
+      p.y = Number(start.y) || 0;
+    } else {
+      p.x = Number(room?.centerX) || 0;
+      p.y = Number(room?.centerY) || 0;
+    }
+  }
+
+  try {
+    const ss = state.spawnSystem;
+    if (ss && typeof ss.onRoomChanged === 'function') ss.onRoomChanged(room);
+  } catch {}
+
+  if (state.popups) state.popups.push({ text: `Run saved • Hub • Next Floor ${nextFloorNo}`, time: 2.0 });
   try { syncPersistentRunUnlocks(state); } catch {}
   return true;
 }
@@ -3867,9 +4030,17 @@ function updateEnemies(state, dt) {
     }
 
     try {
-      const curRoom = state?.roomDirector?.current || null;
-      if (curRoom) clampEntityToRoomWalkable(e, curRoom, { pad: 1, prevX: _prevEnemyX, prevY: _prevEnemyY });
-      else clampPlayerToActiveWalkable(e, state, { pad: 1, prevX: _prevEnemyX, prevY: _prevEnemyY });
+      const rd = state?.roomDirector || null;
+      let enemyRoom = rd?.current || null;
+      const enemyRoomIndex = (e?._roomIndex | 0) || 0;
+      if (rd && enemyRoomIndex > 0) {
+        if ((rd.current?.index | 0) === enemyRoomIndex) enemyRoom = rd.current;
+        else if ((rd.prev?.index | 0) === enemyRoomIndex && rd.prev && !rd.prev.removed) enemyRoom = rd.prev;
+        else if ((rd.next?.index | 0) === enemyRoomIndex && rd.next && !rd.next.removed) enemyRoom = rd.next;
+        else enemyRoom = null;
+      }
+      if (enemyRoom) clampEntityToRoomWalkable(e, enemyRoom, { pad: 1, prevX: _prevEnemyX, prevY: _prevEnemyY });
+      else if (!enemyRoomIndex) clampPlayerToActiveWalkable(e, state, { pad: 1, prevX: _prevEnemyX, prevY: _prevEnemyY });
     } catch {}
 
     if (e.hp <= 0 || e._remove) {

@@ -1,5 +1,330 @@
 import { getControlMode } from "../core/mouseController.js";
 import { biomeByKey } from "../world/biomes.js";
+import { MAX_RUN_ACTIVE_SKILLS, RUN_SKILLS, EVOLUTION_DEFS } from "../core/runUpgrades.js";
+import { getStarterLoadoutDef } from "../core/starterLoadouts.js";
+
+
+const SKILL_NAME_BY_KEY = (() => {
+  const out = Object.create(null);
+  for (const def of RUN_SKILLS || []) {
+    if (!def || !def.key) continue;
+    out[def.key] = String(def.name || def.key);
+  }
+  return out;
+})();
+
+function getSkillName(key) {
+  return SKILL_NAME_BY_KEY[String(key || "")] || String(key || "EMPTY");
+}
+
+function getStarterDisplayKey(state, player) {
+  const selectedKey = String(player?._selectedStarterLoadout || state?.progression?.selectedStarterLoadout || "mecha");
+  const starterDef = getStarterLoadoutDef(selectedKey);
+  const starterSkillKey = String(starterDef?.skillKey || "bullets");
+  const skills = player?.runSkills || {};
+  const evo = player?.runEvolutions || {};
+  const starterEvolution = (EVOLUTION_DEFS || []).find((def) => def && def.fromKey === starterSkillKey && (evo?.[def.fusionFlag] || ((skills?.[def.resultKey] | 0) > 0)));
+  return starterEvolution?.resultKey || starterSkillKey;
+}
+
+function getBuildSlots(state) {
+  const player = state?.player || null;
+  const skills = player?.runSkills || {};
+  const slots = [];
+  const used = new Set();
+  const starterKey = getStarterDisplayKey(state, player);
+  const starterLevel = Math.max(0, (skills?.[starterKey] | 0) || 0);
+  slots.push({
+    key: starterKey,
+    name: getSkillName(starterKey),
+    level: starterLevel,
+    isCore: true,
+    empty: false,
+  });
+  used.add(starterKey);
+
+  for (const def of RUN_SKILLS || []) {
+    const key = String(def?.key || "");
+    if (!key || used.has(key)) continue;
+    const level = (skills?.[key] | 0) || 0;
+    if (level <= 0) continue;
+    slots.push({
+      key,
+      name: String(def?.name || key),
+      level,
+      isCore: false,
+      empty: false,
+    });
+    used.add(key);
+    if (slots.length >= MAX_RUN_ACTIVE_SKILLS) break;
+  }
+
+  while (slots.length < MAX_RUN_ACTIVE_SKILLS) {
+    slots.push({ key: '', name: 'EMPTY SLOT', level: 0, isCore: false, empty: true });
+  }
+
+  return slots.slice(0, MAX_RUN_ACTIVE_SKILLS);
+}
+
+function formatStatValue(value, digits = 0, suffix = '') {
+  if (!Number.isFinite(Number(value))) return '0' + suffix;
+  const n = Number(value);
+  const fixed = digits > 0 ? n.toFixed(digits) : Math.round(n).toString();
+  return fixed + suffix;
+}
+
+function getCurrentStatsRows(state) {
+  const player = state?.player || null;
+  if (!player) return [];
+  const critChance = ((player.metaCritChance || 0) + (player.runCritChanceAdd || 0)) * 100;
+  const critDamage = ((player.metaCritDamageMult || 1) * (player.runCritDamageMult || 1) - 1) * 100;
+  const lifeSteal = ((player.metaLifeSteal || 0) + (player.runLifeSteal || 0)) * 100;
+  const hpRegen = (player.metaHpRegen || 0) + (player.runHpRegen || 0);
+  const pickupRadius = (state?.meta?.pickupBonusRadius || 0) + (player.runPickupBonusRadius || 0);
+  const xpGain = ((state?.meta?.xpGainMult || 1) * (player.runXpGainMult || 1) - 1) * 100;
+  const levelXpNeed = Number.isFinite(player.nextLevelXp) && player.nextLevelXp > 0
+    ? Math.round(player.nextLevelXp)
+    : (typeof player.xpToNext === 'function' ? Math.round(player.xpToNext()) : 0);
+
+  return [
+    { label: 'Level', value: String(Math.max(0, player.level | 0)) },
+    { label: 'Skill Points', value: String(Math.max(0, player.skillPoints | 0)) },
+    { label: 'HP', value: `${Math.max(0, Math.round(player.hp || 0))}/${Math.max(1, Math.round(player.maxHP || 1))}` },
+    { label: 'Damage', value: formatStatValue(player.damage || 0, 1) },
+    { label: 'Attack Speed', value: formatStatValue(player.attackSpeed || 0, 2, '/s') },
+    { label: 'Move Speed', value: formatStatValue(player.moveSpeed || 0, 0) },
+    { label: 'Range', value: formatStatValue(player.range || 0, 2, 'x') },
+    { label: 'Crit Chance', value: formatStatValue(critChance, 1, '%') },
+    { label: 'Crit Damage', value: formatStatValue(critDamage, 0, '%') },
+    { label: 'Life Steal', value: formatStatValue(lifeSteal, 1, '%') },
+    { label: 'HP Regen', value: formatStatValue(hpRegen, 2, '/s') },
+    { label: 'Pickup Radius', value: formatStatValue(pickupRadius, 0) },
+    { label: 'XP Gain', value: formatStatValue(xpGain, 1, '%') },
+    { label: 'XP', value: levelXpNeed > 0 ? `${Math.max(0, Math.round(player.xp || 0))}/${levelXpNeed}` : String(Math.max(0, Math.round(player.xp || 0))) },
+  ];
+}
+
+function drawHudButton(ctx, active, label, x, y, width, height, uiScale, rectFieldName, accent = 'rgba(126,194,255,0.88)') {
+  ctx.save();
+  ctx.fillStyle = active ? accent : 'rgba(10,14,22,0.82)';
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = active ? 'rgba(255,255,255,0.90)' : 'rgba(255,255,255,0.28)';
+  ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+  ctx.fillStyle = 'rgba(255,255,255,0.96)';
+  ctx.font = width < 100 ? 'bold 11px sans-serif' : 'bold 12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x + width * 0.5, y + height * 0.5 + 0.5);
+  ctx.restore();
+  return { x: x * uiScale, y: y * uiScale, w: width * uiScale, h: height * uiScale };
+}
+
+function drawBuildButton(ctx, state, scaledW, topPanelH, uiScale) {
+  const width = scaledW < 900 ? 96 : 112;
+  const height = scaledW < 900 ? 28 : 30;
+  const x = scaledW - width - 14;
+  const y = topPanelH + 10;
+  const active = !!state?._buildPanelOpen;
+
+  ctx.save();
+  ctx.fillStyle = active ? 'rgba(76, 150, 255, 0.88)' : 'rgba(10,14,22,0.82)';
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = active ? 'rgba(255,255,255,0.90)' : 'rgba(255,255,255,0.28)';
+  ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+
+  const dot = 5;
+  const gap = 3;
+  const iconX = x + 10;
+  const iconY = y + (height - (dot * 2 + gap)) * 0.5;
+  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  for (let row = 0; row < 2; row++) {
+    for (let col = 0; col < 3; col++) {
+      ctx.fillRect(iconX + col * (dot + gap), iconY + row * (dot + gap), dot, dot);
+    }
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,0.96)';
+  ctx.font = scaledW < 900 ? 'bold 11px sans-serif' : 'bold 12px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('BUILD', x + 34, y + height * 0.5 + 0.5);
+  ctx.restore();
+
+  state._buildButtonRect = { x: x * uiScale, y: y * uiScale, w: width * uiScale, h: height * uiScale };
+}
+
+function drawStatsButton(ctx, state, scaledW, topPanelH, uiScale) {
+  const width = scaledW < 900 ? 96 : 112;
+  const height = scaledW < 900 ? 28 : 30;
+  const x = scaledW - width - 14;
+  const y = topPanelH + 46;
+  const active = !!state?._statsPanelOpen;
+  state._statsButtonRect = drawHudButton(ctx, active, 'STATS', x, y, width, height, uiScale, '_statsButtonRect', 'rgba(123, 104, 238, 0.88)');
+}
+
+function drawBuildPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale) {
+  if (!state?._buildPanelOpen) {
+    state._buildPanelRect = null;
+    state._buildPanelCloseRect = null;
+    return;
+  }
+
+  const slots = getBuildSlots(state);
+  const panelW = Math.min(360, Math.max(280, scaledW * 0.28));
+  const panelH = 296;
+  const x = scaledW - panelW - 14;
+  const y = topPanelH + 48;
+  const closeSize = 26;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(7,10,16,0.92)';
+  ctx.fillRect(x, y, panelW, panelH);
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.strokeRect(x + 0.5, y + 0.5, panelW - 1, panelH - 1);
+  ctx.fillStyle = 'rgba(126,194,255,0.95)';
+  ctx.fillRect(x, y, panelW, 4);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.96)';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText('CURRENT BUILD', x + 16, y + 14);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.58)';
+  ctx.font = '12px sans-serif';
+  ctx.fillText('Starter core + 5 skill slots', x + 16, y + 38);
+
+  const closeX = x + panelW - closeSize - 10;
+  const closeY = y + 10;
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(closeX, closeY, closeSize, closeSize);
+  ctx.strokeStyle = 'rgba(255,255,255,0.26)';
+  ctx.strokeRect(closeX + 0.5, closeY + 0.5, closeSize - 1, closeSize - 1);
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = 'bold 16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('×', closeX + closeSize * 0.5, closeY + closeSize * 0.5 + 0.5);
+
+  const slotX = x + 16;
+  const slotW = panelW - 32;
+  const slotH = 34;
+  const slotGap = 8;
+  let slotY = y + 68;
+
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    const isCore = !!slot.isCore;
+    const label = isCore ? 'CORE' : `SLOT ${i + 1}`;
+
+    ctx.fillStyle = slot.empty ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.06)';
+    ctx.fillRect(slotX, slotY, slotW, slotH);
+    ctx.strokeStyle = isCore ? 'rgba(126,194,255,0.55)' : 'rgba(255,255,255,0.14)';
+    ctx.strokeRect(slotX + 0.5, slotY + 0.5, slotW - 1, slotH - 1);
+
+    const accent = isCore ? 'rgba(126,194,255,0.95)' : (slot.empty ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.55)');
+    ctx.fillStyle = accent;
+    ctx.fillRect(slotX, slotY, 4, slotH);
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = slot.empty ? 'rgba(255,255,255,0.42)' : 'rgba(255,255,255,0.92)';
+    ctx.font = isCore ? 'bold 13px sans-serif' : '13px sans-serif';
+    ctx.fillText(slot.name, slotX + 16, slotY + slotH * 0.5);
+
+    ctx.fillStyle = 'rgba(255,255,255,0.52)';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(label, slotX + slotW - 92, slotY + slotH * 0.5);
+
+    if (!slot.empty) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = 'rgba(255,255,255,0.88)';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.fillText(`Lv ${Math.max(1, slot.level | 0)}`, slotX + slotW - 12, slotY + slotH * 0.5);
+    }
+
+    slotY += slotH + slotGap;
+  }
+
+  ctx.restore();
+
+  state._buildPanelRect = { x: x * uiScale, y: y * uiScale, w: panelW * uiScale, h: panelH * uiScale };
+  state._buildPanelCloseRect = { x: closeX * uiScale, y: closeY * uiScale, w: closeSize * uiScale, h: closeSize * uiScale };
+}
+
+function drawStatsPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale) {
+  if (!state?._statsPanelOpen) {
+    state._statsPanelRect = null;
+    state._statsPanelCloseRect = null;
+    return;
+  }
+
+  const rows = getCurrentStatsRows(state);
+  const panelW = Math.min(380, Math.max(300, scaledW * 0.30));
+  const panelH = Math.min(scaledH - (topPanelH + 64), Math.max(340, 82 + rows.length * 28));
+  const x = scaledW - panelW - 14;
+  const y = topPanelH + 84;
+  const closeSize = 26;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(7,10,16,0.94)';
+  ctx.fillRect(x, y, panelW, panelH);
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.strokeRect(x + 0.5, y + 0.5, panelW - 1, panelH - 1);
+  ctx.fillStyle = 'rgba(160,132,255,0.95)';
+  ctx.fillRect(x, y, panelW, 4);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.96)';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText('CURRENT STATS', x + 16, y + 14);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.58)';
+  ctx.font = '12px sans-serif';
+  ctx.fillText('Everything your hero has right now', x + 16, y + 38);
+
+  const closeX = x + panelW - closeSize - 10;
+  const closeY = y + 10;
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(closeX, closeY, closeSize, closeSize);
+  ctx.strokeStyle = 'rgba(255,255,255,0.26)';
+  ctx.strokeRect(closeX + 0.5, closeY + 0.5, closeSize - 1, closeSize - 1);
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = 'bold 16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('×', closeX + closeSize * 0.5, closeY + closeSize * 0.5 + 0.5);
+
+  let rowY = y + 68;
+  const rowX = x + 16;
+  const rowW = panelW - 32;
+  const rowH = 22;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    if (rowY + rowH > y + panelH - 12) break;
+    if (i % 2 === 0) {
+      ctx.fillStyle = 'rgba(255,255,255,0.04)';
+      ctx.fillRect(rowX, rowY - 2, rowW, rowH + 4);
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,0.66)';
+    ctx.font = '12px sans-serif';
+    ctx.fillText(String(row.label || ''), rowX + 10, rowY + rowH * 0.5);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.fillText(String(row.value || ''), rowX + rowW - 10, rowY + rowH * 0.5);
+    rowY += rowH + 4;
+  }
+
+  ctx.restore();
+
+  state._statsPanelRect = { x: x * uiScale, y: y * uiScale, w: panelW * uiScale, h: panelH * uiScale };
+  state._statsPanelCloseRect = { x: closeX * uiScale, y: closeY * uiScale, w: closeSize * uiScale, h: closeSize * uiScale };
+}
 
 function clamp01(n) {
   return n < 0 ? 0 : (n > 1 ? 1 : n);
@@ -410,12 +735,17 @@ ctx.textBaseline = "alphabetic";
   }
 
   // Save pause button rect in original screen coordinates
-    state._pauseButtonRect = {
+  state._pauseButtonRect = {
     x: pauseX * uiScale,
     y: pauseY * uiScale,
     w: btnSize * uiScale,
     h: btnSize * uiScale,
   };
+
+  drawBuildButton(ctx, state, scaledW, topPanelH, uiScale);
+  drawStatsButton(ctx, state, scaledW, topPanelH, uiScale);
+  drawBuildPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale);
+  drawStatsPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale);
 
   // Pixel_GO v0.4: show Skill Points instead of the old in-run upgrade button.
   const sp = (player.skillPoints | 0) || 0;

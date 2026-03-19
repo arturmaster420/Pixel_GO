@@ -3769,6 +3769,40 @@ function drawFloorExitPortal(ctx, room, state) {
   ctx.restore();
 }
 
+function drawHubReturnPortal(ctx, room, state) {
+  const portal = room?.hubReturnPortal || null;
+  if (!portal || !room?.cleared || !room?.isFloorFinal) return;
+  const time = Number(state?.time) || 0;
+  const pulse = 0.5 + 0.5 * Math.sin(time * 2.7 + 0.6);
+  const r = 42 + pulse * 7;
+  ctx.save();
+  const g = ctx.createRadialGradient(portal.x, portal.y, 0, portal.x, portal.y, r * 1.9);
+  g.addColorStop(0, 'rgba(255,255,240,0.96)');
+  g.addColorStop(0.24, 'rgba(255,226,140,0.84)');
+  g.addColorStop(0.58, 'rgba(120,255,205,0.24)');
+  g.addColorStop(1, 'rgba(120,255,205,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(portal.x, portal.y, r * 1.9, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,245,190,0.96)';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(portal.x, portal.y, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(170,255,228,0.72)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(portal.x, portal.y, r * 0.6, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,248,220,0.84)';
+  ctx.font = '13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('RETURN HUB', portal.x, portal.y - r - 18);
+  ctx.restore();
+}
+
 export function renderRoomsBackground(ctx, state) {
   const cam = state.camera;
   const canvas = state.canvas;
@@ -3832,5 +3866,6 @@ export function renderRoomsBackground(ctx, state) {
 
   if (!currentIsHub && rd.current && !rd.current.removed) {
     drawFloorExitPortal(ctx, rd.current, state);
+    drawHubReturnPortal(ctx, rd.current, state);
   }
 }

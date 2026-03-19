@@ -194,15 +194,8 @@ function computeProgressiveRoomDifficulty({ floorNo = 1, roomOrdinal = 1, totalR
 }
 
 function pickRoomCount(floorNo = 1) {
-  if (floorNo <= 2) return 4;
-  if (floorNo <= 4) return Math.random() < 0.55 ? 4 : 5;
-  if (floorNo <= 8) {
-    const roll = Math.random();
-    if (roll < 0.28) return 4;
-    if (roll < 0.78) return 5;
-    return 6;
-  }
-  return Math.random() < 0.35 ? 5 : 6;
+  void floorNo;
+  return 3;
 }
 
 const FLOOR_BIOME_KEYS = ['neutral', ...BIOME_LIST.map((b) => String(b?.key || '').toLowerCase()).filter(Boolean)];
@@ -372,13 +365,11 @@ function makeIntroRoomMeta({ roomOrdinal = 1, totalRooms = 5, templateKey = 'cro
 
 function buildNeutralIntroFloorPlan() {
   const biomeKey = 'neutral';
-  const totalRooms = 5;
+  const totalRooms = 3;
   const rooms = [
-    makeIntroRoomMeta({ roomOrdinal: 1, totalRooms, templateKey: 'neutral_intro_vestibule', biomeKey, encounterType: 'warmup', difficultyScale: 0.78, connectorSize: 'wide', entrySocket: 'S', exitSocket: 'N', placementStep: { dx: 0, dy: -1 }, routeStyle: 'axis', lateralOffset: 0, gridX: 0, gridY: -1 }),
-    makeIntroRoomMeta({ roomOrdinal: 2, totalRooms, templateKey: 'neutral_intro_hall', biomeKey, encounterType: 'swarm', difficultyScale: 0.88, connectorSize: 'wide', entrySocket: 'S', exitSocket: 'E', placementStep: { dx: 0, dy: -1 }, routeStyle: 'axis', lateralOffset: -0.05, gridX: 0, gridY: -2 }),
-    makeIntroRoomMeta({ roomOrdinal: 3, totalRooms, templateKey: 'neutral_intro_split', biomeKey, encounterType: 'gauntlet', difficultyScale: 0.96, connectorSize: 'wide', entrySocket: 'W', exitSocket: 'E', placementStep: { dx: 1, dy: 0 }, routeStyle: 'axis', lateralOffset: 0.10, gridX: 1, gridY: -2 }),
-    makeIntroRoomMeta({ roomOrdinal: 4, totalRooms, templateKey: 'neutral_intro_arena', biomeKey, encounterType: 'swarm', difficultyScale: 1.04, connectorSize: 'wide', entrySocket: 'W', exitSocket: 'N', placementStep: { dx: 1, dy: 0 }, routeStyle: 'axis', lateralOffset: 0.06, gridX: 2, gridY: -2 }),
-    makeIntroRoomMeta({ roomOrdinal: 5, totalRooms, templateKey: 'neutral_intro_crown', biomeKey, encounterType: 'boss', difficultyScale: 1.10, connectorSize: 'standard', entrySocket: 'S', exitSocket: '', portalSocket: 'N', placementStep: { dx: 0, dy: -1 }, routeStyle: 'axis', lateralOffset: 0, gridX: 2, gridY: -3 }),
+    makeIntroRoomMeta({ roomOrdinal: 1, totalRooms, templateKey: 'neutral_intro_vestibule', biomeKey, encounterType: 'warmup', difficultyScale: 0.82, connectorSize: 'wide', entrySocket: 'S', exitSocket: 'N', placementStep: { dx: 0, dy: -1 }, routeStyle: 'axis', lateralOffset: 0, gridX: 0, gridY: -1 }),
+    makeIntroRoomMeta({ roomOrdinal: 2, totalRooms, templateKey: 'neutral_intro_split', biomeKey, encounterType: 'gauntlet', difficultyScale: 0.96, connectorSize: 'wide', entrySocket: 'S', exitSocket: 'N', placementStep: { dx: 0, dy: -1 }, routeStyle: 'axis', lateralOffset: 0.08, gridX: 0, gridY: -2 }),
+    makeIntroRoomMeta({ roomOrdinal: 3, totalRooms, templateKey: 'neutral_intro_crown', biomeKey, encounterType: 'boss', difficultyScale: 1.10, connectorSize: 'standard', entrySocket: 'S', exitSocket: '', portalSocket: 'N', placementStep: { dx: 0, dy: -1 }, routeStyle: 'axis', lateralOffset: 0, gridX: 0, gridY: -3 }),
   ];
   return {
     floorNumber: 1,

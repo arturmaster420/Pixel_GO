@@ -78,6 +78,10 @@ function openTier(state) {
 
 function openBasicSelector(state) {
   if (!state?.progression) return;
+  if (state?._hubResumeRunActive) {
+    if (state.popups) state.popups.push({ text: "Starter Core locked during saved run", time: 1.5 });
+    return;
+  }
   ensureStarterLoadoutProgression(state.progression);
   state.overlayMode = "basic";
   closeShop(state);
@@ -457,7 +461,11 @@ export function tickHubNpcDom(state) {
 
   if (showInteract && el.interactBtn) {
     const n = state._hubNearbyNpc;
-    el.interactBtn.textContent = n.kind === "tier" ? "Death Shop~Up (E)" : (n.kind === "basic" ? "Basic Core (E)" : "Shop (E)");
+    el.interactBtn.textContent = n.kind === "tier"
+      ? "Death Shop~Up (E)"
+      : (n.kind === "basic"
+        ? (state._hubResumeRunActive ? "Basic Core Locked" : "Basic Core (E)")
+        : "Shop (E)");
   }
 
   // Shop overlay visibility

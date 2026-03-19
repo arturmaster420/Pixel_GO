@@ -11,6 +11,7 @@ const GAP = 120;
 const CONNECTOR_BUILD_DUR = 0.55;
 const COLLAPSE_DUR = 0.55;
 const FLOOR_EXIT_RADIUS = 70;
+const HUB_RETURN_RADIUS = 70;
 const HUB_PORTAL_TRIGGER_RADIUS = 42;
 
 function clamp(n, a, b) {
@@ -108,6 +109,20 @@ function resolvePortalPoint(room) {
   const desiredSocket = String(room?.portalSocket || room?.exitSocket || oppositeSocket(room?.entrySocket || 'S', 'N') || 'N');
   const desired = roomAnchorPoint(room, desiredSocket, -24);
   const fallback = { x: room.centerX, y: room.centerY };
+  if (!rects.length) return desired || fallback;
+  return clampPointToRects(desired.x, desired.y, rects, {
+    edgePad: 16,
+    coverRadius: 0,
+    covers: [],
+    prefer: { x: room.centerX, y: room.centerY },
+  });
+}
+
+function resolveHubReturnPortalPoint(room) {
+  if (!room || !room.isFloorFinal) return null;
+  const rects = getRoomWalkRects(room);
+  const desired = roomAnchorPoint(room, 'S', -24);
+  const fallback = { x: Number(room?.centerX) || 0, y: (Number(room?.centerY) || 0) + (Number(room?.side) || 0) * 0.28 };
   if (!rects.length) return desired || fallback;
   return clampPointToRects(desired.x, desired.y, rects, {
     edgePad: 16,
@@ -319,6 +334,7 @@ function makeRoom({
     arenaSpec,
     shopNpc: null,
     exitPortal: null,
+    hubReturnPortal: null,
     cleared: serial <= 0,
     collapsing: false,
     collapseT: 0,
@@ -373,6 +389,7 @@ export class RoomDirector {
 
     if (room.isFloorFinal) {
       room.exitPortal = resolvePortalPoint(room);
+      room.hubReturnPortal = resolveHubReturnPortalPoint(room);
       this.next = null;
       this.bridge = null;
     } else {
@@ -497,14 +514,22 @@ export class RoomDirector {
         }
         waitForParty = readyCount > 0 && readyCount < livingCount;
       }
-    } else if (this.current.cleared && this.current.isFloorFinal && this.current.exitPortal) {
-      const readyCount = this._countPlayersInRadius(alivePlayers, this.current.exitPortal, FLOOR_EXIT_RADIUS);
-      if (livingCount > 0 && readyCount >= livingCount) {
+    } else if (this.current.cleared && this.current.isFloorFinal) {
+      const nextReadyCount = this.current.exitPortal ? this._countPlayersInRadius(alivePlayers, this.current.exitPortal, FLOOR_EXIT_RADIUS) : 0;
+      const hubReadyCount = this.current.hubReturnPortal ? this._countPlayersInRadius(alivePlayers, this.current.hubReturnPortal, HUB_RETURN_RADIUS) : 0;
+      if (livingCount > 0 && hubReadyCount >= livingCount) {
+        this._waitForParty = false;
+        try {
+          if (typeof this.state?._returnRunToHubPreserve === 'function') this.state._returnRunToHubPreserve();
+        } catch {}
+        return;
+      }
+      if (livingCount > 0 && nextReadyCount >= livingCount) {
         this._waitForParty = false;
         this._enterNextFloor();
         return;
       }
-      waitForParty = readyCount > 0 && readyCount < livingCount;
+      waitForParty = (hubReadyCount > 0 && hubReadyCount < livingCount) || (nextReadyCount > 0 && nextReadyCount < livingCount);
     }
 
     this._waitForParty = waitForParty;
@@ -734,6 +759,7 @@ export class RoomDirector {
     if (this.current.cleared && (this.current.index | 0) > 0) {
       if (roomOrdinal >= totalRooms) {
         this.current.exitPortal = resolvePortalPoint(this.current);
+        this.current.hubReturnPortal = resolveHubReturnPortalPoint(this.current);
       }
       const anchor = this.current?.arenaSpec?.anchors?.shopAnchor || { x: this.current.centerX, y: this.current.centerY + this.current.side * 0.18 };
       this.current.shopNpc = { x: Number(anchor.x) || this.current.centerX, y: Number(anchor.y) || this.current.centerY, r: 20 };
@@ -921,6 +947,8 @@ export class RoomDirector {
     st._nextRoomEncounterLabel = String((this.next && !this.next.removed) ? (this.next.encounterLabel || '') : '');
     st._floorExitActive = !!(this.current.cleared && this.current.isFloorFinal && this.current.exitPortal);
     st._floorExitPortal = this.current.exitPortal ? { ...this.current.exitPortal } : null;
+    st._hubReturnPortalActive = !!(this.current.cleared && this.current.isFloorFinal && this.current.hubReturnPortal);
+    st._hubReturnPortal = this.current.hubReturnPortal ? { ...this.current.hubReturnPortal } : null;
     st._roomObjective = describeRoomObjective(this.current, this);
     st._roomNextHint = (this.next && !this.next.removed) ? `${String(this.next.templateRole || this.next.encounterLabel || this.next.encounterType || 'NEXT').toUpperCase()} • ${String(this.next.biomeKey || this.current.biomeKey || '').toUpperCase()}` : '';
     st._roomLabel = this.current.index <= 0 ? 'HUB' : `FLOOR ${this.current.floorNumber} • ROOM ${this.current.roomOrdinal}/${this.current.totalRooms} • ${this.current.encounterLabel || this.current.encounterType || 'WAVES'}`;
