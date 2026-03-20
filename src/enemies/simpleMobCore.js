@@ -1,0 +1,125 @@
+import { pickMobTarget, applyDamageToTarget } from "./utils.js";
+import { renderBiomeUnit, biomeKeyFromKind, biomeStyleForKey } from "./biomeVisuals.js";
+
+export function resolveEnemyRoom(self, state) {
+  const rd = state?.roomDirector || null;
+  if (!rd) return null;
+  const idx = (self?._roomIndex | 0) || 0;
+  if (!idx) return rd.current || null;
+  if ((rd.current?.index | 0) === idx) return rd.current;
+  if ((rd.prev?.index | 0) === idx && rd.prev && !rd.prev.removed) return rd.prev;
+  if ((rd.next?.index | 0) === idx && rd.next && !rd.next.removed) return rd.next;
+  return null;
+}
+
+function clamp(v, a, b) {
+  return Math.max(a, Math.min(b, v));
+}
+
+function getDebuffedSpeed(self, state) {
+  const now = Number(state?.time || 0);
+  const barrierDebuffed = (typeof self?._barrierDebuffUntil === "number") && now < self._barrierDebuffUntil;
+  const barrierSlow = barrierDebuffed ? Number(self?._barrierSlowMult || 1) : 1;
+  const frostLeft = Number(self?._frostLeft || 0);
+  const frostLv = Number(self?._frostLv || 0);
+  const frostSlow = frostLeft > 0 ? clamp(1 - frostLv * 0.09, 0.58, 1) : 1;
+  return Math.max(12, Number(self?.speed || 0) * barrierSlow * frostSlow);
+}
+
+function getDamageOutMult(self, state) {
+  const now = Number(state?.time || 0);
+  const barrierDebuffed = (typeof self?._barrierDebuffUntil === "number") && now < self._barrierDebuffUntil;
+  return barrierDebuffed ? Number(self?._barrierDmgMult || 1) : 1;
+}
+
+function steerTowardPoint(self, tx, ty, speed, dt) {
+  const dx = Number(tx || 0) - Number(self?.x || 0);
+  const dy = Number(ty || 0) - Number(self?.y || 0);
+  const dist = Math.hypot(dx, dy) || 1;
+  if (dist <= 0.001) return;
+  const step = Math.min(dist, Math.max(0, speed * dt));
+  self.x += (dx / dist) * step;
+  self.y += (dy / dist) * step;
+}
+
+export function updateSimpleRoomChase(self, dt, state, {
+  aggroRange = 520,
+  leashRadius = 460,
+  contactShieldMult = 1,
+} = {}) {
+  if (!self || !state) return;
+  const player = pickMobTarget(self, state, { aggroRange: self.aggroRange || aggroRange });
+  if (!player) return;
+
+  const speed = getDebuffedSpeed(self, state);
+  const room = resolveEnemyRoom(self, state);
+  const roomCenterX = Number(room?.centerX ?? self?._roomCenter?.x ?? self?._spawnAnchor?.x ?? self?.x ?? 0);
+  const roomCenterY = Number(room?.centerY ?? self?._roomCenter?.y ?? self?._spawnAnchor?.y ?? self?.y ?? 0);
+  const toCenterX = roomCenterX - Number(self?.x || 0);
+  const toCenterY = roomCenterY - Number(self?.y || 0);
+  const distToCenter = Math.hypot(toCenterX, toCenterY);
+  const leash = Math.max(180, Number(self?._leashRadius || leashRadius));
+
+  let aimX = Number(player.x || 0);
+  let aimY = Number(player.y || 0);
+  if (distToCenter > leash) {
+    aimX = roomCenterX;
+    aimY = roomCenterY;
+  }
+
+  steerTowardPoint(self, aimX, aimY, speed, dt);
+
+  const hitDx = Number(player.x || 0) - Number(self.x || 0);
+  const hitDy = Number(player.y || 0) - Number(self.y || 0);
+  const hitR = Number(player.radius || 18) + Number(self.radius || 18);
+  if (hitDx * hitDx + hitDy * hitDy <= hitR * hitR) {
+    if (!player._ghostActive && !player._lvlUpInvuln && !player._lvlUpChoosing) {
+      const shieldMult = player._shieldActive ? contactShieldMult : 1.0;
+      const inMult = (typeof player._dmgInMult === "number") ? player._dmgInMult : 1.0;
+      applyDamageToTarget(player, Number(self.damage || 0) * getDamageOutMult(self, state) * dt * shieldMult * inMult, state, self);
+    }
+  }
+}
+
+export function renderSimpleMob(self, ctx, { fallbackFill = "#ff5f6f", isBasic = false, isElite = false } = {}) {
+  const bk = String(self?._biomeKey || biomeKeyFromKind(self?.kind) || "").toLowerCase();
+  if (bk) {
+    const role = biomeStyleForKey(bk).role;
+    renderBiomeUnit(ctx, self, bk, { role, isBasic, isElite });
+    return;
+  }
+  ctx.save();
+  ctx.beginPath();
+  ctx.fillStyle = fallbackFill;
+  ctx.arc(Number(self?.x || 0), Number(self?.y || 0), Number(self?.radius || 18), 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.25)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+}
+
+export function dropSimpleMobRewards(self, state, { coinChance = 0.22, coinMin = 1, coinMax = 1, radius = 8 } = {}) {
+  if (!self || !state) return;
+  const roll = Math.random();
+  if (roll < coinChance) {
+    const amt = coinMin + (((Math.random() * Math.max(1, coinMax - coinMin + 1)) | 0));
+    state.xpOrbs.push({
+      x: self.x,
+      y: self.y,
+      radius,
+      kind: "coin",
+      coins: amt,
+      age: 0,
+    });
+    return;
+  }
+  state.xpOrbs.push({
+    x: self.x,
+    y: self.y,
+    radius,
+    kind: "xp",
+    xp: self.xpValue,
+    age: 0,
+  });
+}

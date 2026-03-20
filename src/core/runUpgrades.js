@@ -3,6 +3,7 @@
 // - During a run, each level grants a choice of upgrades (skills or passives).
 
 import { isStandardSkillKey, getSkillFamily } from "../weapons/skillCatalog.js";
+import { composeSkillUpgradeDescription, getSkillPresentation } from "../weapons/skillPresentation.js";
 
 export const MAX_RUN_ACTIVE_SKILLS = 6;
 
@@ -105,6 +106,18 @@ export const MAX_RUN_SKILL_LEVEL = {
   iceShards: 6,
   voidBurst: 6,
   holyNova: 6,
+  shrapnelBurst: 6,
+  railVolley: 6,
+  arcSpark: 6,
+  staticPulse: 6,
+  meteorRain: 6,
+  magmaLance: 6,
+  frostNova: 6,
+  crystalSpear: 6,
+  soulDrain: 6,
+  dreadRing: 6,
+  prismRay: 6,
+  sanctuary: 6,
 };
 
 function pickWeightedUnique(items, count) {
@@ -165,6 +178,18 @@ export const RUN_SKILLS = [
   { key: "iceShards", name: "Glacial Shards", kind: "skill", biome: "ice" },
   { key: "voidBurst", name: "Void Burst", kind: "skill", biome: "dark" },
   { key: "holyNova", name: "Holy Nova", kind: "skill", biome: "light" },
+  { key: "shrapnelBurst", name: "Shrapnel Burst", kind: "skill", biome: "neutral" },
+  { key: "railVolley", name: "Rail Volley", kind: "skill", biome: "neutral" },
+  { key: "arcSpark", name: "Arc Spark", kind: "skill", biome: "electric" },
+  { key: "staticPulse", name: "Static Pulse", kind: "skill", biome: "electric" },
+  { key: "meteorRain", name: "Meteor Rain", kind: "skill", biome: "fire" },
+  { key: "magmaLance", name: "Magma Lance", kind: "skill", biome: "fire" },
+  { key: "frostNova", name: "Frost Nova", kind: "skill", biome: "ice" },
+  { key: "crystalSpear", name: "Crystal Spear", kind: "skill", biome: "ice" },
+  { key: "soulDrain", name: "Soul Drain", kind: "skill", biome: "dark" },
+  { key: "dreadRing", name: "Dread Ring", kind: "skill", biome: "dark" },
+  { key: "prismRay", name: "Prism Ray", kind: "skill", biome: "light" },
+  { key: "sanctuary", name: "Sanctuary", kind: "skill", biome: "light" },
   // Evolution skills are obtained via fusion, not directly.
   { key: "rockets", name: "Rockets", kind: "skill" },
   { key: "energyBomb", name: "Energy Bomb", kind: "skill", biome: "electric" },
@@ -216,6 +241,18 @@ export function initRunUpgrades(player) {
     iceShards: (s.iceShards ?? 0) | 0,
     voidBurst: (s.voidBurst ?? 0) | 0,
     holyNova: (s.holyNova ?? 0) | 0,
+    shrapnelBurst: (s.shrapnelBurst ?? 0) | 0,
+    railVolley: (s.railVolley ?? 0) | 0,
+    arcSpark: (s.arcSpark ?? 0) | 0,
+    staticPulse: (s.staticPulse ?? 0) | 0,
+    meteorRain: (s.meteorRain ?? 0) | 0,
+    magmaLance: (s.magmaLance ?? 0) | 0,
+    frostNova: (s.frostNova ?? 0) | 0,
+    crystalSpear: (s.crystalSpear ?? 0) | 0,
+    soulDrain: (s.soulDrain ?? 0) | 0,
+    dreadRing: (s.dreadRing ?? 0) | 0,
+    prismRay: (s.prismRay ?? 0) | 0,
+    sanctuary: (s.sanctuary ?? 0) | 0,
   };
   player.runEvolutions = player.runEvolutions || {};
   // Passives start at 0 (merge defaults).
@@ -304,7 +341,7 @@ export function rollRunUpgrades(player, count = 3) {
   // Skills (unlock weight high; upgrades stay relevant)
 const evo = player.runEvolutions || {};
 
-const attackKeys = ["bullets", "bombs", "satellites", "energyBarrier", "spirit", "summon", "electricZone", "laser", "lightning", "fireball", "iceWall", "blackhole", "lightHeal", "stormStrike", "flameNova", "iceShards", "voidBurst", "holyNova", "rockets", "energyBomb", "fireBomb", "iceBomb"];
+const attackKeys = ["bullets", "bombs", "satellites", "energyBarrier", "spirit", "summon", "electricZone", "laser", "lightning", "fireball", "iceWall", "blackhole", "lightHeal", "stormStrike", "flameNova", "iceShards", "voidBurst", "holyNova", "shrapnelBurst", "railVolley", "arcSpark", "staticPulse", "meteorRain", "magmaLance", "frostNova", "crystalSpear", "soulDrain", "dreadRing", "prismRay", "sanctuary", "rockets", "energyBomb", "fireBomb", "iceBomb"];
 const activeAttackSkills = attackKeys.reduce((acc, k) => acc + (((skills[k] || 0) > 0) ? 1 : 0), 0);
 
 for (const evoOffer of getAvailableEvolutionOffers(player)) {
@@ -410,27 +447,10 @@ for (const s of RUN_SKILLS) {
     });
   }
 
-  const hasAnyExtraSkill =
-    (skills.bombs || 0) > 0 ||
-    (skills.satellites || 0) > 0 ||
-    (skills.energyBarrier || 0) > 0 ||
-    (skills.spirit || 0) > 0 ||
-    (skills.electricZone || 0) > 0 ||
-    (skills.laser || 0) > 0 ||
-    (skills.lightning || 0) > 0 ||
-    (skills.fireball || 0) > 0 ||
-    (skills.iceWall || 0) > 0 ||
-    (skills.blackhole || 0) > 0 ||
-    (skills.lightHeal || 0) > 0 ||
-    (skills.stormStrike || 0) > 0 ||
-    (skills.flameNova || 0) > 0 ||
-    (skills.iceShards || 0) > 0 ||
-    (skills.voidBurst || 0) > 0 ||
-    (skills.holyNova || 0) > 0 ||
-    (skills.rockets || 0) > 0 ||
-    (skills.energyBomb || 0) > 0 ||
-    (skills.fireBomb || 0) > 0 ||
-    (skills.iceBomb || 0) > 0;
+  const hasAnyExtraSkill = (RUN_SKILLS || []).some((def) => {
+    const key = String(def?.key || "");
+    return key && key !== "bullets" && ((skills[key] | 0) > 0);
+  });
 
   // Composition for readability: 1 skill + 1 passive + (rest any)
   const picks = [];
@@ -555,6 +575,11 @@ export function applyRunUpgrade(player, upgrade, replaceKey = null) {
 export function describeRunUpgrade(player, up) {
   if (!player || !up) return "";
 
+  if (up.kind === "skill") {
+    const rich = composeSkillUpgradeDescription(up.key, up.from, up.to);
+    if (rich) return rich;
+  }
+
   if (up.kind === "evolution") {
     const def = EVOLUTION_DEF_BY_EVO_KEY[String(up.key || "")];
     if (def) {
@@ -629,6 +654,42 @@ export function describeRunUpgrade(player, up) {
     }
     if (up.key === "holyNova") {
       return up.from <= 0 ? "Unlock holy nova (AoE + heal)" : `Lv ${up.from} → ${up.to}: +damage / +heal / +radius`;
+    }
+    if (up.key === "shrapnelBurst") {
+      return up.from <= 0 ? "Unlock shrapnel burst (close mecha blast)" : `Lv ${up.from} → ${up.to}: +damage / +radius / faster`;
+    }
+    if (up.key === "railVolley") {
+      return up.from <= 0 ? "Unlock rail volley (heavy mecha burst)" : `Lv ${up.from} → ${up.to}: +damage / +AoE / faster`;
+    }
+    if (up.key === "arcSpark") {
+      return up.from <= 0 ? "Unlock arc spark (chain burst)" : `Lv ${up.from} → ${up.to}: +damage / +chains / faster`;
+    }
+    if (up.key === "staticPulse") {
+      return up.from <= 0 ? "Unlock static pulse (close electric shockwave)" : `Lv ${up.from} → ${up.to}: +damage / +radius / stronger slow`;
+    }
+    if (up.key === "meteorRain") {
+      return up.from <= 0 ? "Unlock meteor rain (falling fire blasts)" : `Lv ${up.from} → ${up.to}: +damage / +meteors / faster`;
+    }
+    if (up.key === "magmaLance") {
+      return up.from <= 0 ? "Unlock magma lance (heavy fire pierce)" : `Lv ${up.from} → ${up.to}: +damage / +burn / +AoE`;
+    }
+    if (up.key === "frostNova") {
+      return up.from <= 0 ? "Unlock frost nova (close freeze pulse)" : `Lv ${up.from} → ${up.to}: +damage / +radius / stronger slow`;
+    }
+    if (up.key === "crystalSpear") {
+      return up.from <= 0 ? "Unlock crystal spear (heavy ice strike)" : `Lv ${up.from} → ${up.to}: +damage / +frost / +AoE`;
+    }
+    if (up.key === "soulDrain") {
+      return up.from <= 0 ? "Unlock soul drain (dark burst + self-heal)" : `Lv ${up.from} → ${up.to}: +damage / +heal / faster`;
+    }
+    if (up.key === "dreadRing") {
+      return up.from <= 0 ? "Unlock dread ring (close curse wave)" : `Lv ${up.from} → ${up.to}: +damage / +radius / stronger curse`;
+    }
+    if (up.key === "prismRay") {
+      return up.from <= 0 ? "Unlock prism ray (light burst + heal)" : `Lv ${up.from} → ${up.to}: +damage / +heal / +AoE`;
+    }
+    if (up.key === "sanctuary") {
+      return up.from <= 0 ? "Unlock sanctuary (holy zone heal)" : `Lv ${up.from} → ${up.to}: +damage / +heal / +radius`;
     }
     return `Lv ${up.from} → ${up.to}`;
   }

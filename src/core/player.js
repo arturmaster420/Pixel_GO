@@ -87,6 +87,18 @@ export class Player {
       iceShards: 0,
       voidBurst: 0,
       holyNova: 0,
+      shrapnelBurst: 0,
+      railVolley: 0,
+      arcSpark: 0,
+      staticPulse: 0,
+      meteorRain: 0,
+      magmaLance: 0,
+      frostNova: 0,
+      crystalSpear: 0,
+      soulDrain: 0,
+      dreadRing: 0,
+      prismRay: 0,
+      sanctuary: 0,
     };
     this.runEvolutions = {};
     this.runPassives = {
@@ -186,6 +198,18 @@ export class Player {
       iceShards: 0,
       voidBurst: 0,
       holyNova: 0,
+      shrapnelBurst: 0,
+      railVolley: 0,
+      arcSpark: 0,
+      staticPulse: 0,
+      meteorRain: 0,
+      magmaLance: 0,
+      frostNova: 0,
+      crystalSpear: 0,
+      soulDrain: 0,
+      dreadRing: 0,
+      prismRay: 0,
+      sanctuary: 0,
     };
     this.runEvolutions = {};
     this.runPassives = {

@@ -16,6 +16,7 @@ import { updateIceBall } from "./iceBall.js";
 import { spawnBlackhole } from "./blackhole.js";
 import { emitHealPulse } from "./lightHeal.js";
 import { castStormStrike, castFlameNova, fireIceShards, castVoidBurst, castHolyNova } from "./elementalActives.js";
+import { castShrapnelBurst, castRailVolley, castArcSpark, castStaticPulse, castMeteorRain, castMagmaLance, castFrostNova, castCrystalSpear, castSoulDrain, castDreadRing, castPrismRay, castSanctuary } from "./biomeActivesPlus.js";
 import { getAimDirectionForPlayer, isFiringActive } from "../core/mouseController.js";
 
 // Shared preferred distance for pets/minions around the player.
@@ -67,6 +68,18 @@ const SKILL_DAMAGE_TYPES = {
   summon: 'light',
   lightHeal: 'light',
   holyNova: 'light',
+  shrapnelBurst: 'mecha',
+  railVolley: 'mecha',
+  arcSpark: 'electric',
+  staticPulse: 'electric',
+  meteorRain: 'fire',
+  magmaLance: 'fire',
+  frostNova: 'ice',
+  crystalSpear: 'ice',
+  soulDrain: 'dark',
+  dreadRing: 'dark',
+  prismRay: 'light',
+  sanctuary: 'light',
 };
 
 function getDamageTypeMult(player, type) {
@@ -133,7 +146,28 @@ export function getAimRangeForPlayer(player) {
   const vbLvl = (s.voidBurst || 0) | 0;
   const vbRange = vbLvl > 0 ? (320 + (vbLvl - 1) * 14) * rMult : 0;
 
-  return Math.max(220 * rMult, bulletRange, bombRange, rocketRange, energyBombRange, fireBombRange, iceBombRange, lightRange, laserRange, fbRange, bhRange, ssRange, isRange, vbRange);
+  const rvLvl = (s.railVolley || 0) | 0;
+  const rvRange = rvLvl > 0 ? (320 + (rvLvl - 1) * 12) * rMult : 0;
+
+  const asLvl = (s.arcSpark || 0) | 0;
+  const asRange = asLvl > 0 ? (336 + (asLvl - 1) * 14) * rMult : 0;
+
+  const mrLvl = (s.meteorRain || 0) | 0;
+  const mrRange = mrLvl > 0 ? (350 + (mrLvl - 1) * 14) * rMult : 0;
+
+  const mlLvl = (s.magmaLance || 0) | 0;
+  const mlRange = mlLvl > 0 ? (330 + (mlLvl - 1) * 12) * rMult : 0;
+
+  const csLvl = (s.crystalSpear || 0) | 0;
+  const csRange = csLvl > 0 ? (330 + (csLvl - 1) * 12) * rMult : 0;
+
+  const sdLvl = (s.soulDrain || 0) | 0;
+  const sdRange = sdLvl > 0 ? (310 + (sdLvl - 1) * 12) * rMult : 0;
+
+  const prLvl = (s.prismRay || 0) | 0;
+  const prRange = prLvl > 0 ? (336 + (prLvl - 1) * 14) * rMult : 0;
+
+  return Math.max(220 * rMult, bulletRange, bombRange, rocketRange, energyBombRange, fireBombRange, iceBombRange, lightRange, laserRange, fbRange, bhRange, ssRange, isRange, vbRange, rvRange, asRange, mrRange, mlRange, csRange, sdRange, prRange);
 }
 
 
@@ -181,7 +215,28 @@ export function getAttackRangeForPlayer(player) {
   const vbLvl = (s.voidBurst || 0) | 0;
   const vbRange = vbLvl > 0 ? (320 + (vbLvl - 1) * 14) * rMult : 0;
 
-  return Math.max(220 * rMult, bulletRange, bombRange, rocketRange, energyBombRange, fireBombRange, iceBombRange, lightRange, laserRange, fbRange, bhRange, ssRange, isRange, vbRange);
+  const rvLvl = (s.railVolley || 0) | 0;
+  const rvRange = rvLvl > 0 ? (320 + (rvLvl - 1) * 12) * rMult : 0;
+
+  const asLvl = (s.arcSpark || 0) | 0;
+  const asRange = asLvl > 0 ? (336 + (asLvl - 1) * 14) * rMult : 0;
+
+  const mrLvl = (s.meteorRain || 0) | 0;
+  const mrRange = mrLvl > 0 ? (350 + (mrLvl - 1) * 14) * rMult : 0;
+
+  const mlLvl = (s.magmaLance || 0) | 0;
+  const mlRange = mlLvl > 0 ? (330 + (mlLvl - 1) * 12) * rMult : 0;
+
+  const csLvl = (s.crystalSpear || 0) | 0;
+  const csRange = csLvl > 0 ? (330 + (csLvl - 1) * 12) * rMult : 0;
+
+  const sdLvl = (s.soulDrain || 0) | 0;
+  const sdRange = sdLvl > 0 ? (310 + (sdLvl - 1) * 12) * rMult : 0;
+
+  const prLvl = (s.prismRay || 0) | 0;
+  const prRange = prLvl > 0 ? (336 + (prLvl - 1) * 14) * rMult : 0;
+
+  return Math.max(220 * rMult, bulletRange, bombRange, rocketRange, energyBombRange, fireBombRange, iceBombRange, lightRange, laserRange, fbRange, bhRange, ssRange, isRange, vbRange, rvRange, asRange, mrRange, mlRange, csRange, sdRange, prRange);
 }
 
 function bulletParams(player) {
@@ -377,7 +432,7 @@ function blackholeParams(player) {
 
   const cooldown = Math.max(4.6, 8.0 - (lvl - 1) * 0.52);
   const duration = 2.6 + (lvl - 1) * 0.35;
-  const radius = (170 + (lvl - 1) * 18) * (0.95 + (rMult - 1) * 0.25);
+  const radius = ((170 + (lvl - 1) * 18) * (0.95 + (rMult - 1) * 0.25)) * 0.5;
   const pull = 260 + (lvl - 1) * 30;
   const dps = (10 + (lvl - 1) * 4.2) * dMult;
   const castRange = (360 + (lvl - 1) * 18) * rMult;
@@ -479,6 +534,170 @@ function holyNovaParams(player) {
   const heal = 6 + (lvl - 1) * 2.4;
   const cooldown = Math.max(2.0, 6.0 - (lvl - 1) * 0.30);
   return { level: lvl, damageRadius, healRadius, damage, heal, cooldown };
+}
+
+function shrapnelBurstParams(player) {
+  const lvl = (player.runSkills?.shrapnelBurst || 0) | 0;
+  if (lvl <= 0) return null;
+  const dMult = getSkillDamageMult(player, 'shrapnelBurst');
+  const radius = 76 + (lvl - 1) * 7;
+  const damage = (15 + (lvl - 1) * 5.6) * dMult;
+  const cooldown = Math.max(0.95, 2.55 - (lvl - 1) * 0.14);
+  return { level: lvl, radius, damage, cooldown };
+}
+
+function railVolleyParams(player) {
+  const lvl = (player.runSkills?.railVolley || 0) | 0;
+  if (lvl <= 0) return null;
+  const rMult = getTotalRangeMult(player);
+  const dMult = getSkillDamageMult(player, 'railVolley');
+  const damage = (26 + (lvl - 1) * 8.2) * dMult;
+  const castRange = (320 + (lvl - 1) * 12) * rMult;
+  const splashRadius = 46 + (lvl - 1) * 4;
+  const splashMul = Math.min(0.8, 0.45 + (lvl - 1) * 0.04);
+  const cooldown = Math.max(0.82, 2.3 - (lvl - 1) * 0.12);
+  return { level: lvl, damage, castRange, splashRadius, splashMul, cooldown };
+}
+
+function arcSparkParams(player) {
+  const lvl = (player.runSkills?.arcSpark || 0) | 0;
+  if (lvl <= 0) return null;
+  const rMult = getTotalRangeMult(player);
+  const dMult = getSkillDamageMult(player, 'arcSpark');
+  const damage = (18 + (lvl - 1) * 6.0) * dMult;
+  const castRange = (336 + (lvl - 1) * 14) * rMult;
+  const chainRange = (110 + (lvl - 1) * 9) * rMult;
+  const chainTargets = Math.min(5, 1 + Math.floor((lvl - 1) / 2));
+  const chainMul = Math.min(0.9, 0.64 + (lvl - 1) * 0.04);
+  const cooldown = Math.max(0.78, 2.5 - (lvl - 1) * 0.14);
+  return { level: lvl, damage, castRange, chainRange, chainTargets, chainMul, cooldown };
+}
+
+function staticPulseParams(player) {
+  const lvl = (player.runSkills?.staticPulse || 0) | 0;
+  if (lvl <= 0) return null;
+  const dMult = getSkillDamageMult(player, 'staticPulse');
+  const radius = 96 + (lvl - 1) * 8;
+  const damage = (16 + (lvl - 1) * 5.4) * dMult;
+  const slowDur = 0.85 + (lvl - 1) * 0.10;
+  const slowMult = Math.max(0.42, 0.82 - (lvl - 1) * 0.045);
+  const cooldown = Math.max(0.92, 2.85 - (lvl - 1) * 0.16);
+  return { level: lvl, radius, damage, slowDur, slowMult, cooldown };
+}
+
+function meteorRainParams(player) {
+  const lvl = (player.runSkills?.meteorRain || 0) | 0;
+  if (lvl <= 0) return null;
+  const rMult = getTotalRangeMult(player);
+  const dMult = getSkillDamageMult(player, 'meteorRain');
+  const damage = (12 + (lvl - 1) * 4.8) * dMult;
+  const castRange = (350 + (lvl - 1) * 14) * rMult;
+  const splashRadius = 36 + (lvl - 1) * 4;
+  const burnDur = 1.2 + (lvl - 1) * 0.15;
+  const burnDps = (4.2 + (lvl - 1) * 1.5) * dMult;
+  const count = Math.min(6, 3 + Math.floor((lvl - 1) / 2));
+  const spread = 34 + (lvl - 1) * 3;
+  const cooldown = Math.max(1.12, 3.5 - (lvl - 1) * 0.18);
+  return { level: lvl, damage, castRange, splashRadius, burnDur, burnDps, count, spread, cooldown };
+}
+
+function magmaLanceParams(player) {
+  const lvl = (player.runSkills?.magmaLance || 0) | 0;
+  if (lvl <= 0) return null;
+  const rMult = getTotalRangeMult(player);
+  const dMult = getSkillDamageMult(player, 'magmaLance');
+  const damage = (28 + (lvl - 1) * 8.8) * dMult;
+  const castRange = (330 + (lvl - 1) * 12) * rMult;
+  const splashRadius = 40 + (lvl - 1) * 4;
+  const splashMul = Math.min(0.78, 0.42 + (lvl - 1) * 0.04);
+  const burnDur = 1.35 + (lvl - 1) * 0.16;
+  const burnDps = (6 + (lvl - 1) * 2.0) * dMult;
+  const cooldown = Math.max(0.84, 2.25 - (lvl - 1) * 0.11);
+  return { level: lvl, damage, castRange, splashRadius, splashMul, burnDur, burnDps, cooldown };
+}
+
+function frostNovaParams(player) {
+  const lvl = (player.runSkills?.frostNova || 0) | 0;
+  if (lvl <= 0) return null;
+  const dMult = getSkillDamageMult(player, 'frostNova');
+  const radius = 94 + (lvl - 1) * 8;
+  const damage = (16 + (lvl - 1) * 5.2) * dMult;
+  const slowDur = 1.0 + (lvl - 1) * 0.10;
+  const slowMult = Math.max(0.34, 0.72 - (lvl - 1) * 0.04);
+  const frostDur = 1.3 + (lvl - 1) * 0.15;
+  const cooldown = Math.max(0.96, 2.9 - (lvl - 1) * 0.16);
+  return { level: lvl, radius, damage, slowDur, slowMult, frostDur, cooldown };
+}
+
+function crystalSpearParams(player) {
+  const lvl = (player.runSkills?.crystalSpear || 0) | 0;
+  if (lvl <= 0) return null;
+  const rMult = getTotalRangeMult(player);
+  const dMult = getSkillDamageMult(player, 'crystalSpear');
+  const damage = (27 + (lvl - 1) * 8.0) * dMult;
+  const castRange = (330 + (lvl - 1) * 12) * rMult;
+  const splashRadius = 40 + (lvl - 1) * 4;
+  const splashMul = Math.min(0.78, 0.42 + (lvl - 1) * 0.04);
+  const frostDur = 1.45 + (lvl - 1) * 0.15;
+  const slowDur = 0.95 + (lvl - 1) * 0.10;
+  const slowMult = Math.max(0.36, 0.68 - (lvl - 1) * 0.04);
+  const cooldown = Math.max(0.86, 2.3 - (lvl - 1) * 0.11);
+  return { level: lvl, damage, castRange, splashRadius, splashMul, frostDur, slowDur, slowMult, cooldown };
+}
+
+function soulDrainParams(player) {
+  const lvl = (player.runSkills?.soulDrain || 0) | 0;
+  if (lvl <= 0) return null;
+  const rMult = getTotalRangeMult(player);
+  const dMult = getSkillDamageMult(player, 'soulDrain');
+  const damage = (22 + (lvl - 1) * 7.0) * dMult;
+  const castRange = (310 + (lvl - 1) * 12) * rMult;
+  const heal = 4 + (lvl - 1) * 1.8;
+  const curseDur = 2.2 + (lvl - 1) * 0.18;
+  const curseLv = 1 + Math.floor((lvl - 1) / 3);
+  const radius = 42 + (lvl - 1) * 3;
+  const cooldown = Math.max(0.92, 2.5 - (lvl - 1) * 0.12);
+  return { level: lvl, damage, castRange, heal, curseDur, curseLv, radius, cooldown };
+}
+
+function dreadRingParams(player) {
+  const lvl = (player.runSkills?.dreadRing || 0) | 0;
+  if (lvl <= 0) return null;
+  const dMult = getSkillDamageMult(player, 'dreadRing');
+  const radius = 96 + (lvl - 1) * 8;
+  const damage = (17 + (lvl - 1) * 5.4) * dMult;
+  const curseDur = 2.4 + (lvl - 1) * 0.18;
+  const curseLv = 1 + Math.floor((lvl - 1) / 3);
+  const cooldown = Math.max(0.96, 3.0 - (lvl - 1) * 0.17);
+  return { level: lvl, radius, damage, curseDur, curseLv, cooldown };
+}
+
+function prismRayParams(player) {
+  const lvl = (player.runSkills?.prismRay || 0) | 0;
+  if (lvl <= 0) return null;
+  const rMult = getTotalRangeMult(player);
+  const dMult = getSkillDamageMult(player, 'prismRay');
+  const damage = (20 + (lvl - 1) * 6.4) * dMult;
+  const castRange = (336 + (lvl - 1) * 14) * rMult;
+  const splashRadius = 38 + (lvl - 1) * 4;
+  const splashMul = Math.min(0.76, 0.42 + (lvl - 1) * 0.04);
+  const heal = 4 + (lvl - 1) * 1.6;
+  const healRadius = (118 + (lvl - 1) * 8) * (0.96 + (rMult - 1) * 0.28);
+  const cooldown = Math.max(0.9, 2.65 - (lvl - 1) * 0.13);
+  return { level: lvl, damage, castRange, splashRadius, splashMul, heal, healRadius, cooldown };
+}
+
+function sanctuaryParams(player) {
+  const lvl = (player.runSkills?.sanctuary || 0) | 0;
+  if (lvl <= 0) return null;
+  const rMult = getTotalRangeMult(player);
+  const dMult = getSkillDamageMult(player, 'sanctuary');
+  const radius = (106 + (lvl - 1) * 9) * (0.96 + (rMult - 1) * 0.26);
+  const damage = (14 + (lvl - 1) * 4.8) * dMult;
+  const heal = 5 + (lvl - 1) * 2.0;
+  const healRadius = radius * 1.12;
+  const cooldown = Math.max(1.7, 4.2 - (lvl - 1) * 0.20);
+  return { level: lvl, radius, damage, heal, healRadius, cooldown };
 }
 
 function satellitesParams(player) {
@@ -856,6 +1075,114 @@ function _updateSkillsImpl(player, state, dt, { aimDir, firing } = {}) {
     if (player.holyNovaCooldown <= 0) {
       castHolyNova(player, state, hn);
       player.holyNovaCooldown = hn.cooldown;
+    }
+  }
+
+  const sb = shrapnelBurstParams(player);
+  if (sb && firing) {
+    player.shrapnelBurstCooldown = (player.shrapnelBurstCooldown || 0) - dt;
+    if (player.shrapnelBurstCooldown <= 0) {
+      if (castShrapnelBurst(player, state, sb)) player.shrapnelBurstCooldown = sb.cooldown;
+      else player.shrapnelBurstCooldown = Math.max(0.25, sb.cooldown * 0.45);
+    }
+  }
+
+  const rv = railVolleyParams(player);
+  if (rv && firing) {
+    player.railVolleyCooldown = (player.railVolleyCooldown || 0) - dt;
+    if (player.railVolleyCooldown <= 0) {
+      if (castRailVolley(player, state, rv)) player.railVolleyCooldown = rv.cooldown;
+      else player.railVolleyCooldown = Math.max(0.25, rv.cooldown * 0.45);
+    }
+  }
+
+  const as = arcSparkParams(player);
+  if (as && firing) {
+    player.arcSparkCooldown = (player.arcSparkCooldown || 0) - dt;
+    if (player.arcSparkCooldown <= 0) {
+      if (castArcSpark(player, state, as)) player.arcSparkCooldown = as.cooldown;
+      else player.arcSparkCooldown = Math.max(0.25, as.cooldown * 0.45);
+    }
+  }
+
+  const stp = staticPulseParams(player);
+  if (stp && firing) {
+    player.staticPulseCooldown = (player.staticPulseCooldown || 0) - dt;
+    if (player.staticPulseCooldown <= 0) {
+      if (castStaticPulse(player, state, stp)) player.staticPulseCooldown = stp.cooldown;
+      else player.staticPulseCooldown = Math.max(0.28, stp.cooldown * 0.48);
+    }
+  }
+
+  const mr = meteorRainParams(player);
+  if (mr && firing) {
+    player.meteorRainCooldown = (player.meteorRainCooldown || 0) - dt;
+    if (player.meteorRainCooldown <= 0) {
+      if (castMeteorRain(player, state, mr)) player.meteorRainCooldown = mr.cooldown;
+      else player.meteorRainCooldown = Math.max(0.35, mr.cooldown * 0.50);
+    }
+  }
+
+  const ml = magmaLanceParams(player);
+  if (ml && firing) {
+    player.magmaLanceCooldown = (player.magmaLanceCooldown || 0) - dt;
+    if (player.magmaLanceCooldown <= 0) {
+      if (castMagmaLance(player, state, ml)) player.magmaLanceCooldown = ml.cooldown;
+      else player.magmaLanceCooldown = Math.max(0.25, ml.cooldown * 0.45);
+    }
+  }
+
+  const frn = frostNovaParams(player);
+  if (frn && firing) {
+    player.frostNovaCooldown = (player.frostNovaCooldown || 0) - dt;
+    if (player.frostNovaCooldown <= 0) {
+      if (castFrostNova(player, state, frn)) player.frostNovaCooldown = frn.cooldown;
+      else player.frostNovaCooldown = Math.max(0.28, frn.cooldown * 0.48);
+    }
+  }
+
+  const cs = crystalSpearParams(player);
+  if (cs && firing) {
+    player.crystalSpearCooldown = (player.crystalSpearCooldown || 0) - dt;
+    if (player.crystalSpearCooldown <= 0) {
+      if (castCrystalSpear(player, state, cs)) player.crystalSpearCooldown = cs.cooldown;
+      else player.crystalSpearCooldown = Math.max(0.25, cs.cooldown * 0.45);
+    }
+  }
+
+  const sd = soulDrainParams(player);
+  if (sd && firing) {
+    player.soulDrainCooldown = (player.soulDrainCooldown || 0) - dt;
+    if (player.soulDrainCooldown <= 0) {
+      if (castSoulDrain(player, state, sd)) player.soulDrainCooldown = sd.cooldown;
+      else player.soulDrainCooldown = Math.max(0.25, sd.cooldown * 0.45);
+    }
+  }
+
+  const dr = dreadRingParams(player);
+  if (dr && firing) {
+    player.dreadRingCooldown = (player.dreadRingCooldown || 0) - dt;
+    if (player.dreadRingCooldown <= 0) {
+      if (castDreadRing(player, state, dr)) player.dreadRingCooldown = dr.cooldown;
+      else player.dreadRingCooldown = Math.max(0.30, dr.cooldown * 0.48);
+    }
+  }
+
+  const pr = prismRayParams(player);
+  if (pr && firing) {
+    player.prismRayCooldown = (player.prismRayCooldown || 0) - dt;
+    if (player.prismRayCooldown <= 0) {
+      if (castPrismRay(player, state, pr)) player.prismRayCooldown = pr.cooldown;
+      else player.prismRayCooldown = Math.max(0.25, pr.cooldown * 0.45);
+    }
+  }
+
+  const san = sanctuaryParams(player);
+  if (san) {
+    player.sanctuaryCooldown = (player.sanctuaryCooldown || 0) - dt;
+    if (player.sanctuaryCooldown <= 0) {
+      castSanctuary(player, state, san);
+      player.sanctuaryCooldown = san.cooldown;
     }
   }
 }

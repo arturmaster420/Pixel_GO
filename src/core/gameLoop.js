@@ -14,7 +14,7 @@ import { RoomSpawnSystem } from "../world/roomSpawnSystem.js";
 import { RoomDirector } from "../world/roomDirector.js";
 import { buildFloorPlan } from "../world/floorPlanBuilder.js";
 import { renderRoomsBackground } from "../world/roomRenderer.js";
-import { clampPlayerToActiveWalkable, clampEntityToRoomWalkable } from "../world/floorCollision.js";
+import { clampPlayerToActiveWalkable, clampEntityToRoomWalkable, clampEnemyToRoomBounds } from "../world/floorCollision.js";
 import { renderBiomeUnit, biomeKeyFromKind, biomeStyleForKey, biomeRoleFromKind } from "../enemies/biomeVisuals.js";
 import { renderHUD } from "../ui/hud.js";
 import { renderUpgradeMenu, handleUpgradeClick } from "../ui/upgradeMenu.js";
@@ -47,6 +47,12 @@ import {
 } from "../world/hubNpcs.js";
 
 const RUN_CHECKPOINT_STORAGE_KEY = "pixelgo_run_checkpoint_v1";
+const NET_RUN_SKILL_ORDER = [
+  "bullets", "bombs", "rockets", "energyBomb", "fireBomb", "iceBomb",
+  "satellites", "energyBarrier", "spirit", "summon", "electricZone", "laser", "lightning",
+  "fireball", "iceWall", "blackhole", "lightHeal", "stormStrike", "flameNova", "iceShards", "voidBurst", "holyNova",
+  "shrapnelBurst", "railVolley", "arcSpark", "staticPulse", "meteorRain", "magmaLance", "frostNova", "crystalSpear", "soulDrain", "dreadRing", "prismRay", "sanctuary",
+];
 
 function cloneJsonSafe(value, fallback = null) {
   try {
@@ -220,6 +226,7 @@ function restoreRunCheckpointIntoState(state, checkpoint, { showPopup = false } 
   state._runUpgradeChoices = null;
   state._floorShopActive = false;
   state._buildPanelOpen = false;
+  state._buildPanelSelectedKey = '';
   state._statsPanelOpen = false;
   state._statsPanelExpanded = false;
   try { hideFloorShopOverlay(); } catch {}
@@ -296,6 +303,8 @@ export function createGame(canvas, ctx, progression) {
     _buildButtonRect: null,
     _buildPanelRect: null,
     _buildPanelCloseRect: null,
+    _buildSlotRects: null,
+    _buildPanelSelectedKey: '',
     _buildPanelOpen: false,
     _statsButtonRect: null,
     _statsPanelRect: null,
@@ -726,9 +735,6 @@ export function createGame(canvas, ctx, progression) {
       }
     }
 
-    // If the run-upgrade menu was just opened, briefly repel nearby enemies.
-    applyRunUpgradeRepel(state, dt);
-
     // Biome skill effects that act on enemies/world (blackholes, ice walls, heal pulses, explosions).
     updateSkillFx(state, dt);
 
@@ -1047,6 +1053,7 @@ function render() {
       if (state._buildPanelOpen) {
         state._statsPanelOpen = false;
         state._statsPanelExpanded = false;
+        if (!state._buildPanelSelectedKey) state._buildPanelSelectedKey = '';
       }
       return true;
     }
@@ -1066,6 +1073,14 @@ function render() {
       if (closeRect && x >= closeRect.x && x <= closeRect.x + closeRect.w && y >= closeRect.y && y <= closeRect.y + closeRect.h) {
         state._buildPanelOpen = false;
         return true;
+      }
+      const slotRects = Array.isArray(state._buildSlotRects) ? state._buildSlotRects : [];
+      for (const rect of slotRects) {
+        if (!rect) continue;
+        if (x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h) {
+          state._buildPanelSelectedKey = String(rect.key || '');
+          return true;
+        }
       }
       const panelRect = state._buildPanelRect;
       if (panelRect) {
@@ -1805,30 +1820,7 @@ function updateRunUpgradeAvailability(state) {
 }
 
 function applyRunUpgradeRepel(state, dt) {
-  if (!state || !state._repelUntil) return;
-  if (state.time >= state._repelUntil) return;
-  const p = state.player;
-  if (!p) return;
-
-  const enemies = Array.isArray(state.enemies) ? state.enemies : [];
-  const R = 520;
-  const R2 = R * R;
-  const basePush = 980; // px/s at point-blank
-
-  for (const e of enemies) {
-    if (!e || e.hp <= 0 || e._remove) continue;
-    const dx = e.x - p.x;
-    const dy = e.y - p.y;
-    const d2 = dx * dx + dy * dy;
-    if (d2 <= 1e-6 || d2 > R2) continue;
-    const d = Math.sqrt(d2);
-    const nx = dx / d;
-    const ny = dy / d;
-    const t = Math.max(0, Math.min(1, 1 - d / R));
-    const push = basePush * (0.25 + 0.75 * t);
-    e.x += nx * push * dt;
-    e.y += ny * push * dt;
-  }
+  // Retired: enemy displacement during menus caused bad arena behavior.
 }
 
 // ---------------------------------------------------------------------------
@@ -2269,31 +2261,7 @@ function serializePlayerState(state) {
 
   const encSkills = (p) => {
     const s = p?.runSkills || {};
-    // bullets,bombs,rockets,energyBomb,fireBomb,iceBomb,satellites,energyBarrier,spirit,summon,electricZone,laser,lightning,fireball,iceWall,blackhole,lightHeal,stormStrike,flameNova,iceShards,voidBurst,holyNova
-    return [
-      s.bullets | 0,
-      s.bombs | 0,
-      s.rockets | 0,
-      s.energyBomb | 0,
-      s.fireBomb | 0,
-      s.iceBomb | 0,
-      s.satellites | 0,
-      s.energyBarrier | 0,
-      s.spirit | 0,
-      s.summon | 0,
-      s.electricZone | 0,
-      s.laser | 0,
-      s.lightning | 0,
-      s.fireball | 0,
-      s.iceWall | 0,
-      s.blackhole | 0,
-      s.lightHeal | 0,
-      s.stormStrike | 0,
-      s.flameNova | 0,
-      s.iceShards | 0,
-      s.voidBurst | 0,
-      s.holyNova | 0,
-    ].join(",");
+    return NET_RUN_SKILL_ORDER.map((key) => (s[key] | 0) || 0).join(",");
   };
 
   const encFloorShop = (p) => {
@@ -2531,53 +2499,12 @@ function applyPlayerStateToClient(state, pstate) {
       // Sync run skill levels from host (for HUD + visuals consistency on joiners).
     if (typeof sp.rs === "string" && sp.rs.length) {
       const parts = sp.rs.split(",");
-      // bullets,bombs,rockets,energyBomb,fireBomb,iceBomb,satellites,energyBarrier,spirit,summon,electricZone,laser,lightning,fireball,iceWall,blackhole,lightHeal,stormStrike,flameNova,iceShards,voidBurst,holyNova
-      if (parts.length >= 13) {
-        const b = parts[0] | 0;
-        const bo = parts[1] | 0;
-        const r = parts[2] | 0;
-        const enb = parts[3] | 0;
-        const fib = parts[4] | 0;
-        const icb = parts[5] | 0;
-        const sat = parts[6] | 0;
-        const eb = parts[7] | 0;
-        const spr = parts[8] | 0;
-        const smn = parts[9] | 0;
-        const ez = parts[10] | 0;
-        const la = parts[11] | 0;
-        const li = parts[12] | 0;
-        const fb = parts.length >= 14 ? (parts[13] | 0) : 0;
-        const iw = parts.length >= 15 ? (parts[14] | 0) : 0;
-        const bh = parts.length >= 16 ? (parts[15] | 0) : 0;
-        const lh = parts.length >= 17 ? (parts[16] | 0) : 0;
-        const ss = parts.length >= 18 ? (parts[17] | 0) : 0;
-        const fn = parts.length >= 19 ? (parts[18] | 0) : 0;
-        const ish = parts.length >= 20 ? (parts[19] | 0) : 0;
-        const vb = parts.length >= 21 ? (parts[20] | 0) : 0;
-        const hn = parts.length >= 22 ? (parts[21] | 0) : 0;
+      if (parts.length >= 1) {
         p.runSkills = p.runSkills || {};
-        p.runSkills.bullets = b;
-        p.runSkills.bombs = bo;
-        p.runSkills.rockets = r;
-        p.runSkills.energyBomb = enb;
-        p.runSkills.fireBomb = fib;
-        p.runSkills.iceBomb = icb;
-        p.runSkills.satellites = sat;
-        p.runSkills.energyBarrier = eb;
-        p.runSkills.spirit = spr;
-        p.runSkills.summon = smn;
-        p.runSkills.electricZone = ez;
-        p.runSkills.laser = la;
-        p.runSkills.lightning = li;
-        p.runSkills.fireball = fb;
-        p.runSkills.iceWall = iw;
-        p.runSkills.blackhole = bh;
-        p.runSkills.lightHeal = lh;
-        p.runSkills.stormStrike = ss;
-        p.runSkills.flameNova = fn;
-        p.runSkills.iceShards = ish;
-        p.runSkills.voidBurst = vb;
-        p.runSkills.holyNova = hn;
+        for (let i = 0; i < NET_RUN_SKILL_ORDER.length; i++) {
+          const key = NET_RUN_SKILL_ORDER[i];
+          p.runSkills[key] = (parts[i] | 0) || 0;
+        }
       }
     }
 
@@ -3556,6 +3483,7 @@ function applySnapshotToClient(state, snap) {
       state._floorShopReopenOnSync = false;
       state._shopActPending = null;
       state._buildPanelOpen = false;
+      state._buildPanelSelectedKey = '';
       state._statsPanelOpen = false;
       state._statsPanelExpanded = false;
       try { hideFloorShopOverlay(); } catch {}
@@ -3929,6 +3857,7 @@ function clearTransientWorldStateForHub(state) {
   state._runUpgradeChoices = null;
   state._floorShopActive = false;
   state._buildPanelOpen = false;
+  state._buildPanelSelectedKey = '';
   state._statsPanelOpen = false;
   state._statsPanelExpanded = false;
   try { hideFloorShopOverlay(); } catch {}
@@ -4227,47 +4156,64 @@ function updateEnemies(state, dt) {
       }
     }
 
-    // Keep enemies outside of the Hub (rounded square).
+    // Keep enemies outside of the Hub safe contour only when the enemy actually belongs to
+    // the Hub room. Applying this globally creates an invisible blocker near world origin in
+    // combat rooms that happen to be centered around the same coordinates.
     if (e && !e._ignoreHub) {
-      const er = (e.radius || 20);
-      const pad = er + HUB_PAD;
-      const ex = (e.x || 0);
-      const ey = (e.y || 0);
-      if (isPointInHub(ex, ey, pad)) {
-        // Project to the nearest point on the padded rounded-square boundary.
-        const half = HUB_HALF + pad;
-        const cr = Math.min(HUB_CORNER_R + pad, half);
-        const inner = Math.max(half - cr, 0);
-
-        const sx = ex < 0 ? -1 : 1;
-        const sy = ey < 0 ? -1 : 1;
-        const ax = Math.abs(ex);
-        const ay = Math.abs(ey);
-
-        let nx = ex;
-        let ny = ey;
-
-        // Corner region
-        if (ax > inner && ay > inner) {
-          const cx = sx * inner;
-          const cy = sy * inner;
-          let vx = ex - cx;
-          let vy = ey - cy;
-          const len = Math.hypot(vx, vy) || 0.0001;
-          vx /= len;
-          vy /= len;
-          nx = cx + vx * cr;
-          ny = cy + vy * cr;
-        } else {
-          // Side region: push to the closest side.
-          const dx = half - ax;
-          const dy = half - ay;
-          if (dx <= dy) nx = sx * half;
-          else ny = sy * half;
+      let enemyRoomForHubGuard = null;
+      try {
+        const rd = state?.roomDirector || null;
+        const enemyRoomIndex = (e?._roomIndex | 0) || 0;
+        if (rd && enemyRoomIndex > 0) {
+          if ((rd.current?.index | 0) === enemyRoomIndex) enemyRoomForHubGuard = rd.current;
+          else if ((rd.prev?.index | 0) === enemyRoomIndex && rd.prev && !rd.prev.removed) enemyRoomForHubGuard = rd.prev;
+          else if ((rd.next?.index | 0) === enemyRoomIndex && rd.next && !rd.next.removed) enemyRoomForHubGuard = rd.next;
+        } else if (rd?.current) {
+          enemyRoomForHubGuard = rd.current;
         }
+      } catch {}
+      const hubRoomGuard = !!(enemyRoomForHubGuard?.arenaSpec?.rules?.isHub || String(enemyRoomForHubGuard?.biomeKey || '').toLowerCase() === 'hub' || ((enemyRoomForHubGuard?.index | 0) === 0));
+      if (hubRoomGuard) {
+        const er = (e.radius || 20);
+        const pad = er + HUB_PAD;
+        const ex = (e.x || 0);
+        const ey = (e.y || 0);
+        if (isPointInHub(ex, ey, pad)) {
+          // Project to the nearest point on the padded rounded-square boundary.
+          const half = HUB_HALF + pad;
+          const cr = Math.min(HUB_CORNER_R + pad, half);
+          const inner = Math.max(half - cr, 0);
 
-        e.x = nx;
-        e.y = ny;
+          const sx = ex < 0 ? -1 : 1;
+          const sy = ey < 0 ? -1 : 1;
+          const ax = Math.abs(ex);
+          const ay = Math.abs(ey);
+
+          let nx = ex;
+          let ny = ey;
+
+          // Corner region
+          if (ax > inner && ay > inner) {
+            const cx = sx * inner;
+            const cy = sy * inner;
+            let vx = ex - cx;
+            let vy = ey - cy;
+            const len = Math.hypot(vx, vy) || 0.0001;
+            vx /= len;
+            vy /= len;
+            nx = cx + vx * cr;
+            ny = cy + vy * cr;
+          } else {
+            // Side region: push to the closest side.
+            const dx = half - ax;
+            const dy = half - ay;
+            if (dx <= dy) nx = sx * half;
+            else ny = sy * half;
+          }
+
+          e.x = nx;
+          e.y = ny;
+        }
       }
     }
 
@@ -4281,7 +4227,19 @@ function updateEnemies(state, dt) {
         else if ((rd.next?.index | 0) === enemyRoomIndex && rd.next && !rd.next.removed) enemyRoom = rd.next;
         else enemyRoom = null;
       }
-      if (enemyRoom) clampEntityToRoomWalkable(e, enemyRoom, { pad: 1, prevX: _prevEnemyX, prevY: _prevEnemyY });
+      if (enemyRoom) {
+        if (String(e?._movementModel || '') === 'roomBoundsChase') {
+          clampEnemyToRoomBounds(e, enemyRoom, { pad: 2, prevX: _prevEnemyX, prevY: _prevEnemyY });
+        } else {
+          clampEntityToRoomWalkable(e, enemyRoom, {
+            pad: 0,
+            prevX: _prevEnemyX,
+            prevY: _prevEnemyY,
+            useCovers: false,
+            maxSnapDistance: Math.max(72, (Number(e?.radius) || 18) * 3.2),
+          });
+        }
+      }
       else if (!enemyRoomIndex) clampPlayerToActiveWalkable(e, state, { pad: 1, prevX: _prevEnemyX, prevY: _prevEnemyY });
     } catch {}
 

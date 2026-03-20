@@ -4,31 +4,43 @@ export const BIOME_SKILLS_BY_BIOME = {
   neutral: [
     { key: "bombs", name: "Bombs" },
     { key: "energyBarrier", name: "Shield" },
+    { key: "shrapnelBurst", name: "Shrapnel Burst" },
+    { key: "railVolley", name: "Rail Volley" },
   ],
   electric: [
     { key: "lightning", name: "Electric Chain" },
     { key: "electricZone", name: "Electric Ring" },
     { key: "stormStrike", name: "Storm Strike" },
+    { key: "arcSpark", name: "Arc Spark" },
+    { key: "staticPulse", name: "Static Pulse" },
   ],
   fire: [
     { key: "fireball", name: "Fireball" },
     { key: "laser", name: "Solar Beam" },
     { key: "flameNova", name: "Flame Nova" },
+    { key: "meteorRain", name: "Meteor Rain" },
+    { key: "magmaLance", name: "Magma Lance" },
   ],
   ice: [
     { key: "iceWall", name: "Ice Ball" },
     { key: "satellites", name: "Frost Orbit" },
     { key: "iceShards", name: "Glacial Shards" },
+    { key: "frostNova", name: "Frost Nova" },
+    { key: "crystalSpear", name: "Crystal Spear" },
   ],
   dark: [
     { key: "blackhole", name: "Blackhole" },
     { key: "spirit", name: "Shadow Spirit" },
     { key: "voidBurst", name: "Void Burst" },
+    { key: "soulDrain", name: "Soul Drain" },
+    { key: "dreadRing", name: "Dread Ring" },
   ],
   light: [
     { key: "lightHeal", name: "Light Heal" },
     { key: "summon", name: "Light Wardens" },
     { key: "holyNova", name: "Holy Nova" },
+    { key: "prismRay", name: "Prism Ray" },
+    { key: "sanctuary", name: "Sanctuary" },
   ],
 };
 

@@ -34,18 +34,6 @@ function distanceToSegmentSq(px, py, ax, ay, bx, by) {
   return distance2(px, py, sx, sy);
 }
 
-function weightedPick(weights = {}, fallback = 'herdPassive') {
-  const entries = Object.entries(weights).filter(([, v]) => (Number(v) || 0) > 0);
-  if (!entries.length) return fallback;
-  const total = entries.reduce((sum, [, v]) => sum + Number(v || 0), 0);
-  let roll = Math.random() * total;
-  for (const [key, weight] of entries) {
-    roll -= Number(weight || 0);
-    if (roll <= 0) return key;
-  }
-  return entries[0]?.[0] || fallback;
-}
-
 function getPlayers(state) {
   const arr = (state?.players && state.players.length) ? state.players : (state?.player ? [state.player] : []);
   return arr.filter((p) => p && (p.hp || 0) > 0);
@@ -722,18 +710,25 @@ function chooseSpawnCandidate(room, players, minDist = 220, tuning = null, ancho
 
 function applyEnemyEncounterBehavior(enemy, room, choice, tuning) {
   if (!enemy || !room) return;
-  const aiMode = weightedPick(tuning?.aiWeights || {}, 'herdPassive');
-  const side = Math.max(420, Number(room?.side) || 840);
   const context = choice?.context || makeSpawnContext(room);
   const anchor = { x: Number(choice?.x) || enemy.x || room.centerX, y: Number(choice?.y) || enemy.y || room.centerY };
-  const campFocus = context.nodePoints[0] || context.pressurePoints[0] || context.center;
-  enemy.aiMode = aiMode;
   enemy.aggroed = true;
   enemy.aggroRange = clamp((enemy.aggroRange || 450) + (tuning?.aggroRangeAdd || 0) + (enemy.isElite ? 18 : 0), 260, 700);
   enemy._encounterRole = getRoomRole(room);
   enemy._encounterBiome = String(room?.biomeKey || '').toLowerCase();
   enemy._encounterSpawnKind = String(choice?.kind || 'spawn');
   enemy._encounterSpawnTag = String(choice?.tag || '');
+  enemy._spawnAnchor = anchor;
+  enemy._roomCenter = { x: Number(context?.center?.x) || Number(room?.centerX) || anchor.x, y: Number(context?.center?.y) || Number(room?.centerY) || anchor.y };
+  enemy._movementModel = enemy.isBoss ? (enemy._movementModel || 'walkableBoss') : 'roomBoundsChase';
+  enemy._leashRadius = clamp(Number(tuning?.leashRadius || 430) + (enemy.isElite ? 40 : 0), 220, 760);
+  enemy._navLastX = null;
+  enemy._navLastY = null;
+  enemy._navLastDist = null;
+  enemy._navSteerUntil = 0;
+  enemy._navSteerX = null;
+  enemy._navSteerY = null;
+  enemy._stuckFor = 0;
 
   const roomPressure = Math.max(0, (Number(tuning?.roomDifficultyScale) || 1) - 1);
   const hpMul = clamp(Number(tuning?.hpMul || 1) * (enemy.isElite ? 1.06 : 1) * (1 + roomPressure * 0.10), 0.84, 1.85);
@@ -744,25 +739,6 @@ function applyEnemyEncounterBehavior(enemy, room, choice, tuning) {
   if (enemy.maxHP != null) enemy.maxHP = enemy.maxHp;
   enemy.speed = (enemy.speed || 0) * speedMul;
   enemy.damage = (enemy.damage || 0) * damageMul;
-
-  if (aiMode === 'camp') {
-    const focus = (enemy._encounterBiome === 'light' || enemy._encounterRole === 'shrine' || enemy._encounterRole === 'crucible') ? campFocus : anchor;
-    enemy.campCenter = { x: Number(focus?.x) || anchor.x, y: Number(focus?.y) || anchor.y };
-    enemy.campRadius = clamp(side * 0.16 * Number(tuning?.campRadiusMul || 1), 150, 360);
-  } else if (aiMode === 'patrol') {
-    const focus = (enemy._encounterRole === 'bridge' || enemy._encounterRole === 'hall') ? {
-      x: (anchor.x + context.exitPoint.x) * 0.5,
-      y: (anchor.y + context.exitPoint.y) * 0.5,
-    } : anchor;
-    enemy.patrolCenter = { x: Number(focus?.x) || anchor.x, y: Number(focus?.y) || anchor.y };
-    enemy.patrolRadius = clamp(side * 0.14 * Number(tuning?.patrolRadiusMul || 1), 120, 340);
-    enemy._patrolAngle = Math.random() * Math.PI * 2;
-  } else {
-    const focus = (enemy._encounterBiome === 'dark' || enemy._encounterRole === 'split') ? anchor : context.center;
-    enemy.herdCenter = { x: Number(focus?.x) || anchor.x, y: Number(focus?.y) || anchor.y };
-    enemy.herdRadius = clamp(side * 0.18 * Number(tuning?.herdRadiusMul || 1), 150, 380);
-    enemy._idleAngle = Math.random() * Math.PI * 2;
-  }
 }
 
 function pickSpawnPos(room, players, minDist = 220, tries = 14, tuning = null, anchorUse = null) {

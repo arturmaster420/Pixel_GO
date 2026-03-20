@@ -80,7 +80,7 @@ export class Camera {
     let targetZoom = fitZoom + (fillZoom - fitZoom) * fillBias;
 
     // User request: camera should be much closer during runs so the player sees about half the arena.
-    if (isHub) targetZoom *= 4.0;
+    if (isHub) targetZoom *= 3.0;
     else targetZoom *= 2.0;
 
     const MIN_ZOOM = this._isMobile ? 0.34 : 0.28;

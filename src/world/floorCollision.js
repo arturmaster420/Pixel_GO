@@ -283,15 +283,24 @@ export function clampPointToRects(
   return best || { x, y };
 }
 
-export function clampEntityToRoomWalkable(entity, room, { pad = 0, prevX = null, prevY = null } = {}) {
+export function clampEntityToRoomWalkable(entity, room, { pad = 0, prevX = null, prevY = null, useCovers = true, maxSnapDistance = Infinity } = {}) {
   if (!entity || !room) return;
+  const hasPrev = Number.isFinite(prevX) && Number.isFinite(prevY);
   if (isHubRoom(room)) {
     const fixedHub = clampPointToHubMask(room?.arenaSpec || null, entity.x, entity.y, {
       pad: Math.max(4, num(entity.radius, 18) + pad),
-      preferX: Number.isFinite(prevX) ? prevX : null,
-      preferY: Number.isFinite(prevY) ? prevY : null,
+      preferX: hasPrev ? prevX : null,
+      preferY: hasPrev ? prevY : null,
     });
     if (fixedHub) {
+      const dx = Number(fixedHub.x) - Number(entity.x || 0);
+      const dy = Number(fixedHub.y) - Number(entity.y || 0);
+      const snapDist = Math.hypot(dx, dy);
+      if (Number.isFinite(maxSnapDistance) && snapDist > maxSnapDistance && hasPrev && Number.isFinite(prevX) && Number.isFinite(prevY)) {
+        entity.x = prevX;
+        entity.y = prevY;
+        return;
+      }
       entity.x = fixedHub.x;
       entity.y = fixedHub.y;
       return;
@@ -299,20 +308,67 @@ export function clampEntityToRoomWalkable(entity, room, { pad = 0, prevX = null,
   }
   const shapes = getRoomWalkRects(room);
   if (!shapes.length) return;
-  const covers = getRoomCoverCircles(room);
   const coverRadius = Math.max(4, num(entity.radius, 18) + pad);
+  const covers = useCovers ? getRoomCoverCircles(room) : [];
   const edgePad = 2;
   const fixed = clampPointToRects(entity.x, entity.y, shapes, {
     edgePad,
     coverRadius,
     covers,
     prefer: {
-      x: Number.isFinite(prevX) ? prevX : entity.x,
-      y: Number.isFinite(prevY) ? prevY : entity.y,
+      x: hasPrev ? prevX : entity.x,
+      y: hasPrev ? prevY : entity.y,
     },
   });
+  if (!fixed) return;
+  const dx = Number(fixed.x) - Number(entity.x || 0);
+  const dy = Number(fixed.y) - Number(entity.y || 0);
+  const snapDist = Math.hypot(dx, dy);
+  if (Number.isFinite(maxSnapDistance) && snapDist > maxSnapDistance) {
+    if (hasPrev && pointInRoomWalkable(room, prevX, prevY, 0)) {
+      entity.x = prevX;
+      entity.y = prevY;
+      return;
+    }
+    const gb = getRoomGeometryBounds(room, 0);
+    if (gb) {
+      entity.x = Math.max(gb.minX, Math.min(gb.maxX, Number(entity.x || 0)));
+      entity.y = Math.max(gb.minY, Math.min(gb.maxY, Number(entity.y || 0)));
+      return;
+    }
+  }
   entity.x = fixed.x;
   entity.y = fixed.y;
+}
+
+
+export function clampEnemyToRoomBounds(entity, room, { pad = 0, prevX = null, prevY = null } = {}) {
+  if (!entity || !room) return;
+  const radius = Math.max(4, num(entity.radius, 18) + Math.max(0, num(pad, 0)));
+  const bounds = room?.bounds || getRoomGeometryBounds(room, 0);
+  if (!bounds) return;
+  const minX = Number(bounds.minX || 0) + radius;
+  const minY = Number(bounds.minY || 0) + radius;
+  const maxX = Number(bounds.maxX || 0) - radius;
+  const maxY = Number(bounds.maxY || 0) - radius;
+  if (!(minX < maxX) || !(minY < maxY)) return;
+
+  const nextX = Math.max(minX, Math.min(maxX, Number(entity.x || 0)));
+  const nextY = Math.max(minY, Math.min(maxY, Number(entity.y || 0)));
+
+  if (Number.isFinite(prevX) && Number.isFinite(prevY)) {
+    const dx = nextX - Number(entity.x || 0);
+    const dy = nextY - Number(entity.y || 0);
+    const snapDist = Math.hypot(dx, dy);
+    if (snapDist > Math.max(96, radius * 4)) {
+      entity.x = Math.max(minX, Math.min(maxX, Number(prevX)));
+      entity.y = Math.max(minY, Math.min(maxY, Number(prevY)));
+      return;
+    }
+  }
+
+  entity.x = nextX;
+  entity.y = nextY;
 }
 
 export function randomPointInRoomWalkable(room) {

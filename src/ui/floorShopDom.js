@@ -38,7 +38,7 @@ function ensureDom() {
     .tag.standard{ background: rgba(120,180,255,0.10); }
     .tag.passive{ background: rgba(120,255,170,0.10); }
     .tag.biome{ background: rgba(255,170,120,0.10); }
-    .desc{ margin-top: 6px; font-size: 12px; opacity: 0.85; line-height: 1.3; }
+    .desc{ margin-top: 6px; font-size: 12px; opacity: 0.88; line-height: 1.34; white-space: pre-line; }
     #floorShopOverlay .actions{ display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
     #floorShopOverlay .btn{ border:1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.05); color:#fff;
       border-radius:10px; padding:10px 14px; cursor:pointer; font:inherit; }
