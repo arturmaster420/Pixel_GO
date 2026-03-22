@@ -29,6 +29,7 @@ import {
   applyLifeSteal,
 } from "./progression.js";
 import { initRunUpgrades, applyRunDerivedStats } from "./runUpgrades.js";
+import { ESSENCE_META, applyHubBuildToPlayer, applyHubProgressionLoot, applyProgressionSpToPlayer, bankPlayerSpToProgression, ensureHubProgression, getEssenceMeta, getHubBuildSpentPoints, getHubGearDef, getMaterialMeta, importPlayerSnapshotIntoHubBuild } from "./hubBuild.js";
 import { rollFloorShopOffersStandard, rollFloorShopOffers, describeFloorShopOffer, tryBuyFloorShopOfferEx, getFloorShopRerollCost, rerollFloorShopOffersForPlayer, offerNeedsReplace, getLiveReplaceRequirement, isLiveSkillUnlockOffer } from "./floorShop.js";
 import { biomeName } from "../world/biomes.js";
 import { updateBuffs } from "../buffs/buffs.js";
@@ -102,6 +103,10 @@ function loadSavedRunCheckpoint() {
         avatarIndex: (player.avatarIndex | 0) || 0,
         auraId: (player.auraId | 0) || 0,
         selectedStarterLoadout: String(player.selectedStarterLoadout || 'mecha'),
+        hubBuild: (player.hubBuild && typeof player.hubBuild === 'object') ? player.hubBuild : null,
+        hubGear: (player.hubGear && typeof player.hubGear === 'object') ? player.hubGear : null,
+        gearInventory: (player.gearInventory && typeof player.gearInventory === 'object') ? player.gearInventory : null,
+        spTotal: Math.max(0, (player.spTotal | 0) || 0),
         runSkills: (player.runSkills && typeof player.runSkills === 'object') ? player.runSkills : {},
         runPassives: (player.runPassives && typeof player.runPassives === 'object') ? player.runPassives : {},
         runEvolutions: (player.runEvolutions && typeof player.runEvolutions === 'object') ? player.runEvolutions : {},
@@ -120,6 +125,11 @@ function saveRunCheckpointFromState(state, { savedPlan = null, nextFloor = 0 } =
     const plan = cloneJsonSafe(planSrc, null);
     if (!plan || !Array.isArray(plan.rooms) || !plan.rooms.length) return false;
     const p = state.player;
+    try {
+      ensureHubProgression(state.progression);
+      bankPlayerSpToProgression(p, state.progression);
+      saveProgression(state.progression);
+    } catch {}
     const payload = {
       version: 1,
       savedAt: Date.now(),
@@ -140,6 +150,10 @@ function saveRunCheckpointFromState(state, { savedPlan = null, nextFloor = 0 } =
         avatarIndex: (p.avatarIndex | 0) || 0,
         auraId: (p.auraId | 0) || 0,
         selectedStarterLoadout: String(p._selectedStarterLoadout || state.progression?.selectedStarterLoadout || 'mecha'),
+        hubBuild: cloneJsonSafe(state.progression?.hubBuild || null, null),
+        hubGear: cloneJsonSafe(state.progression?.hubGear || null, null),
+        gearInventory: cloneJsonSafe(state.progression?.gearInventory || null, null),
+        spTotal: Math.max(0, (state.progression?.sp | 0) || 0),
         runSkills: cloneJsonSafe(p.runSkills || {}, {}),
         runPassives: cloneJsonSafe(p.runPassives || {}, {}),
         runEvolutions: cloneJsonSafe(p.runEvolutions || {}, {}),
@@ -159,9 +173,26 @@ function restoreRunCheckpointIntoState(state, checkpoint, { showPopup = false } 
   if (!state || !checkpoint?.player || !checkpoint?.savedPlan) return false;
   try { ensureShopMeta(state.progression); } catch {}
   try { ensureStarterLoadoutProgression(state.progression); } catch {}
+  try { ensureHubProgression(state.progression); } catch {}
 
   const cp = checkpoint;
   const playerData = cp.player || {};
+
+  try {
+    const snapshotHasBuild = !!Object.keys(playerData.runSkills || {}).some((k) => ((playerData.runSkills?.[k] | 0) > 0))
+      || !!Object.keys(playerData.runPassives || {}).some((k) => ((playerData.runPassives?.[k] | 0) > 0));
+    if (snapshotHasBuild && getHubBuildSpentPoints(state.progression) <= 0) {
+      importPlayerSnapshotIntoHubBuild(state.progression, playerData);
+    }
+    const snapshotAvailableSp = Math.max(0, (playerData.skillPoints | 0) || 0);
+    const snapshotTotalSp = Math.max(0, (playerData.spTotal | 0) || 0);
+    if (playerData.hubBuild && typeof playerData.hubBuild === "object") state.progression.hubBuild = cloneJsonSafe(playerData.hubBuild, state.progression.hubBuild || null);
+    if (playerData.hubGear && typeof playerData.hubGear === "object") state.progression.hubGear = cloneJsonSafe(playerData.hubGear, state.progression.hubGear || null);
+    if (playerData.gearInventory && typeof playerData.gearInventory === "object") state.progression.gearInventory = cloneJsonSafe(playerData.gearInventory, state.progression.gearInventory || {});
+    state.progression.sp = Math.max(0, snapshotTotalSp || (getHubBuildSpentPoints(state.progression) + snapshotAvailableSp));
+    saveProgression(state.progression);
+  } catch {}
+
   const startPos = { x: 0, y: 0 };
   const player = new Player(startPos, Math.max(1, (playerData.level | 0) || 1));
   if (!player.id) player.id = state.net?.playerId ? String(state.net.playerId) : 'local';
@@ -169,21 +200,16 @@ function restoreRunCheckpointIntoState(state, checkpoint, { showPopup = false } 
   player.avatarIndex = (playerData.avatarIndex | 0) || (state.progression?.avatarIndex | 0) || 0;
   player.auraId = (playerData.auraId | 0) || (state.progression?.auraId | 0) || 0;
   player._metaSkillMeta = state.progression?.skillMeta || {};
-  player._selectedStarterLoadout = String(playerData.selectedStarterLoadout || state.progression?.selectedStarterLoadout || 'mecha');
+  player._selectedStarterLoadout = String(state.progression?.hubBuild?.coreKey || playerData.selectedStarterLoadout || state.progression?.selectedStarterLoadout || 'mecha');
   state.progression.selectedStarterLoadout = player._selectedStarterLoadout;
 
   const meta = applyLimitsToPlayer(player, state.progression.limits);
-  initRunUpgrades(player);
-  applyStarterLoadoutToPlayer(player, player._selectedStarterLoadout);
-  player.runSkills = { ...(player.runSkills || {}), ...(playerData.runSkills || {}) };
-  player.runPassives = { ...(player.runPassives || {}), ...(playerData.runPassives || {}) };
-  player.runEvolutions = { ...(playerData.runEvolutions || {}) };
-  applyRunDerivedStats(player);
+  applyHubBuildToPlayer(player, state.progression);
+  applyProgressionSpToPlayer(player, state.progression);
   player.level = Math.max(1, (playerData.level | 0) || player.level || 1);
   player.xp = Math.max(0, Number(playerData.xp || 0) || 0);
   player.nextLevelXp = player.xpToNext();
-  player.skillPoints = Math.max(0, (playerData.skillPoints | 0) || 0);
-  player.hp = Math.max(1, player.maxHP | 0);
+  player.hp = Math.max(1, Math.min(Number(playerData.hp || player.maxHP || 1) || 1, player.maxHP | 0));
   player._deathContinueCount = Math.max(0, (cp.deathContinueCount | 0) || 0);
 
   state.player = player;
@@ -264,6 +290,7 @@ export function createGame(canvas, ctx, progression) {
   // Ensure shop meta fields exist (coins, skill meta levels, offers).
   try { ensureShopMeta(progression); } catch {}
   try { ensureStarterLoadoutProgression(progression); } catch {}
+  try { ensureHubProgression(progression); } catch {}
 
   const state = {
     canvas,
@@ -505,6 +532,18 @@ export function createGame(canvas, ctx, progression) {
           state.floatingTexts.push({ x: state.player.x, y: state.player.y - 40, text: `+${amt}🪙`, time: 0.8 });
         }
       } catch {}
+      return;
+    }
+
+    if (msg.type === "progGain") {
+      // Joiner: host credited us persistent progression resources.
+      if (state.net.isHost) return;
+      const to = (msg.to != null ? String(msg.to) : "");
+      const aliases = getLocalProgressionAliases(state);
+      if (to && !aliases.includes(to)) return;
+      const payload = (msg.payload && typeof msg.payload === 'object') ? msg.payload : null;
+      if (!payload) return;
+      applyProgressionPayloadToLocal(state, payload, null);
       return;
     }
 
@@ -1060,11 +1099,11 @@ function render() {
 
     const statsButtonRect = state._statsButtonRect;
     if (statsButtonRect && x >= statsButtonRect.x && x <= statsButtonRect.x + statsButtonRect.w && y >= statsButtonRect.y && y <= statsButtonRect.y + statsButtonRect.h) {
-      state._statsPanelOpen = !state._statsPanelOpen;
-      if (state._statsPanelOpen) {
-        state._buildPanelOpen = false;
-        state._statsPanelExpanded = false;
-      }
+      const openingHeroMenu = state.overlayMode !== 'character';
+      state.overlayMode = openingHeroMenu ? 'character' : null;
+      state._buildPanelOpen = false;
+      state._statsPanelOpen = false;
+      state._statsPanelExpanded = false;
       return true;
     }
 
@@ -1377,6 +1416,7 @@ function clearLegacyRunUpgradeState(state, { clearSessions = false } = {}) {
 
 function startNewRun(state, { preserveSavedCheckpoint = false } = {}) {
   try { ensureShopMeta(state.progression); } catch {}
+  try { ensureHubProgression(state.progression); } catch {}
   if (!preserveSavedCheckpoint) clearSavedRunCheckpoint(state);
   // Always start the run from the first level (do NOT scale run start level by score).
   const startLevel = 1;
@@ -1398,7 +1438,7 @@ function startNewRun(state, { preserveSavedCheckpoint = false } = {}) {
   player.auraId = state.progression?.auraId || 0;
   // Meta shop levels used to gate in-run upgrade pool.
   player._metaSkillMeta = state.progression?.skillMeta || {};
-  player._selectedStarterLoadout = state.progression?.selectedStarterLoadout || "mecha";
+  player._selectedStarterLoadout = state.progression?.hubBuild?.coreKey || state.progression?.selectedStarterLoadout || "mecha";
   const meta = applyLimitsToPlayer(player, state.progression.limits);
 
   state.player = player;
@@ -1409,10 +1449,9 @@ function startNewRun(state, { preserveSavedCheckpoint = false } = {}) {
     pickupBonusRadius: meta?.pickupBonusRadius ?? 0,
   };
 
-  // Init in-run upgrades (skills/passives)
-  initRunUpgrades(player);
-  applyStarterLoadoutToPlayer(player, player._selectedStarterLoadout);
-  applyRunDerivedStats(player);
+  // Build is now authored in the hub and projected into the runtime combat layer.
+  applyHubBuildToPlayer(player, state.progression);
+  applyProgressionSpToPlayer(player, state.progression);
   player._deathContinueCount = 0;
 
   state._deathContinueCount = 0;
@@ -1534,9 +1573,16 @@ function getNetMetaPayload(prog) {
     upgradePoints: (typeof prog.deathPoints === "number" ? prog.deathPoints : prog.upgradePoints) || 0,
     deathPoints: (typeof prog.deathPoints === "number" ? prog.deathPoints : prog.upgradePoints) || 0,
     limits: prog.limits || {},
-    // Meta shop unlocks used for in-run upgrade pool gating.
+    // Meta shop unlocks used for hub build ownership/caps.
     skillMeta: prog.skillMeta || {},
     selectedStarterLoadout: prog.selectedStarterLoadout || "mecha",
+    sp: Math.max(0, (prog.sp | 0) || 0),
+    materials: prog.materials || {},
+    essences: prog.essences || {},
+    gearParts: prog.gearParts || {},
+    hubBuild: prog.hubBuild || null,
+    hubGear: prog.hubGear || null,
+    gearInventory: prog.gearInventory || {},
   };
 }
 
@@ -1552,14 +1598,21 @@ function applyNetMetaToPlayer(state, player, meta) {
   if (meta.skillMeta && typeof meta.skillMeta === "object") {
     player._metaSkillMeta = meta.skillMeta;
   }
-  const prevStarter = typeof player._selectedStarterLoadout === "string" ? player._selectedStarterLoadout : "";
   if (typeof meta.selectedStarterLoadout === "string") {
     player._selectedStarterLoadout = meta.selectedStarterLoadout;
   }
-  if (player._selectedStarterLoadout && player._selectedStarterLoadout !== prevStarter) {
-    applyStarterLoadoutToPlayer(player, player._selectedStarterLoadout);
-    applyRunDerivedStats(player);
-  }
+
+  const projectedProg = {
+    skillMeta: player._metaSkillMeta || meta.skillMeta || {},
+    selectedStarterLoadout: player._selectedStarterLoadout || meta.selectedStarterLoadout || "mecha",
+    sp: Math.max(0, (meta.sp | 0) || 0),
+    hubBuild: (meta.hubBuild && typeof meta.hubBuild === "object") ? meta.hubBuild : null,
+    hubGear: (meta.hubGear && typeof meta.hubGear === "object") ? meta.hubGear : null,
+    gearInventory: (meta.gearInventory && typeof meta.gearInventory === "object") ? meta.gearInventory : {},
+  };
+  ensureHubProgression(projectedProg);
+  applyHubBuildToPlayer(player, projectedProg);
+  applyProgressionSpToPlayer(player, projectedProg);
 }
 
 function syncHostPlayersFromRoomInfo(state) {
@@ -1591,9 +1644,17 @@ function syncHostPlayersFromRoomInfo(state) {
       const storedMeta = stored;
       if (storedMeta) applyNetMetaToPlayer(state, p, storedMeta);
       else applyLimitsToPlayer(p, state.progression.limits);
-      initRunUpgrades(p);
-      applyStarterLoadoutToPlayer(p, p._selectedStarterLoadout);
-      applyRunDerivedStats(p);
+      const projectedProg = {
+        skillMeta: p._metaSkillMeta || {},
+        selectedStarterLoadout: p._selectedStarterLoadout || "mecha",
+        sp: Math.max(0, ((stored && stored.sp) | 0) || 0),
+        hubBuild: stored && stored.hubBuild && typeof stored.hubBuild === "object" ? stored.hubBuild : null,
+        hubGear: stored && stored.hubGear && typeof stored.hubGear === "object" ? stored.hubGear : null,
+        gearInventory: stored && stored.gearInventory && typeof stored.gearInventory === "object" ? stored.gearInventory : {},
+      };
+      ensureHubProgression(projectedProg);
+      applyHubBuildToPlayer(p, projectedProg);
+      applyProgressionSpToPlayer(p, projectedProg);
       state.players.push(p);
     } else {
       const p = getPlayerById(state, id);
@@ -1866,17 +1927,9 @@ function maybeOpenRunUpgradeOverlay(state) {
 // ---------------------------------------------------------------------------
 
 function canPlayerUseFloorShop(state, player) {
-  if (!state || !player) return false;
-  if (state.mode !== 'playing') return false;
-  if (player.hp <= 0) return false;
-  const rd = state.roomDirector;
-  const room = rd && rd.current;
-  if (!room || (room.index | 0) <= 0) return false;
-  if (!room.cleared) return false;
-  const npc = room.shopNpc || { x: room.centerX, y: room.centerY + (room.side || 600) * 0.18 };
-  const dx = player.x - npc.x;
-  const dy = player.y - npc.y;
-  return (dx * dx + dy * dy) <= (210 * 210);
+  // Stage 1 of the hub-build migration: expedition floor terminals no longer
+  // drive the main character progression loop.
+  return false;
 }
 
 function getCurrentFloorShopFloor(state) {
@@ -2417,9 +2470,17 @@ function applyPlayerStateToClient(state, pstate) {
       const stored = state._netMetaById?.get(id) || null;
       p._metaSkillMeta = (stored && stored.skillMeta && typeof stored.skillMeta === "object") ? stored.skillMeta : (state.progression?.skillMeta || {});
       p._selectedStarterLoadout = (stored && typeof stored.selectedStarterLoadout === "string") ? stored.selectedStarterLoadout : (state.progression?.selectedStarterLoadout || "mecha");
-      initRunUpgrades(p);
-      applyStarterLoadoutToPlayer(p, p._selectedStarterLoadout);
-      applyRunDerivedStats(p);
+      const projectedProg = {
+        skillMeta: p._metaSkillMeta || {},
+        selectedStarterLoadout: p._selectedStarterLoadout || "mecha",
+        sp: Math.max(0, ((stored && stored.sp) | 0) || 0),
+        hubBuild: stored && stored.hubBuild && typeof stored.hubBuild === "object" ? stored.hubBuild : null,
+        hubGear: stored && stored.hubGear && typeof stored.hubGear === "object" ? stored.hubGear : null,
+        gearInventory: stored && stored.gearInventory && typeof stored.gearInventory === "object" ? stored.gearInventory : {},
+      };
+      ensureHubProgression(projectedProg);
+      applyHubBuildToPlayer(p, projectedProg);
+      applyProgressionSpToPlayer(p, projectedProg);
       p._netTx = p.x;
       p._netTy = p.y;
       pCache.set(id, p);
@@ -2889,6 +2950,15 @@ function serializeSnapshot(state) {
         kind,
         xp: kind === "xp" ? (o.xp || 10) : undefined,
         coins: kind === "coin" ? (o.coins || 1) : undefined,
+        amount: isDirectResourceOrbKind(kind) ? ((o.amount | 0) || 1) : undefined,
+        grantId: isDirectResourceOrbKind(kind) ? String(o.grantId || '') : undefined,
+        essenceKey: kind === 'essence' ? String(o.essenceKey || 'mecha') : undefined,
+        materialKey: kind === 'material' ? String(o.materialKey || 'salvage') : undefined,
+        gearKey: (kind === 'gearPart' || kind === 'gearItem') ? String(o.gearKey || '') : undefined,
+        progKind: kind === 'prog' ? String(o.progKind || '') : undefined,
+        progPayload: kind === 'prog' ? cloneJsonSafe(o.progPayload, null) : undefined,
+        ownerId: kind === 'prog' ? String(o.ownerId || '') : undefined,
+        ownerAliases: kind === 'prog' ? cloneJsonSafe(o.ownerAliases, undefined) : undefined,
       };
     }),
 
@@ -3042,12 +3112,7 @@ function syncRoomDirectorFromNetRoom(state, r) {
     rd._waitForParty = !!r.wait;
     if (rd.current) {
       rd.current.cleared = !!r.cleared;
-      if (rd.current.cleared && (rd.current.index | 0) > 0) {
-        const anchor = rd.current?.arenaSpec?.anchors?.shopAnchor || { x: rd.current.centerX, y: rd.current.centerY + rd.current.side * 0.18 };
-        rd.current.shopNpc = { x: Number(anchor.x) || rd.current.centerX, y: Number(anchor.y) || rd.current.centerY, r: 20 };
-      } else if (rd.current) {
-        rd.current.shopNpc = null;
-      }
+      if (rd.current) rd.current.shopNpc = null;
     }
     if (rd.bridge) {
       const bp = (typeof r.bridgeP === 'number') ? r.bridgeP : 0;
@@ -3354,6 +3419,15 @@ function applySnapshotToClient(state, snap) {
     oo.kind = o.kind || (o.coins ? "coin" : "xp");
     oo.xp = (oo.kind === "xp") ? (o.xp || 10) : 0;
     oo.coins = (oo.kind === "coin") ? (o.coins || 1) : 0;
+    oo.amount = isDirectResourceOrbKind(oo.kind) ? ((o.amount | 0) || 1) : 0;
+    oo.grantId = isDirectResourceOrbKind(oo.kind) ? String(o.grantId || '') : '';
+    oo.essenceKey = (oo.kind === 'essence') ? String(o.essenceKey || 'mecha') : '';
+    oo.materialKey = (oo.kind === 'material') ? String(o.materialKey || 'salvage') : '';
+    oo.gearKey = (oo.kind === 'gearPart' || oo.kind === 'gearItem') ? String(o.gearKey || '') : '';
+    oo.progKind = (oo.kind === 'prog') ? String(o.progKind || '') : '';
+    oo.progPayload = (oo.kind === 'prog' && o.progPayload && typeof o.progPayload === 'object') ? cloneJsonSafe(o.progPayload, null) : null;
+    oo.ownerId = (oo.kind === 'prog') ? String(o.ownerId || '') : '';
+    oo.ownerAliases = ((oo.kind === 'prog') && Array.isArray(o.ownerAliases)) ? cloneJsonSafe(o.ownerAliases, []) : [];
     oo.radius = o.radius || 8;
     oo.age = 0;
   }
@@ -3786,6 +3860,9 @@ function revivePlayerIntoCurrentRun(state, p) {
 
 function returnRunToHub(state) {
   if (!state) return false;
+  try { ensureHubProgression(state.progression); } catch {}
+  try { if (state.player) bankPlayerSpToProgression(state.player, state.progression); } catch {}
+  try { saveProgression(state.progression); } catch {}
   const checkpoint = loadSavedRunCheckpoint();
   if (checkpoint && restoreRunCheckpointIntoState(state, checkpoint, { showPopup: true })) {
     state.mode = 'playing';
@@ -3865,6 +3942,9 @@ function clearTransientWorldStateForHub(state) {
 
 function returnRunToHubWithProgress(state) {
   if (!state || !state.roomDirector?.current) return false;
+  try { ensureHubProgression(state.progression); } catch {}
+  try { if (state.player) bankPlayerSpToProgression(state.player, state.progression); } catch {}
+  try { saveProgression(state.progression); } catch {}
   const rd = state.roomDirector;
   const cur = rd.current;
   if (!cur || !cur.isFloorFinal || !cur.cleared) return false;
@@ -4544,6 +4624,197 @@ function explodeRocket(rocket, state) {
   });
 }
 
+function summarizeProgPayload(payload) {
+  const lines = [];
+  if (!payload || typeof payload !== 'object') return '';
+  const essences = payload.essences && typeof payload.essences === 'object' ? payload.essences : {};
+  for (const [key, amtRaw] of Object.entries(essences)) {
+    const amt = Math.max(0, Number(amtRaw) | 0);
+    if (amt <= 0) continue;
+    const meta = ESSENCE_META[String(key || '').toLowerCase()] || ESSENCE_META.mecha;
+    lines.push(`+${amt} ${meta.short || meta.label}`);
+  }
+  const materials = payload.materials && typeof payload.materials === 'object' ? payload.materials : {};
+  for (const [key, amtRaw] of Object.entries(materials)) {
+    const amt = Math.max(0, Number(amtRaw) | 0);
+    if (amt <= 0) continue;
+    const meta = getMaterialMeta(key);
+    lines.push(`+${amt} ${meta.short || meta.label}`);
+  }
+  const parts = payload.gearParts && typeof payload.gearParts === 'object' ? payload.gearParts : {};
+  for (const [key, amtRaw] of Object.entries(parts)) {
+    const amt = Math.max(0, Number(amtRaw) | 0);
+    if (amt <= 0) continue;
+    const def = getHubGearDef(key);
+    if (def) lines.push(`+${amt} ${def.short || def.name} Part`);
+  }
+  const items = payload.gearItems && typeof payload.gearItems === 'object' ? payload.gearItems : {};
+  for (const [key, amtRaw] of Object.entries(items)) {
+    const amt = Math.max(0, Number(amtRaw) | 0);
+    if (amt <= 0) continue;
+    const def = getHubGearDef(key);
+    if (def) lines.push(`DROP: ${def.name}`);
+  }
+  return lines.join(' • ');
+}
+
+
+function isDirectResourceOrbKind(kind) {
+  return kind === 'essence' || kind === 'material' || kind === 'gearPart' || kind === 'gearItem';
+}
+
+function buildProgressionPayloadFromResourceOrb(orb) {
+  if (!orb || !isDirectResourceOrbKind(String(orb.kind || ''))) return null;
+  const amount = Math.max(0, Number(orb.amount || 0) | 0) || 1;
+  const kind = String(orb.kind || '');
+  if (kind === 'essence') {
+    const key = String(orb.essenceKey || 'mecha').toLowerCase();
+    return { essences: { [key]: amount } };
+  }
+  if (kind === 'material') {
+    const key = String(orb.materialKey || 'salvage');
+    return { materials: { [key]: amount } };
+  }
+  if (kind === 'gearPart') {
+    const key = String(orb.gearKey || '');
+    if (!key) return null;
+    return { gearParts: { [key]: amount } };
+  }
+  if (kind === 'gearItem') {
+    const key = String(orb.gearKey || '');
+    if (!key) return null;
+    return { gearItems: { [key]: amount } };
+  }
+  return null;
+}
+
+function applyDirectResourceGrantToLocal(state, orb) {
+  if (!state?.progression || !orb || !isDirectResourceOrbKind(String(orb.kind || ''))) return { changed: false, lines: [] };
+  if (!state._appliedProgGrantIds) state._appliedProgGrantIds = new Set();
+  const grantId = typeof orb?.grantId === 'string' ? orb.grantId.trim() : '';
+  if (grantId && state._appliedProgGrantIds.has(grantId)) return { changed: false, lines: [], duplicate: true };
+  try { ensureHubProgression(state.progression); } catch {}
+  let changed = false;
+  const lines = [];
+  const kind = String(orb.kind || '');
+  const amount = Math.max(1, Number(orb.amount || 0) | 0);
+  if (kind === 'essence') {
+    const key = String(orb.essenceKey || 'mecha').toLowerCase();
+    const meta = ESSENCE_META[key] || ESSENCE_META.mecha;
+    state.progression.essences[key] = Math.max(0, (state.progression.essences?.[key] | 0) + amount);
+    changed = true;
+    lines.push(`+${amount} ${meta.short || meta.label}`);
+  } else if (kind === 'material') {
+    const key = String(orb.materialKey || 'salvage');
+    const meta = getMaterialMeta(key);
+    state.progression.materials[key] = Math.max(0, (state.progression.materials?.[key] | 0) + amount);
+    changed = true;
+    lines.push(`+${amount} ${meta.short || meta.label}`);
+  } else if (kind === 'gearPart') {
+    const key = String(orb.gearKey || '');
+    const def = getHubGearDef(key);
+    if (def) {
+      state.progression.gearParts[key] = Math.max(0, (state.progression.gearParts?.[key] | 0) + amount);
+      changed = true;
+      lines.push(`+${amount} ${def.short || def.name} Part`);
+    }
+  } else if (kind === 'gearItem') {
+    const key = String(orb.gearKey || '');
+    const def = getHubGearDef(key);
+    if (def) {
+      const owned = Math.max(0, state.progression.gearInventory?.[key] | 0);
+      if (owned > 0) {
+        const bonusParts = Math.max(2, amount);
+        state.progression.gearParts[key] = Math.max(0, (state.progression.gearParts?.[key] | 0) + bonusParts);
+        lines.push(`DUPLICATE ${def.short || def.name} → +${bonusParts} Parts`);
+      } else {
+        state.progression.gearInventory[key] = Math.max(1, owned + amount);
+        lines.push(`DROP: ${def.name}`);
+      }
+      changed = true;
+    }
+  }
+  if (grantId && changed) state._appliedProgGrantIds.add(grantId);
+  if (!changed) return { changed: false, lines, duplicate: false };
+  try { saveProgression(state.progression); } catch {}
+  try {
+    const txt = lines.join(' • ');
+    const fx = orb ? { x: orb.x, y: orb.y } : (state.player ? { x: state.player.x, y: state.player.y - 40 } : null);
+    if (fx && state.floatingTexts && txt) state.floatingTexts.push({ x: fx.x, y: fx.y, text: txt, time: 1.15 });
+  } catch {}
+  return { changed: true, lines, duplicate: false };
+}
+
+function applyResourceOrbToLocal(state, orb) {
+  return applyDirectResourceGrantToLocal(state, orb);
+}
+
+function getLocalProgressionAliases(state) {
+  const ids = [];
+  if (state?.net?.playerId != null) ids.push(String(state.net.playerId));
+  if (state?.player?.id != null) ids.push(String(state.player.id));
+  ids.push('local');
+  return [...new Set(ids.map((v) => String(v || '').trim()).filter(Boolean))];
+}
+
+function applyProgressionPayloadToLocal(state, payload, orb = null) {
+  if (!state?.progression || !payload || typeof payload !== 'object') return { changed: false, lines: [] };
+  const grantId = typeof payload._grantId === 'string' ? payload._grantId.trim() : '';
+  if (!state._appliedProgGrantIds) state._appliedProgGrantIds = new Set();
+  if (grantId && state._appliedProgGrantIds.has(grantId)) return { changed: false, lines: [], duplicate: true };
+  try { ensureHubProgression(state.progression); } catch {}
+  const spGain = Number(payload.sp || 0);
+  let changed = false;
+  const lines = [];
+  if (Number.isFinite(spGain) && spGain > 0) {
+    state.progression.sp = Math.max(0, (state.progression.sp | 0) + (spGain | 0));
+    changed = true;
+    lines.push(`+${spGain | 0} SP`);
+  }
+  const loot = applyHubProgressionLoot(state.progression, payload);
+  if (loot?.changed) {
+    changed = true;
+    lines.push(...(loot.lines || []));
+  }
+  if (grantId) state._appliedProgGrantIds.add(grantId);
+  if (!changed) return { changed: false, lines, duplicate: false };
+  try { saveProgression(state.progression); } catch {}
+  try {
+    const txt = lines.length ? lines.join(' • ') : summarizeProgPayload(payload);
+    const fx = orb ? { x: orb.x, y: orb.y } : (state.player ? { x: state.player.x, y: state.player.y - 40 } : null);
+    if (fx && state.floatingTexts && txt) state.floatingTexts.push({ x: fx.x, y: fx.y, text: txt, time: 1.15 });
+  } catch {}
+  return { changed: true, lines, duplicate: false };
+}
+
+function getProgPickupTint(orb) {
+  const payload = orb?.progPayload && typeof orb.progPayload === 'object' ? orb.progPayload : {};
+  const essences = payload.essences && typeof payload.essences === 'object' ? payload.essences : {};
+  for (const key of Object.keys(essences)) {
+    const meta = ESSENCE_META[String(key || '').toLowerCase()] || ESSENCE_META.mecha;
+    return { fill: meta.accent || '#5af2ff', glow: meta.glow || meta.accent || '#5af2ff', glyph: '◆' };
+  }
+  const materials = payload.materials && typeof payload.materials === 'object' ? payload.materials : {};
+  for (const key of Object.keys(materials)) {
+    const meta = getMaterialMeta(key);
+    if (String(key) === 'salvage') return { fill: '#b9c2d6', glow: '#dfe7ff', glyph: '◈' };
+    if (String(key) === 'alloy') return { fill: '#8ad8ff', glow: '#d8f5ff', glyph: '⬢' };
+    if (String(key) === 'coreShard') return { fill: '#c58bff', glow: '#f0d7ff', glyph: '✦' };
+    return { fill: '#a9d7ff', glow: '#e8f6ff', glyph: (meta.short || 'M')[0] || 'M' };
+  }
+  const parts = payload.gearParts && typeof payload.gearParts === 'object' ? payload.gearParts : {};
+  for (const key of Object.keys(parts)) {
+    const def = getHubGearDef(key);
+    return { fill: '#79ffbf', glow: '#d8fff0', glyph: (def?.short || 'P')[0] || 'P' };
+  }
+  const items = payload.gearItems && typeof payload.gearItems === 'object' ? payload.gearItems : {};
+  for (const key of Object.keys(items)) {
+    const def = getHubGearDef(key);
+    return { fill: '#ff8a6b', glow: '#ffd8cb', glyph: (def?.short || def?.name || 'I')[0] || 'I' };
+  }
+  return { fill: '#5af2ff', glow: '#c8fbff', glyph: '+' };
+}
+
 function updateXPOrbs(state, dt) {
   const { xpOrbs } = state;
   const players = state.players && state.players.length ? state.players : (state.player ? [state.player] : []);
@@ -4575,13 +4846,53 @@ function updateXPOrbs(state, dt) {
 
       if (dx * dx + dy * dy <= r * r) {
         const kind = orb.kind || (orb.coins ? "coin" : "xp");
+        const online = !!(state.net && state.net.status === 'connected' && state.net.roomCode);
+        const localAliases = getLocalProgressionAliases(state);
+        const localId = localAliases[0] || 'local';
+        const playerId = player?.id != null ? String(player.id) : '';
+        const colliderIsLocal = !playerId || localAliases.includes(playerId) || player === state.player;
+        const isLocalAuthorityCollector = !!state.progression && ((!online && colliderIsLocal) || (online && state.net?.isHost && colliderIsLocal));
+        if (isDirectResourceOrbKind(kind)) {
+          const payload = buildProgressionPayloadFromResourceOrb(orb);
+          if (!payload) {
+            xpOrbs.splice(i, 1);
+            break;
+          }
+          if (orb.grantId) payload._grantId = String(orb.grantId);
+          const targetId = playerId || (state.net?.playerId ? String(state.net.playerId) : 'local');
+          if (!online || colliderIsLocal || !state.net?.isHost) {
+            applyResourceOrbToLocal(state, orb);
+          } else if (state.net && state.net.isHost && typeof state.net.sendProgressionGain === 'function') {
+            try { state.net.sendProgressionGain(String(targetId || ''), payload); } catch {}
+          }
+          xpOrbs.splice(i, 1);
+          break;
+        }
+        if (kind === "prog") {
+          const payload = (orb.progPayload && typeof orb.progPayload === 'object') ? orb.progPayload : null;
+          const ownerId = orb.ownerId != null ? String(orb.ownerId) : '';
+          const ownerAliases = Array.isArray(orb.ownerAliases) ? orb.ownerAliases.map((v) => String(v || '')).filter(Boolean) : [];
+          const ownerMatches = !ownerId || ownerId === playerId || localAliases.includes(ownerId) || ownerAliases.includes(playerId) || ownerAliases.some((id) => localAliases.includes(id));
+          const orbIsForLocal = !ownerId || localAliases.includes(ownerId) || ownerAliases.some((id) => localAliases.includes(id));
+          if (!payload) {
+            xpOrbs.splice(i, 1);
+            break;
+          }
+          if (!ownerMatches) continue;
+          if ((!online && colliderIsLocal) || (orbIsForLocal && colliderIsLocal)) {
+            applyResourceOrbToLocal(state, orb);
+          } else if (online && state.net && state.net.isHost && typeof state.net.sendProgressionGain === 'function') {
+            const targetId = ownerId || playerId;
+            try { state.net.sendProgressionGain(String(targetId || playerId || ''), payload); } catch {}
+          }
+          xpOrbs.splice(i, 1);
+          break;
+        }
         if (kind === "coin") {
           const amt = orb.coins || 1;
           // Coins are meta-currency (persistent) and should be credited to the collecting device.
           // Host is authoritative for pickups, so for joiners we send a targeted coinGain message.
-          const online = !!(state.net && state.net.status === "connected" && state.net.roomCode);
-          if (player === state.player && state.progression) {
-            // Host/local device
+          if (isLocalAuthorityCollector) {
             try { ensureShopMeta(state.progression); } catch {}
             state.progression.coins = Math.max(0, (state.progression.coins | 0) + (amt | 0));
             try { saveProgression(state.progression); } catch {}
@@ -5526,13 +5837,33 @@ function renderXPOrbs(state, ctx) {
   ctx.save();
   for (const orb of state.xpOrbs) {
     const kind = orb.kind || (orb.coins ? "coin" : "xp");
+    if (kind === 'prog') {
+      const tint = getProgPickupTint(orb);
+      const radius = orb.radius || 9;
+      const gg = ctx.createRadialGradient(orb.x, orb.y, 0, orb.x, orb.y, radius * 2.4);
+      gg.addColorStop(0, tint.glow);
+      gg.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = gg;
+      ctx.beginPath();
+      ctx.arc(orb.x, orb.y, radius * 2.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = tint.fill;
+      ctx.beginPath();
+      ctx.arc(orb.x, orb.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.font = `${Math.max(10, Math.floor(radius * 1.35))}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(tint.glyph || '◆', orb.x, orb.y + 0.5);
+      continue;
+    }
     ctx.fillStyle = (kind === "coin") ? "#ffd34a" : "#5af2ff";
     ctx.beginPath();
     ctx.arc(orb.x, orb.y, orb.radius || 8, 0, Math.PI * 2);
     ctx.fill();
     if (kind === "coin") {
-      // small inner highlight
-        ctx.fillStyle = "rgba(255,255,255,0.70)";
+      ctx.fillStyle = "rgba(255,255,255,0.70)";
       ctx.beginPath();
       ctx.arc(orb.x - 2, orb.y - 2, Math.max(1, (orb.radius || 8) * 0.25), 0, Math.PI * 2);
       ctx.fill();

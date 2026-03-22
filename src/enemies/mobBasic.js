@@ -41,7 +41,7 @@ export function createBasicMob(zone, pos) {
   };
 
   enemy.onDeath = (self, state) => {
-    dropSimpleMobRewards(self, state, { coinChance: 0.22, coinMin: 1, coinMax: 1, radius: 8 });
+    dropSimpleMobRewards(self, state, { coinChance: 0.24, coinMin: 1, coinMax: 1, radius: 8, essenceChance: 0.26, materialChance: 0.18, partChance: 0.07 });
   };
 
   return enemy;

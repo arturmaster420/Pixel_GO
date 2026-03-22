@@ -1,11 +1,12 @@
 import { HUB_HALF } from './zoneController.js';
 import { setDynamicWorldBounds } from './mapGenerator.js';
-import { rollFloorShopOffers } from '../core/floorShop.js';
 import { buildArenaSpec } from './arenaSpecBuilder.js';
 import { buildFloorPlan, getRoomTemplatePreset } from './floorPlanBuilder.js';
 import { getRoomGeometryBounds, getRoomWalkRects, clampPointToRects } from './floorCollision.js';
 import { resolveSocketPoint, oppositeSocket, primaryEdgeForSocket, socketVector } from './roomRoute.js';
 import { scheduleRoomRenderWarmup } from './roomRenderer.js';
+import { rollHubLootForRoom } from '../core/hubBuild.js';
+import { saveProgression } from '../core/progression.js';
 
 const GAP = 120;
 const CONNECTOR_BUILD_DUR = 0.55;
@@ -132,6 +133,70 @@ function resolveHubReturnPortalPoint(room) {
   });
 }
 
+
+function splitHubLootPayload(payload) {
+  const chunks = [];
+  if (!payload || typeof payload !== 'object') return chunks;
+  const essences = payload.essences && typeof payload.essences === 'object' ? payload.essences : {};
+  for (const [key, amtRaw] of Object.entries(essences)) {
+    const amt = Math.max(0, Number(amtRaw) | 0);
+    if (amt > 0) chunks.push({ kind: 'essence', payload: { essences: { [key]: amt } } });
+  }
+  const materials = payload.materials && typeof payload.materials === 'object' ? payload.materials : {};
+  for (const [key, amtRaw] of Object.entries(materials)) {
+    const amt = Math.max(0, Number(amtRaw) | 0);
+    if (amt > 0) chunks.push({ kind: 'material', payload: { materials: { [key]: amt } } });
+  }
+  const parts = payload.gearParts && typeof payload.gearParts === 'object' ? payload.gearParts : {};
+  for (const [key, amtRaw] of Object.entries(parts)) {
+    const amt = Math.max(0, Number(amtRaw) | 0);
+    if (amt > 0) chunks.push({ kind: 'gearPart', payload: { gearParts: { [key]: amt } } });
+  }
+  const items = payload.gearItems && typeof payload.gearItems === 'object' ? payload.gearItems : {};
+  for (const [key, amtRaw] of Object.entries(items)) {
+    const amt = Math.max(0, Number(amtRaw) | 0);
+    if (amt > 0) chunks.push({ kind: 'gearItem', payload: { gearItems: { [key]: amt } } });
+  }
+  return chunks;
+}
+
+function spawnHubLootPickups(state, room, payload) {
+  if (!state || !room || !payload || typeof payload !== 'object') return 0;
+  const chunks = splitHubLootPayload(payload);
+  const xpOrbs = Array.isArray(state.xpOrbs) ? state.xpOrbs : (state.xpOrbs = []);
+  const centerX = Number(room.centerX) || 0;
+  const centerY = Number(room.centerY) || 0;
+  const baseR = Math.max(42, Math.min(120, (Number(room.side) || 840) * 0.07));
+  state._resourceGrantSerial = Math.max(0, Number(state._resourceGrantSerial || 0));
+  for (let i = 0; i < chunks.length; i++) {
+    const a = (Math.PI * 2 * i) / Math.max(1, chunks.length);
+    const ring = baseR + (i % 3) * 16;
+    const chunk = chunks[i] || null;
+    if (!chunk) continue;
+    const firstEssenceKey = chunk.payload?.essences ? Object.keys(chunk.payload.essences)[0] || '' : '';
+    const firstMaterialKey = chunk.payload?.materials ? Object.keys(chunk.payload.materials)[0] || '' : '';
+    const firstPartKey = chunk.payload?.gearParts ? Object.keys(chunk.payload.gearParts)[0] || '' : '';
+    const firstItemKey = chunk.payload?.gearItems ? Object.keys(chunk.payload.gearItems)[0] || '' : '';
+    const amount = Math.max(1, Number((chunk.payload?.essences?.[firstEssenceKey]) || (chunk.payload?.materials?.[firstMaterialKey]) || (chunk.payload?.gearParts?.[firstPartKey]) || (chunk.payload?.gearItems?.[firstItemKey]) || 1) | 0);
+    const orb = {
+      x: centerX + Math.cos(a) * ring,
+      y: centerY + Math.sin(a) * ring,
+      baseY: centerY + Math.sin(a) * ring,
+      radius: chunks[i].kind === 'gearItem' ? 12 : (chunks[i].kind === 'gearPart' ? 10 : 9),
+      age: 0,
+      spawnDelay: 0.35,
+      ttl: 120,
+      kind: chunks[i].kind,
+      amount,
+      grantId: `room:${(room.floorNumber | 0)}:${(room.index | 0)}:${chunks[i].kind}:${++state._resourceGrantSerial}`,
+    };
+    if (chunk.kind === 'essence') orb.essenceKey = firstEssenceKey || 'mecha';
+    else if (chunk.kind === 'material') orb.materialKey = firstMaterialKey || 'salvage';
+    else if (chunk.kind === 'gearPart' || chunk.kind === 'gearItem') orb.gearKey = firstPartKey || firstItemKey || '';
+    xpOrbs.push(orb);
+  }
+  return chunks.length;
+}
 
 function resolveTransitionRole(anchor, room) {
   const tag = String(anchor?.tag || '').toLowerCase();
@@ -378,14 +443,9 @@ export class RoomDirector {
     room.cleared = true;
 
     const st = this.state;
-    const ps = (st?.players && st.players.length) ? st.players : (st?.player ? [st.player] : []);
-    for (const p of ps) {
-      if (!p) continue;
-      // Award 1 Skill Point for every cleared combat room.
-      p.skillPoints = ((p.skillPoints | 0) + 1) | 0;
-    }
-
-    try { this._ensureFloorShop(); } catch {}
+    try {
+      spawnHubLootPickups(st, room, rollHubLootForRoom(room, st?.progression || {}));
+    } catch {}
 
     if (room.isFloorFinal) {
       room.exitPortal = resolvePortalPoint(room);
@@ -411,21 +471,10 @@ export class RoomDirector {
   }
 
   _ensureFloorShop() {
-    const st = this.state;
     const room = this.current;
-    if (!st || !room || (room.index | 0) <= 0 || !room.cleared) return;
-
-    const anchor = room?.arenaSpec?.anchors?.shopAnchor || { x: room.centerX, y: room.centerY + room.side * 0.18 };
-    room.shopNpc = { x: Number(anchor.x) || room.centerX, y: Number(anchor.y) || room.centerY, r: 20 };
-
-    const ps = (st.players && st.players.length) ? st.players : (st.player ? [st.player] : []);
-    for (const p of ps) {
-      if (!p) continue;
-      const fs = p.floorShop;
-      if (fs && (fs.floor | 0) === (room.index | 0) && Array.isArray(fs.offers) && fs.offers.length) continue;
-      const offers = rollFloorShopOffers(p, room.index, room.biomeKey || '', 3);
-      p.floorShop = { floor: room.index | 0, offers, sold: offers.map(() => false), rerollsUsed: 0 };
-    }
+    if (!room) return;
+    // Stage 1 hub-build migration: expedition floor terminals are disabled.
+    room.shopNpc = null;
   }
 
   _getAlivePlayers() {
@@ -494,6 +543,11 @@ export class RoomDirector {
       this._waitForParty = false;
       this._applyDynamicBounds();
       return;
+    }
+
+    if (this.current.cleared && !this.current.isFloorFinal) {
+      try { this._ensureNextSpawned(); } catch {}
+      try { this._ensureBridge(); } catch {}
     }
 
     const alivePlayers = this._getAlivePlayers();
@@ -604,9 +658,22 @@ export class RoomDirector {
     }
 
     if (this.current.isFloorFinal) return;
-    const plan = this._activeFloorPlan;
-    if (!plan) return;
-    const nextMeta = plan.rooms[(this.current.roomOrdinal | 0)] || null;
+    let plan = this._activeFloorPlan;
+    if (!plan || !Array.isArray(plan.rooms) || !plan.rooms.length) {
+      try {
+        plan = buildFloorPlan(Math.max(1, this.current.floorNumber | 0), this._lastBiomeKey || this.current.biomeKey || '');
+        this._activeFloorPlan = plan;
+        this._lastBiomeKey = plan?.biomeKey || this._lastBiomeKey;
+      } catch {
+        plan = null;
+      }
+    }
+    if (!plan || !Array.isArray(plan.rooms) || !plan.rooms.length) return;
+    let nextMeta = plan.rooms[(this.current.roomOrdinal | 0)] || null;
+    if (!nextMeta) {
+      const fallbackOrdinal = Math.min(plan.rooms.length, Math.max(1, (this.current.roomOrdinal | 0) + 1));
+      nextMeta = plan.rooms[fallbackOrdinal - 1] || null;
+    }
     if (!nextMeta) return;
     this.next = this._spawnRoomFromMeta(this.current, plan, nextMeta, this._serial + 1);
   }
@@ -770,8 +837,7 @@ export class RoomDirector {
         this.current.exitPortal = resolvePortalPoint(this.current);
         this.current.hubReturnPortal = resolveHubReturnPortalPoint(this.current);
       }
-      const anchor = this.current?.arenaSpec?.anchors?.shopAnchor || { x: this.current.centerX, y: this.current.centerY + this.current.side * 0.18 };
-      this.current.shopNpc = { x: Number(anchor.x) || this.current.centerX, y: Number(anchor.y) || this.current.centerY, r: 20 };
+      this.current.shopNpc = null;
     }
     this.prev = null;
     this.next = null;

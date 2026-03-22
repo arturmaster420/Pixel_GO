@@ -2,10 +2,11 @@
 // Minimal, self-contained module: DOM lobby uses this to render shop; game loop uses ensureShopMeta().
 
 import { RUN_SKILLS, RUN_PASSIVES } from "../core/runUpgrades.js";
+import { getStarterFavoredPassiveKeys, getStarterFavoredSkillKeys, normalizeStarterLoadoutKey } from "../core/starterLoadouts.js";
 
 const MAX_META_LEVEL = 10;
 // Bump when we need to migrate shop defaults.
-const SHOP_META_VERSION = 8;
+const SHOP_META_VERSION = 9;
 
 // Defaults:
 // - only Gun (basic shot) is available by default
@@ -113,6 +114,7 @@ function buildCatalog() {
       id: `skill:${s.key}`,
       key: s.key,
       kind: "skill",
+      biome: s.biome || "neutral",
       name: s.name || s.key,
     }));
 
@@ -123,6 +125,7 @@ function buildCatalog() {
       id: `skill:${s.key}`,
       key: s.key,
       kind: "skill",
+      biome: s.biome || "neutral",
       name: s.name || s.key,
     }));
 
@@ -141,6 +144,15 @@ function buildCatalog() {
 }
 
 const CATALOG = buildCatalog();
+
+function getCoreShopBias(prog) {
+  const coreKey = normalizeStarterLoadoutKey(prog?.hubBuild?.coreKey || prog?.selectedStarterLoadout || "mecha");
+  const favoredSkillKeys = new Set(getStarterFavoredSkillKeys(coreKey));
+  const favoredPassiveKeys = new Set(getStarterFavoredPassiveKeys(coreKey));
+  let favoredBiome = coreKey;
+  if (favoredBiome === "mecha") favoredBiome = "neutral";
+  return { coreKey, favoredSkillKeys, favoredPassiveKeys, favoredBiome };
+}
 
 export function getShopCatalog() {
   return CATALOG;
@@ -210,26 +222,30 @@ export function ensureShopOffers(prog) {
 
   const unlockedActivePool = CATALOG.active.filter((it) => getMetaLevel(prog, it.id) > 0);
   const evolvedPool = CATALOG.evolved.filter((it) => getMetaLevel(prog, it.id) > 0);
+  const bias = getCoreShopBias(prog);
+  const favoredActivePool = unlockedActivePool.filter((it) => bias.favoredSkillKeys.has(it.key) || it.biome === bias.favoredBiome);
+  const favoredPassivePool = CATALOG.passive.filter((it) => bias.favoredPassiveKeys.has(it.key));
+  const favoredEvolvedPool = evolvedPool.filter((it) => bias.favoredSkillKeys.has(it.key) || it.biome === bias.favoredBiome || (bias.coreKey === "mecha" && it.key === "rockets"));
 
   for (const id of offers.active) used.add(id);
   for (const id of offers.passive) used.add(id);
   for (const id of offers.newSkills) used.add(id);
 
   while (offers.active.length < 3) {
-    const it = pickRandom(unlockedActivePool, used);
+    const it = pickRandom(favoredActivePool, used) || pickRandom(unlockedActivePool, used);
     if (!it) break;
     offers.active.push(it.id);
     used.add(it.id);
   }
   while (offers.passive.length < 3) {
-    const it = pickRandom(CATALOG.passive, used);
+    const it = pickRandom(favoredPassivePool, used) || pickRandom(CATALOG.passive, used);
     if (!it) break;
     offers.passive.push(it.id);
     used.add(it.id);
   }
 
   while (offers.newSkills.length < 3) {
-    const it = pickRandom(evolvedPool, used);
+    const it = pickRandom(favoredEvolvedPool, used) || pickRandom(evolvedPool, used);
     if (!it) break;
     offers.newSkills.push(it.id);
     used.add(it.id);
@@ -260,8 +276,13 @@ export function replaceOfferSlot(prog, kind, idx) {
 
   const unlockedActivePool = CATALOG.active.filter((it) => getMetaLevel(prog, it.id) > 0);
   const evolvedPool = CATALOG.evolved.filter((it) => getMetaLevel(prog, it.id) > 0);
+  const bias = getCoreShopBias(prog);
+  const favoredActivePool = unlockedActivePool.filter((it) => bias.favoredSkillKeys.has(it.key) || it.biome === bias.favoredBiome);
+  const favoredPassivePool = CATALOG.passive.filter((it) => bias.favoredPassiveKeys.has(it.key));
+  const favoredEvolvedPool = evolvedPool.filter((it) => bias.favoredSkillKeys.has(it.key) || it.biome === bias.favoredBiome || (bias.coreKey === "mecha" && it.key === "rockets"));
 
   const list = kind === "passive" ? offers.passive : (kind === "new" ? offers.newSkills : offers.active);
+  const favoredPool = kind === "passive" ? favoredPassivePool : (kind === "new" ? favoredEvolvedPool : favoredActivePool);
   const pool = kind === "passive" ? CATALOG.passive : (kind === "new" ? evolvedPool : unlockedActivePool);
 
   const used = new Set([...offers.active, ...offers.passive, ...(offers.newSkills || [])]);
@@ -269,7 +290,7 @@ export function replaceOfferSlot(prog, kind, idx) {
   const curId = list[idx];
   if (curId) used.delete(curId);
 
-  const it = pickRandom(pool, used);
+  const it = pickRandom(favoredPool, used) || pickRandom(pool, used);
   if (it) list[idx] = it.id;
   else list[idx] = curId || null;
 

@@ -64,7 +64,7 @@ export function getReplaceCandidates(player, newSkillKey) {
   return out;
 }
 
-const STARTER_STANDARD_SKILL_KEYS = ["bullets", "lightning", "fireball", "iceWall"];
+const STARTER_STANDARD_SKILL_KEYS = ["bullets", "lightning", "fireball", "iceWall", "blackhole", "lightHeal"];
 
 function getStarterStandardSkillDef(player) {
   const requestedKey = String(player?._starterSkillKey || '').trim();

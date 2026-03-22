@@ -39,6 +39,56 @@ export const HUB_NPCS = (() => {
       r: Math.max(132, Math.round(HUB_HALF * 0.38)),
       scale: 0.92,
     },
+    {
+      id: "arsenal",
+      kind: "arsenal",
+      name: "Arsenal Wing",
+      emoji: "🗡️",
+      x: -Math.round(HUB_HALF * 0.72),
+      y: -Math.round(HUB_HALF * 0.12),
+      r: Math.max(110, Math.round(HUB_HALF * 0.28)),
+      scale: 0.62,
+    },
+    {
+      id: "forge",
+      kind: "forge",
+      name: "Forge Wing",
+      emoji: "⚒️",
+      x: Math.round(HUB_HALF * 0.72),
+      y: -Math.round(HUB_HALF * 0.12),
+      r: Math.max(110, Math.round(HUB_HALF * 0.28)),
+      scale: 0.62,
+    },
+    {
+      id: "essence",
+      kind: "essence",
+      name: "Essence Conflux",
+      emoji: "✨",
+      x: -Math.round(HUB_HALF * 0.62),
+      y: Math.round(HUB_HALF * 0.44),
+      r: Math.max(112, Math.round(HUB_HALF * 0.3)),
+      scale: 0.64,
+    },
+    {
+      id: "mastery",
+      kind: "mastery",
+      name: "Mastery Archive",
+      emoji: "📘",
+      x: Math.round(HUB_HALF * 0.66),
+      y: Math.round(HUB_HALF * 0.44),
+      r: Math.max(112, Math.round(HUB_HALF * 0.3)),
+      scale: 0.64,
+    },
+    {
+      id: "reset",
+      kind: "reset",
+      name: "Expedition Reset",
+      emoji: "↺",
+      x: Math.round(HUB_HALF * 0.16),
+      y: -Math.round(HUB_HALF * 0.32),
+      r: Math.max(96, Math.round(HUB_HALF * 0.24)),
+      scale: 0.58,
+    },
   ];
 })();
 
@@ -51,6 +101,11 @@ function getActiveHubNpcs(state = null) {
     shop: { id: "shop", kind: "shop", name: "Merchant", emoji: "🛒", scale: 0.54, r: 96 },
     tier: { id: "tier", kind: "tier", name: "Death Shop~Up", emoji: "🧙", scale: 0.54, r: 96 },
     basic: { id: "basic", kind: "basic", name: "Basic Core", emoji: "⚙️", scale: 0.96, r: 138 },
+    arsenal: { id: "arsenal", kind: "arsenal", name: "Arsenal Wing", emoji: "🗡️", scale: 0.66, r: 112 },
+    forge: { id: "forge", kind: "forge", name: "Forge Wing", emoji: "⚒️", scale: 0.66, r: 112 },
+    essence: { id: "essence", kind: "essence", name: "Essence Conflux", emoji: "✨", scale: 0.68, r: 116 },
+    mastery: { id: "mastery", kind: "mastery", name: "Mastery Archive", emoji: "📘", scale: 0.68, r: 116 },
+    reset: { id: "reset", kind: "reset", name: "Expedition Reset", emoji: "↺", scale: 0.60, r: 102 },
   };
 
   const out = [];

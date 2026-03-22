@@ -1,6 +1,7 @@
 import { getZoneScaling } from "../world/zoneController.js";
 import { pickMobTarget, applyDamageToTarget } from "./utils.js";
 import { biomeByKey } from "../world/biomes.js";
+import { biomeKeyToEssenceKey, getBiomePreferredGearDefs } from "../core/hubBuild.js";
 
 function clamp(n, a, b) {
   return n < a ? a : (n > b ? b : n);
@@ -429,8 +430,12 @@ export function createRoamingBoss(zone, pos, opts = {}) {
 
   enemy.onDeath = (self, state) => {
     const biome = biomeByKey(self._biomeKey || "");
+    const biomeKey = biomeKeyToEssenceKey(self._biomeKey || 'mecha');
+    const preferredDefs = getBiomePreferredGearDefs(biomeKey);
     const coinAmt = 16 + ((Math.random() * 12) | 0) + Math.floor(floorIndex * 0.6);
     const xpAmt = Math.round((self.xpValue || 30) * 0.9);
+    state._resourceGrantSerial = Math.max(0, Number(state._resourceGrantSerial || 0));
+    const nextGrantId = (tag) => `${String(self?.id || self?.kind || 'boss')}:${String(tag || 'res')}:${++state._resourceGrantSerial}`;
     state.xpOrbs.push({
       x: self.x,
       y: self.y,
@@ -449,6 +454,39 @@ export function createRoamingBoss(zone, pos, opts = {}) {
       age: 0,
       color: biome?.accent || undefined,
     });
+    state.xpOrbs.push({
+      x: self.x - 18,
+      y: self.y - 4,
+      radius: 10,
+      kind: 'essence',
+      essenceKey: biomeKey,
+      amount: 2,
+      age: 0,
+      grantId: nextGrantId('essence'),
+    });
+    state.xpOrbs.push({
+      x: self.x + 6,
+      y: self.y + 18,
+      radius: 10,
+      kind: 'material',
+      materialKey: Math.random() < 0.35 ? 'coreShard' : 'alloy',
+      amount: 1,
+      age: 0,
+      grantId: nextGrantId('material'),
+    });
+    const def = preferredDefs[(Math.random() * Math.max(1, preferredDefs.length)) | 0] || preferredDefs[0] || null;
+    if (def?.key) {
+      state.xpOrbs.push({
+        x: self.x - 6,
+        y: self.y + 16,
+        radius: 10,
+        kind: 'gearPart',
+        gearKey: def.key,
+        amount: 1,
+        age: 0,
+        grantId: nextGrantId('part'),
+      });
+    }
   };
 
   return enemy;

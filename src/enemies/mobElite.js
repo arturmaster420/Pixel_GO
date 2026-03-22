@@ -42,7 +42,7 @@ export function createEliteMob(zone, pos) {
   };
 
   enemy.onDeath = (self, state) => {
-    dropSimpleMobRewards(self, state, { coinChance: 0.55, coinMin: 2, coinMax: 4, radius: 10 });
+    dropSimpleMobRewards(self, state, { coinChance: 0.58, coinMin: 2, coinMax: 4, radius: 10, essenceChance: 0.48, materialChance: 0.34, partChance: 0.16 });
   };
 
   return enemy;

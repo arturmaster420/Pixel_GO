@@ -2856,8 +2856,9 @@ function drawFloorShopNpc(ctx, state, room, geo, { hue = 210, time = 0 } = {}) {
   if (!state || !room) return;
   if ((room.index | 0) <= 0) return;
   if (!room.cleared) return;
+  if (!room.shopNpc) return;
 
-  const npc = room.shopNpc || { x: room.centerX, y: room.centerY + (room.side || 600) * 0.18, r: 20 };
+  const npc = room.shopNpc;
   const x = npc.x;
   const y = npc.y + (geo.fall || 0);
 

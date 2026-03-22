@@ -111,6 +111,8 @@ export function generateHubArena({ roomIndex = 0, centerX = 0, centerY = 0, side
     start: relNode(centerX, centerY, artSize, ART_REL.start),
   };
   nodes.basicCore = { x: nodes.portal.x - artSize * 0.072, y: nodes.portal.y + artSize * 0.058 };
+  // Reset NPC stands on the portal platform itself, not on a separate pod.
+  nodes.reset = { x: nodes.portal.x + artSize * 0.050, y: nodes.portal.y + artSize * 0.010 };
   const core = relNode(centerX, centerY, artSize, ART_REL.core);
 
   addEllipseBands(platforms, navZones, 'hub_core_disc', core.x, core.y, centerRx, centerRy, 28, 1);
@@ -130,11 +132,13 @@ export function generateHubArena({ roomIndex = 0, centerX = 0, centerY = 0, side
   const platformByKey = {};
   for (const [key, pos] of Object.entries(nodes)) {
     const cfg = podConfig[key];
+    if (!cfg) continue;
     platformByKey[key] = addEllipseBands(platforms, navZones, `hub_${key}_pod`, pos.x, pos.y, cfg.rx, cfg.ry, cfg.bands, 1);
   }
 
   for (const [key, pos] of Object.entries(nodes)) {
     const cfg = podConfig[key];
+    if (!cfg) continue;
     const start = ellipseEdgePoint(core.x, core.y, centerRx, centerRy, pos.x, pos.y, 0.965);
     const end = ellipseEdgePoint(pos.x, pos.y, cfg.rx, cfg.ry, core.x, core.y, 0.965);
     addSteppedLine(bridges, navZones, `hub_bridge_${key}`, start.x, start.y, end.x, end.y, Math.max(20, cfg.bridgeT), 1);
@@ -154,16 +158,22 @@ export function generateHubArena({ roomIndex = 0, centerX = 0, centerY = 0, side
     { x: nodes.tierMaster.x, y: nodes.tierMaster.y, kind: 'tier_terminal', size: 32 },
     { x: nodes.basicCore.x, y: nodes.basicCore.y, kind: 'basic_terminal', size: 30 },
     { x: nodes.start.x, y: nodes.start.y, kind: 'spawn_pad', size: 28 },
-    { x: nodes.left.x, y: nodes.left.y, kind: 'future_node', size: 18 },
-    { x: nodes.right.x, y: nodes.right.y, kind: 'future_node', size: 18 },
-    { x: nodes.leftBottom.x, y: nodes.leftBottom.y, kind: 'future_node', size: 18 },
-    { x: nodes.rightBottom.x, y: nodes.rightBottom.y, kind: 'future_node', size: 18 },
+    { x: nodes.left.x, y: nodes.left.y, kind: 'arsenal_terminal', size: 22 },
+    { x: nodes.right.x, y: nodes.right.y, kind: 'forge_terminal', size: 22 },
+    { x: nodes.leftBottom.x, y: nodes.leftBottom.y, kind: 'essence_terminal', size: 22 },
+    { x: nodes.rightBottom.x, y: nodes.rightBottom.y, kind: 'mastery_terminal', size: 22 },
+    { x: nodes.reset.x, y: nodes.reset.y, kind: 'reset_terminal', size: 22 },
   );
 
   spawnAnchors.push(
     { x: nodes.merchant.x, y: nodes.merchant.y, tag: 'merchant' },
     { x: nodes.tierMaster.x, y: nodes.tierMaster.y, tag: 'tier' },
     { x: nodes.basicCore.x, y: nodes.basicCore.y, tag: 'basic' },
+    { x: nodes.left.x, y: nodes.left.y, tag: 'arsenal' },
+    { x: nodes.right.x, y: nodes.right.y, tag: 'forge' },
+    { x: nodes.leftBottom.x, y: nodes.leftBottom.y, tag: 'essence' },
+    { x: nodes.rightBottom.x, y: nodes.rightBottom.y, tag: 'mastery' },
+    { x: nodes.reset.x, y: nodes.reset.y, tag: 'reset' },
     { x: nodes.portal.x, y: nodes.portal.y, tag: 'portal' },
     { x: nodes.start.x, y: nodes.start.y, tag: 'start' },
     { x: core.x, y: core.y, tag: 'core' },
@@ -225,6 +235,11 @@ export function generateHubArena({ roomIndex = 0, centerX = 0, centerY = 0, side
         shop: nodes.merchant,
         tier: nodes.tierMaster,
         basic: nodes.basicCore,
+        arsenal: nodes.left,
+        forge: nodes.right,
+        essence: nodes.leftBottom,
+        mastery: nodes.rightBottom,
+        reset: nodes.reset,
         portal: nodes.portal,
         spawn: nodes.start,
       },

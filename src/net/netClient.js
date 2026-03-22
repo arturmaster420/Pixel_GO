@@ -296,5 +296,10 @@ export function createNetClient() {
     send({ type: "coinGain", to: toId != null ? String(toId) : "", amount: Number(amount || 0) });
   };
 
+  // Host -> joiner: credit persistent progression resources to a specific client.
+  net.sendProgressionGain = function sendProgressionGain(toId, payload) {
+    send({ type: "progGain", to: toId != null ? String(toId) : "", payload: payload && typeof payload === "object" ? payload : null });
+  };
+
   return net;
 }

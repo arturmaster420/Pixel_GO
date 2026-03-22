@@ -3,6 +3,7 @@ import { biomeByKey } from "../world/biomes.js";
 import { MAX_RUN_ACTIVE_SKILLS, RUN_SKILLS, EVOLUTION_DEFS } from "../core/runUpgrades.js";
 import { getStarterLoadoutDef } from "../core/starterLoadouts.js";
 import { getSkillDetailRows, getSkillTags, getSkillTypeColor, getSkillTypeLabel } from "../weapons/skillPresentation.js";
+import { BIOME_ESSENCE_KEYS, ESSENCE_META } from "../core/hubBuild.js";
 
 
 const SKILL_NAME_BY_KEY = (() => {
@@ -26,6 +27,45 @@ function getStarterDisplayKey(state, player) {
   const evo = player?.runEvolutions || {};
   const starterEvolution = (EVOLUTION_DEFS || []).find((def) => def && def.fromKey === starterSkillKey && (evo?.[def.fusionFlag] || ((skills?.[def.resultKey] | 0) > 0)));
   return starterEvolution?.resultKey || starterSkillKey;
+}
+
+function drawCrystalIcon(ctx, x, y, size, color) {
+  const half = size * 0.5;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(Math.PI * 0.25);
+  ctx.fillStyle = color;
+  ctx.fillRect(-half, -half, size, size);
+  ctx.restore();
+  ctx.strokeStyle = "rgba(0,0,0,0.28)";
+  ctx.strokeRect(x - half * 0.72, y - half * 0.72, size * 0.72, size * 0.72);
+}
+
+function drawEssenceWallet(ctx, progression, infoX0, infoX1, infoY) {
+  const essenceEntries = BIOME_ESSENCE_KEYS.map((key) => ({
+    key,
+    count: Math.max(0, progression?.essences?.[key] | 0),
+    meta: ESSENCE_META[key] || ESSENCE_META.mecha,
+  }));
+  const cols = 3;
+  const cellW = 42;
+  const cellH = 18;
+  const gridW = cols * cellW;
+  const startX = Math.max(infoX0 + 92, infoX1 - gridW);
+  const startY = infoY + 18;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.font = "11px sans-serif";
+  for (let i = 0; i < essenceEntries.length; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = startX + col * cellW;
+    const y = startY + row * cellH;
+    const { count, meta } = essenceEntries[i];
+    drawCrystalIcon(ctx, x + 6, y + 7, 8, meta.accent);
+    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    ctx.fillText(String(count), x + 14, y + 7);
+  }
 }
 
 function getBuildSlots(state) {
@@ -108,7 +148,7 @@ function pickDefaultBuildSkillKey(slots) {
   return String(firstFilled?.key || slots[0]?.key || '');
 }
 
-function getStatsData(state) {
+export function getStatsData(state) {
   const player = state?.player || null;
   if (!player) return null;
   const critChanceFrac = (player.metaCritChance || 0) + (player.runCritChanceAdd || 0);
@@ -119,9 +159,12 @@ function getStatsData(state) {
   const hpRegen = (player.metaHpRegen || 0) + (player.runHpRegen || 0);
   const pickupRadius = (state?.meta?.pickupBonusRadius || 0) + (player.runPickupBonusRadius || 0);
   const xpGain = ((state?.meta?.xpGainMult || 1) * (player.runXpGainMult || 1) - 1) * 100;
-  const levelXpNeed = Number.isFinite(player.nextLevelXp) && player.nextLevelXp > 0
-    ? Math.round(player.nextLevelXp)
-    : (typeof player.xpToNext === 'function' ? Math.round(player.xpToNext()) : 0);
+  const isLocalPlayer = !!(state?.player && player === state.player);
+  const levelXpNeed = isLocalPlayer && typeof player.xpToNext === 'function'
+    ? Math.round(player.xpToNext())
+    : (Number.isFinite(player.nextLevelXp) && player.nextLevelXp > 0
+      ? Math.round(player.nextLevelXp)
+      : (typeof player.xpToNext === 'function' ? Math.round(player.xpToNext()) : 0));
 
   const starterDef = getStarterLoadoutDef(player?._selectedStarterLoadout || state?.progression?.selectedStarterLoadout || 'mecha');
   const coreName = String(starterDef?.name || 'Mecha Core');
@@ -254,7 +297,7 @@ function drawStatsButton(ctx, state, scaledW, topPanelH, uiScale) {
   const x = scaledW - width - 14;
   const y = topPanelH + 46;
   const active = !!state?._statsPanelOpen;
-  state._statsButtonRect = drawHudButton(ctx, active, 'STATS', x, y, width, height, uiScale, '_statsButtonRect', 'rgba(123, 104, 238, 0.88)');
+  state._statsButtonRect = drawHudButton(ctx, active, 'HERO', x, y, width, height, uiScale, '_statsButtonRect', 'rgba(123, 104, 238, 0.88)');
 }
 
 function drawBuildPanel(ctx, state, scaledW, scaledH, topPanelH, uiScale) {
@@ -810,14 +853,7 @@ if (infoX1 > infoX0 + 40) {
   ctx.font = "13px sans-serif";
   ctx.fillText(coinText, coinX + iconR * 2 + 6, coinY);
 
-  // Reserve space for future currency (same height)
-  const cur2Y = coinY + 16;
-  ctx.fillStyle = "rgba(255,255,255,0.10)";
-  ctx.beginPath();
-  ctx.arc(coinX + iconR, cur2Y + 7, iconR, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(0,0,0,0.25)";
-  ctx.stroke();
+  drawEssenceWallet(ctx, progression, infoX0, infoX1, infoY);
 }
 
 // HP bar row (top). Ends at the UP button edge (same as XP bar).
@@ -859,9 +895,12 @@ ctx.stroke();
 // Prefer host-replicated nextLevelXp (co-op joiners) for correct HUD numbers.
 let xpNeed = 0;
 try {
-  xpNeed = Number.isFinite(player.nextLevelXp) && player.nextLevelXp > 0
-    ? Math.round(player.nextLevelXp)
-    : (typeof player.xpToNext === "function" ? Math.round(player.xpToNext()) : 0);
+  const preferLocalCurve = !!(state?.player && player === state.player && typeof player.xpToNext === "function");
+  xpNeed = preferLocalCurve
+    ? Math.round(player.xpToNext())
+    : (Number.isFinite(player.nextLevelXp) && player.nextLevelXp > 0
+      ? Math.round(player.nextLevelXp)
+      : (typeof player.xpToNext === "function" ? Math.round(player.xpToNext()) : 0));
 } catch (e) {
   xpNeed = 0;
 }

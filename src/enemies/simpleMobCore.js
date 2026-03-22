@@ -1,5 +1,6 @@
 import { pickMobTarget, applyDamageToTarget } from "./utils.js";
 import { renderBiomeUnit, biomeKeyFromKind, biomeStyleForKey } from "./biomeVisuals.js";
+import { biomeKeyToEssenceKey, getBiomePreferredGearDefs, getBiomeLootProfile } from "../core/hubBuild.js";
 
 export function resolveEnemyRoom(self, state) {
   const rd = state?.roomDirector || null;
@@ -99,27 +100,84 @@ export function renderSimpleMob(self, ctx, { fallbackFill = "#ff5f6f", isBasic =
   ctx.restore();
 }
 
-export function dropSimpleMobRewards(self, state, { coinChance = 0.22, coinMin = 1, coinMax = 1, radius = 8 } = {}) {
+export function dropSimpleMobRewards(self, state, { coinChance = 0.22, coinMin = 1, coinMax = 1, radius = 8, essenceChance = null, materialChance = null, partChance = null } = {}) {
   if (!self || !state) return;
-  const roll = Math.random();
-  if (roll < coinChance) {
-    const amt = coinMin + (((Math.random() * Math.max(1, coinMax - coinMin + 1)) | 0));
-    state.xpOrbs.push({
-      x: self.x,
-      y: self.y,
-      radius,
-      kind: "coin",
-      coins: amt,
-      age: 0,
-    });
-    return;
-  }
+  const biomeKey = biomeKeyToEssenceKey(self?._biomeKey || biomeKeyFromKind(self?.kind) || 'mecha');
+  const isElite = !!self?.isElite;
+  const lootProfile = getBiomeLootProfile(biomeKey);
+  const preferredDefs = getBiomePreferredGearDefs(biomeKey);
+  const xpAmt = Math.max(1, Math.round(Number(self.xpValue || 10) || 10));
+  state._resourceGrantSerial = Math.max(0, Number(state._resourceGrantSerial || 0));
+  const nextGrantId = (tag) => `${String(self?.id || self?.kind || 'mob')}:${String(tag || 'res')}:${++state._resourceGrantSerial}`;
+
+  // XP should always drop, even when coins/resources drop too.
   state.xpOrbs.push({
     x: self.x,
     y: self.y,
     radius,
     kind: "xp",
-    xp: self.xpValue,
+    xp: xpAmt,
     age: 0,
   });
+
+  if (Math.random() < coinChance) {
+    const amt = coinMin + (((Math.random() * Math.max(1, coinMax - coinMin + 1)) | 0));
+    state.xpOrbs.push({
+      x: self.x + 10,
+      y: self.y - 6,
+      radius,
+      kind: "coin",
+      coins: amt,
+      age: 0,
+    });
+  }
+
+  const resolvedEssenceChance = Number.isFinite(Number(essenceChance)) ? Number(essenceChance) : (isElite ? 0.48 : 0.26);
+  if (Math.random() < resolvedEssenceChance) {
+    state.xpOrbs.push({
+      x: self.x - 10,
+      y: self.y + 4,
+      radius: Math.max(8, radius),
+      kind: 'essence',
+      essenceKey: biomeKey,
+      amount: 1,
+      age: 0,
+      grantId: nextGrantId('essence'),
+    });
+  }
+
+  const resolvedMaterialChance = Number.isFinite(Number(materialChance)) ? Number(materialChance) : (isElite ? 0.34 : 0.18);
+  const matRoll = Math.random();
+  if (matRoll < resolvedMaterialChance) {
+    let materialKey = 'salvage';
+    if (isElite && Math.random() < 0.28) materialKey = 'alloy';
+    if (isElite && lootProfile?.bossMaterials?.coreShard && Math.random() < 0.12) materialKey = 'coreShard';
+    state.xpOrbs.push({
+      x: self.x + 4,
+      y: self.y + 12,
+      radius: Math.max(8, radius),
+      kind: 'material',
+      materialKey,
+      amount: 1,
+      age: 0,
+      grantId: nextGrantId('material'),
+    });
+  }
+
+  const resolvedPartChance = Number.isFinite(Number(partChance)) ? Number(partChance) : (isElite ? 0.16 : 0.07);
+  if (preferredDefs.length && Math.random() < resolvedPartChance) {
+    const def = preferredDefs[(Math.random() * preferredDefs.length) | 0] || preferredDefs[0];
+    if (def?.key) {
+      state.xpOrbs.push({
+        x: self.x - 4,
+        y: self.y - 12,
+        radius: Math.max(9, radius),
+        kind: 'gearPart',
+        gearKey: def.key,
+        amount: 1,
+        age: 0,
+        grantId: nextGrantId('part'),
+      });
+    }
+  }
 }

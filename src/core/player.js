@@ -21,6 +21,7 @@ export class Player {
     // Track run-relative level so XP curve is consistent even if meta startLevel > 0.
     this._runStartLevel = this.level;
     this.xp = 0;
+    this.nextLevelXp = this.xpToNext();
 
     // Pixel_GO v0.4: Skill Points (SP)
     // - Earned on level-up and on each cleared room
@@ -151,6 +152,7 @@ export class Player {
     this.level = startLevel || 0;
     this._runStartLevel = this.level;
     this.xp = 0;
+    this.nextLevelXp = this.xpToNext();
 
     // Reset run-only Skill Points
     this.skillPoints = 0;
@@ -282,6 +284,8 @@ export class Player {
       // Full HP restore on each level up
       this.hp = this.maxHP;
     }
+
+    this.nextLevelXp = this.xpToNext();
 
     if (leveled && state) {
       // Co-op: only show local UI feedback on the owning client.

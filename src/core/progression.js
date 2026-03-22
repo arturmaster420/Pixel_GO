@@ -2,6 +2,7 @@ const STORAGE_KEY = "btm_progress";
 
 import { clampAvatarIndex } from "./avatars.js";
 import { clampAuraId } from "./auras.js";
+import { defaultEssences, defaultGearInventory, defaultGearParts, defaultHubBuild, defaultHubGear, defaultMaterials, ensureHubProgression } from "./hubBuild.js";
 
 export const MAX_R_TIER = 15;
 
@@ -82,11 +83,19 @@ export function defaultProgression() {
     upgradePoints: 0,
     deathPoints: 0,
     coins: 0,
+    sp: 0,
+    materials: defaultMaterials(),
+    essences: defaultEssences(),
+    gearParts: defaultGearParts(),
+    gearInventory: defaultGearInventory(),
     skillMeta: {},
     shopOffers: { active: [], passive: [] },
     shopRerollCount: 0,
     selectedStarterLoadout: "mecha",
-    metaVersion: 7,
+    hubBuild: defaultHubBuild("mecha"),
+    hubGear: defaultHubGear(),
+    hubBuildMetaVersion: 4,
+    metaVersion: 9,
     // Dev override: keep all R-Tiers unlocked by default.
     resurrectedTier: MAX_R_TIER,
     resGuardianKills: 0,
@@ -201,10 +210,18 @@ export function loadProgression() {
       upgradePoints: typeof parsed.deathPoints === "number" ? parsed.deathPoints : (typeof parsed.upgradePoints === "number" ? parsed.upgradePoints : base.upgradePoints),
       deathPoints: typeof parsed.deathPoints === "number" ? parsed.deathPoints : (typeof parsed.upgradePoints === "number" ? parsed.upgradePoints : base.deathPoints),
       coins: typeof parsed.coins === "number" && Number.isFinite(parsed.coins) ? Math.max(0, Math.floor(parsed.coins)) : (base.coins || 0),
+      sp: typeof parsed.sp === "number" && Number.isFinite(parsed.sp) ? Math.max(0, Math.floor(parsed.sp)) : (base.sp || 0),
+      materials: (parsed.materials && typeof parsed.materials === "object") ? parsed.materials : (base.materials || defaultMaterials()),
+      essences: (parsed.essences && typeof parsed.essences === "object") ? parsed.essences : (base.essences || defaultEssences()),
+      gearParts: (parsed.gearParts && typeof parsed.gearParts === "object") ? parsed.gearParts : (base.gearParts || defaultGearParts()),
+      gearInventory: (parsed.gearInventory && typeof parsed.gearInventory === "object") ? parsed.gearInventory : (base.gearInventory || defaultGearInventory()),
       skillMeta: (parsed.skillMeta && typeof parsed.skillMeta === "object") ? parsed.skillMeta : (base.skillMeta || {}),
       shopOffers: (parsed.shopOffers && typeof parsed.shopOffers === "object") ? parsed.shopOffers : (base.shopOffers || { active: [], passive: [] }),
       shopRerollCount: typeof parsed.shopRerollCount === "number" && Number.isFinite(parsed.shopRerollCount) ? Math.max(0, Math.floor(parsed.shopRerollCount)) : (base.shopRerollCount || 0),
       selectedStarterLoadout: typeof parsed.selectedStarterLoadout === "string" ? parsed.selectedStarterLoadout : base.selectedStarterLoadout,
+      hubBuild: (parsed.hubBuild && typeof parsed.hubBuild === "object") ? parsed.hubBuild : defaultHubBuild(parsed.selectedStarterLoadout || base.selectedStarterLoadout),
+      hubGear: (parsed.hubGear && typeof parsed.hubGear === "object") ? parsed.hubGear : defaultHubGear(),
+      hubBuildMetaVersion: (typeof parsed.hubBuildMetaVersion === "number" && Number.isFinite(parsed.hubBuildMetaVersion)) ? (parsed.hubBuildMetaVersion | 0) : (base.hubBuildMetaVersion | 0),
       metaVersion: (typeof parsed.metaVersion === "number" && Number.isFinite(parsed.metaVersion)) ? (parsed.metaVersion | 0) : (base.metaVersion | 0),
       resurrectedTier:
         typeof parsed.resurrectedTier === "number"
@@ -249,6 +266,7 @@ export function loadProgression() {
     // Clamp aura selection (all auras are selectable)
     data.auraId = clampAuraId(data.auraId);
 
+    ensureHubProgression(data);
     return data;
   } catch (err) {
     console.error("[Progression] Failed to load progression", err);
@@ -263,6 +281,7 @@ export function saveProgression(data) {
       data.upgradePoints = pts;
       data.deathPoints = pts;
     }
+    ensureHubProgression(data);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (err) {
     console.error("[Progression] Failed to save progression", err);
