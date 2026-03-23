@@ -101,6 +101,7 @@ export class Player {
       prismRay: 0,
       sanctuary: 0,
     };
+    this.runSkillStages = { rockets: 0, energyBomb: 0, fireBomb: 0, iceBomb: 0 };
     this.runEvolutions = {};
     this.runPassives = {
       damage: 0,
@@ -213,6 +214,7 @@ export class Player {
       prismRay: 0,
       sanctuary: 0,
     };
+    this.runSkillStages = { rockets: 0, energyBomb: 0, fireBomb: 0, iceBomb: 0 };
     this.runEvolutions = {};
     this.runPassives = {
       damage: 0,

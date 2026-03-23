@@ -4,76 +4,26 @@
 
 import { isStandardSkillKey, getSkillFamily } from "../weapons/skillCatalog.js";
 import { composeSkillUpgradeDescription, getSkillPresentation } from "../weapons/skillPresentation.js";
+import { EVOLUTION_DEFS, EVOLUTION_SKILL_KEYS, applyEvolutionUnlock, ensureSkillEvolutionState, getEvolutionDef, getEvolutionResultForBaseSkill, hasAnyBombEvolution, isEvolutionUnlocked, shouldHideBaseSkillAfterEvolution, syncEvolutionState } from "./skillEvolutionDefs.js";
 
 export const MAX_RUN_ACTIVE_SKILLS = 6;
 
-export const EVOLUTION_SKILL_KEYS = ["rockets", "energyBomb", "fireBomb", "iceBomb"];
-
-export const EVOLUTION_DEFS = [
-  {
-    evoKey: "rocketFusion",
-    resultKey: "rockets",
-    name: "Fuse → Rockets",
-    fromKey: "bullets",
-    fromName: "Gun",
-    resultName: "Rockets",
-    fusionFlag: "rocketFusion",
-    cooldownResetKey: "rocketCooldown",
-  },
-  {
-    evoKey: "energyBombFusion",
-    resultKey: "energyBomb",
-    name: "Fuse → Energy Bomb",
-    fromKey: "lightning",
-    fromName: "Electric Chain",
-    resultName: "Energy Bomb",
-    fusionFlag: "energyBombFusion",
-    cooldownResetKey: "energyBombCooldown",
-  },
-  {
-    evoKey: "fireBombFusion",
-    resultKey: "fireBomb",
-    name: "Fuse → Fire Bomb",
-    fromKey: "fireball",
-    fromName: "Fireball",
-    resultName: "Fire Bomb",
-    fusionFlag: "fireBombFusion",
-    cooldownResetKey: "fireBombCooldown",
-  },
-  {
-    evoKey: "iceBombFusion",
-    resultKey: "iceBomb",
-    name: "Fuse → Ice Bomb",
-    fromKey: "iceWall",
-    fromName: "Ice Ball",
-    resultName: "Ice Bomb",
-    fusionFlag: "iceBombFusion",
-    cooldownResetKey: "iceBombCooldown",
-  },
-];
-
-const EVOLUTION_DEF_BY_EVO_KEY = Object.fromEntries(EVOLUTION_DEFS.map((def) => [def.evoKey, def]));
-
-function hasAnyBombEvolution(player) {
-  const evo = player?.runEvolutions || {};
-  return !!(evo.rocketFusion || evo.energyBombFusion || evo.fireBombFusion || evo.iceBombFusion);
-}
 
 function getAvailableEvolutionOffers(player) {
   const skills = player?.runSkills || {};
-  const evo = player?.runEvolutions || {};
+  syncEvolutionState(player);
   if (hasAnyBombEvolution(player)) return [];
   const maxBombs = MAX_RUN_SKILL_LEVEL.bombs || 6;
   if ((skills.bombs | 0) < maxBombs) return [];
   const out = [];
   for (const def of EVOLUTION_DEFS) {
-    if (evo[def.fusionFlag]) continue;
+    if (isEvolutionUnlocked(player, def)) continue;
     if ((skills[def.fromKey] | 0) < (MAX_RUN_SKILL_LEVEL[def.fromKey] || 6)) continue;
     if ((skills[def.resultKey] | 0) > 0) continue;
     out.push({
-      id: `evo:${def.evoKey}`,
+      id: `evo:${def.resultKey}`,
       kind: "evolution",
-      key: def.evoKey,
+      key: def.resultKey,
       name: def.name,
       from: "MAX",
       to: def.resultName,
@@ -190,7 +140,7 @@ export const RUN_SKILLS = [
   { key: "dreadRing", name: "Dread Ring", kind: "skill", biome: "dark" },
   { key: "prismRay", name: "Prism Ray", kind: "skill", biome: "light" },
   { key: "sanctuary", name: "Sanctuary", kind: "skill", biome: "light" },
-  // Evolution skills are obtained via fusion, not directly.
+  // Evolution-result skills are unlocked through evolution routes, not rolled as fresh roots.
   { key: "rockets", name: "Rockets", kind: "skill" },
   { key: "energyBomb", name: "Energy Bomb", kind: "skill", biome: "electric" },
   { key: "fireBomb", name: "Fire Bomb", kind: "skill", biome: "fire" },
@@ -254,7 +204,7 @@ export function initRunUpgrades(player) {
     prismRay: (s.prismRay ?? 0) | 0,
     sanctuary: (s.sanctuary ?? 0) | 0,
   };
-  player.runEvolutions = player.runEvolutions || {};
+  ensureSkillEvolutionState(player);
   // Passives start at 0 (merge defaults).
   const p0 = player.runPassives || {};
   player.runPassives = {
@@ -339,7 +289,7 @@ export function rollRunUpgrades(player, count = 3) {
   const passiveItems = [];
 
   // Skills (unlock weight high; upgrades stay relevant)
-const evo = player.runEvolutions || {};
+syncEvolutionState(player);
 
 const attackKeys = ["bullets", "bombs", "satellites", "energyBarrier", "spirit", "summon", "electricZone", "laser", "lightning", "fireball", "iceWall", "blackhole", "lightHeal", "stormStrike", "flameNova", "iceShards", "voidBurst", "holyNova", "shrapnelBurst", "railVolley", "arcSpark", "staticPulse", "meteorRain", "magmaLance", "frostNova", "crystalSpear", "soulDrain", "dreadRing", "prismRay", "sanctuary", "rockets", "energyBomb", "fireBomb", "iceBomb"];
 const activeAttackSkills = attackKeys.reduce((acc, k) => acc + (((skills[k] || 0) > 0) ? 1 : 0), 0);
@@ -357,17 +307,13 @@ for (const s of RUN_SKILLS) {
   if (!isStandard && !EVOLUTION_SKILL_KEYS.includes(s.key)) continue;
   // Shop gating: locked skills (metaLvl<=0) do not appear in run upgrade pool (except base bullets).
   if (s.key !== "bullets" && metaLvl <= 0) continue;
-  // After a bomb-fusion evolution, we no longer offer the consumed base parts again.
-  if (hasAnyBombEvolution(player) && s.key === "bombs") continue;
-  if (evo.rocketFusion && s.key === "bullets") continue;
-  if (evo.energyBombFusion && s.key === "lightning") continue;
-  if (evo.fireBombFusion && s.key === "fireball") continue;
-  if (evo.iceBombFusion && s.key === "iceWall") continue;
+  // After evolution, consumed base parts should no longer re-enter the pool.
+  if (shouldHideBaseSkillAfterEvolution(player, s.key)) continue;
 
   const lvl = skills[s.key] | 0;
 
   // Evolution-result skills: only appear after evolution has happened (or already owned).
-  if (EVOLUTION_SKILL_KEYS.includes(s.key) && lvl <= 0 && !EVOLUTION_DEFS.some((def) => def.resultKey === s.key && evo[def.fusionFlag])) continue;
+  if (EVOLUTION_SKILL_KEYS.includes(s.key) && lvl <= 0 && !isEvolutionUnlocked(player, s.key)) continue;
 
   const maxLvl = MAX_RUN_SKILL_LEVEL[s.key] || 9999;
   if (lvl >= maxLvl) continue;
@@ -501,6 +447,39 @@ if (!hasAnyExtraSkill) {
   return picks;
 }
 
+export function getVisibleOwnedRunSkills(player, { coreKey = '', maxSlots = MAX_RUN_ACTIVE_SKILLS } = {}) {
+  if (!player) return [];
+  initRunUpgrades(player);
+  syncEvolutionState(player);
+  const skills = player.runSkills || {};
+  const out = [];
+  const used = new Set();
+  const coreBaseKey = String(coreKey || '').trim();
+  const effectiveCoreKey = coreBaseKey ? getEvolutionResultForBaseSkill(player, coreBaseKey) : '';
+
+  const push = (key, isCore = false) => {
+    const skillKey = String(key || '').trim();
+    if (!skillKey || used.has(skillKey)) return;
+    const def = (RUN_SKILLS || []).find((it) => String(it?.key || '') === skillKey) || { key: skillKey, name: skillKey, kind: 'skill' };
+    const level = Math.max(0, (skills[skillKey] | 0) || 0) || (isCore ? 1 : 0);
+    if (!isCore && level <= 0) return;
+    used.add(skillKey);
+    out.push({ kind: 'skill', key: skillKey, def, level, isCore });
+  };
+
+  if (effectiveCoreKey) push(effectiveCoreKey, true);
+  for (const def of (RUN_SKILLS || [])) {
+    const skillKey = String(def?.key || '');
+    if (!skillKey) continue;
+    if (skillKey === coreBaseKey || skillKey === effectiveCoreKey) continue;
+    if (shouldHideBaseSkillAfterEvolution(player, skillKey)) continue;
+    if (((skills[skillKey] | 0) || 0) <= 0) continue;
+    push(skillKey, false);
+    if (out.length >= maxSlots) break;
+  }
+  return out.slice(0, maxSlots);
+}
+
 function countActiveRunSkills(player) {
   const s = player?.runSkills || {};
   let n = 0;
@@ -543,15 +522,10 @@ export function tryApplyRunUpgrade(player, upgrade, replaceKey = null) {
   }
 
   if (upgrade.kind === "evolution") {
-    const def = EVOLUTION_DEF_BY_EVO_KEY[String(upgrade.key || "")];
+    const def = getEvolutionDef(String(upgrade.key || ""));
     if (def) {
-      player.runEvolutions = player.runEvolutions || {};
-      player.runEvolutions[def.fusionFlag] = true;
-      player.runSkills[def.fromKey] = 0;
-      player.runSkills.bombs = 0;
-      player.runSkills[def.resultKey] = Math.max(player.runSkills[def.resultKey] | 0, 1);
+      applyEvolutionUnlock(player, def, { consumeBase: true, grantLevel: 1 });
       player.attackCooldown = 0;
-      if (def.cooldownResetKey) player[def.cooldownResetKey] = 0;
     }
 
     applyRunDerivedStats(player);
@@ -581,11 +555,11 @@ export function describeRunUpgrade(player, up) {
   }
 
   if (up.kind === "evolution") {
-    const def = EVOLUTION_DEF_BY_EVO_KEY[String(up.key || "")];
+    const def = getEvolutionDef(String(up.key || ""));
     if (def) {
-      return `Fuse ${def.fromName} (MAX) + Bombs (MAX) → ${def.resultName} (Lv1). Consumes both.`;
+      return `Evolve ${def.fromName} (MAX) + Bombs (MAX) into ${def.resultName} (Lv1). Consumes both roots.`;
     }
-    return "Evolution";
+    return "Evolution Route";
   }
 
   if (up.kind === "skill") {
@@ -596,16 +570,16 @@ export function describeRunUpgrade(player, up) {
       return up.from <= 0 ? "Unlock bombs (AoE)" : `Lv ${up.from} → ${up.to}: +damage / +AoE / faster`;
     }
     if (up.key === "rockets") {
-      return up.from <= 0 ? "Rockets (via fusion)" : `Lv ${up.from} → ${up.to}: +damage / +AoE / faster`;
+      return up.from <= 0 ? "Rockets (evolved form)" : `Lv ${up.from} → ${up.to}: +damage / +AoE / faster`;
     }
     if (up.key === "energyBomb") {
-      return up.from <= 0 ? "Energy Bomb (via fusion)" : `Lv ${up.from} → ${up.to}: +zap damage / +AoE / faster`;
+      return up.from <= 0 ? "Energy Bomb (evolved form)" : `Lv ${up.from} → ${up.to}: +zap damage / +AoE / faster`;
     }
     if (up.key === "fireBomb") {
-      return up.from <= 0 ? "Fire Bomb (via fusion)" : `Lv ${up.from} → ${up.to}: +burn / +AoE / faster`;
+      return up.from <= 0 ? "Fire Bomb (evolved form)" : `Lv ${up.from} → ${up.to}: +burn / +AoE / faster`;
     }
     if (up.key === "iceBomb") {
-      return up.from <= 0 ? "Ice Bomb (via fusion)" : `Lv ${up.from} → ${up.to}: +frost / +AoE / stronger slow`;
+      return up.from <= 0 ? "Ice Bomb (evolved form)" : `Lv ${up.from} → ${up.to}: +frost / +AoE / stronger slow`;
     }
     if (up.key === "laser") {
       return up.from <= 0 ? "Unlock solar beam" : `Lv ${up.from} → ${up.to}: +DPS / +range`;

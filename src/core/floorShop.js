@@ -2,7 +2,8 @@
 // - Uses Skill Points (SP) earned from level-ups and cleared rooms.
 // - Offers are generated per-player, per-floor (host authoritative in co-op).
 
-import { initRunUpgrades, describeRunUpgrade, applyRunUpgrade, tryApplyRunUpgrade, RUN_SKILLS, MAX_RUN_SKILL_LEVEL, MAX_RUN_ACTIVE_SKILLS, EVOLUTION_DEFS, EVOLUTION_SKILL_KEYS } from "./runUpgrades.js";
+import { initRunUpgrades, describeRunUpgrade, applyRunUpgrade, tryApplyRunUpgrade, RUN_SKILLS, MAX_RUN_SKILL_LEVEL, MAX_RUN_ACTIVE_SKILLS } from "./runUpgrades.js";
+import { EVOLUTION_DEFS, EVOLUTION_SKILL_KEYS, hasAnyBombEvolution, hasSkillOrEvolution, isEvolutionUnlocked, syncEvolutionState } from "./skillEvolutionDefs.js";
 import { biomeSkillsFor, getSkillFamily } from "../weapons/skillCatalog.js";
 import { getStarterLoadoutDef } from "./starterLoadouts.js";
 import { biomeName } from "../world/biomes.js";
@@ -92,7 +93,7 @@ function getFloorShopSkillOfferDefs(player) {
   const starterDef = getStarterStandardSkillDef(player);
   if (starterDef) out.push(starterDef);
   for (const key of EVOLUTION_SKILL_KEYS) {
-    const hasSkill = !!(((player?.runSkills?.[key] | 0) > 0) || EVOLUTION_DEFS.some((def) => def.resultKey === key && player?.runEvolutions?.[def.fusionFlag]));
+    const hasSkill = !!hasSkillOrEvolution(player, key);
     if (!hasSkill || out.some((def) => def && def.key === key)) continue;
     const def = (RUN_SKILLS || []).find((s) => s && s.key === key);
     out.push({ key, name: String(def?.name || key) });
@@ -255,25 +256,20 @@ function makeAffinityOffer(player, floor, slot, biomeKey) {
   };
 }
 
-function hasAnyBombEvolution(player) {
-  const evo = player?.runEvolutions || {};
-  return !!(evo.rocketFusion || evo.energyBombFusion || evo.fireBombFusion || evo.iceBombFusion);
-}
-
 function getEvolutionOffers(player, floor, slot) {
   const s = player?.runSkills || {};
-  const evo = player?.runEvolutions || {};
+  syncEvolutionState(player);
   if (hasAnyBombEvolution(player)) return [];
   if ((s.bombs | 0) < (MAX_RUN_SKILL_LEVEL.bombs || 6)) return [];
   const out = [];
   for (const def of EVOLUTION_DEFS) {
-    if (evo[def.fusionFlag]) continue;
+    if (isEvolutionUnlocked(player, def)) continue;
     if ((s[def.fromKey] | 0) < (MAX_RUN_SKILL_LEVEL[def.fromKey] || 6)) continue;
     if ((s[def.resultKey] | 0) > 0) continue;
     out.push({
-      id: mkOfferId(floor, slot, "evolution", def.evoKey, 1),
+      id: mkOfferId(floor, slot, "evolution", def.resultKey, 1),
       kind: "evolution",
-      key: def.evoKey,
+      key: def.resultKey,
       name: def.name,
       from: 0,
       to: 1,
