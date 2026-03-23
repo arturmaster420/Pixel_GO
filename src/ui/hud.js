@@ -1,6 +1,6 @@
 import { getControlMode } from "../core/mouseController.js";
 import { biomeByKey } from "../world/biomes.js";
-import { MAX_RUN_ACTIVE_SKILLS, RUN_SKILLS, EVOLUTION_DEFS } from "../core/runUpgrades.js";
+import { MAX_RUN_ACTIVE_SKILLS, RUN_SKILLS, getVisibleOwnedRunSkills } from "../core/runUpgrades.js";
 import { getStarterLoadoutDef } from "../core/starterLoadouts.js";
 import { getSkillDetailRows, getSkillTags, getSkillTypeColor, getSkillTypeLabel } from "../weapons/skillPresentation.js";
 import { BIOME_ESSENCE_KEYS, ESSENCE_META } from "../core/hubBuild.js";
@@ -17,16 +17,6 @@ const SKILL_NAME_BY_KEY = (() => {
 
 function getSkillName(key) {
   return SKILL_NAME_BY_KEY[String(key || "")] || String(key || "EMPTY");
-}
-
-function getStarterDisplayKey(state, player) {
-  const selectedKey = String(player?._selectedStarterLoadout || state?.progression?.selectedStarterLoadout || "mecha");
-  const starterDef = getStarterLoadoutDef(selectedKey);
-  const starterSkillKey = String(starterDef?.skillKey || "bullets");
-  const skills = player?.runSkills || {};
-  const evo = player?.runEvolutions || {};
-  const starterEvolution = (EVOLUTION_DEFS || []).find((def) => def && def.fromKey === starterSkillKey && (evo?.[def.fusionFlag] || ((skills?.[def.resultKey] | 0) > 0)));
-  return starterEvolution?.resultKey || starterSkillKey;
 }
 
 function drawCrystalIcon(ctx, x, y, size, color) {
@@ -70,37 +60,18 @@ function drawEssenceWallet(ctx, progression, infoX0, infoX1, infoY) {
 
 function getBuildSlots(state) {
   const player = state?.player || null;
-  const skills = player?.runSkills || {};
-  const slots = [];
-  const used = new Set();
-  const starterKey = getStarterDisplayKey(state, player);
-  const starterLevel = Math.max(0, (skills?.[starterKey] | 0) || 0);
-  slots.push({
-    key: starterKey,
-    name: getSkillName(starterKey),
-    level: starterLevel,
-    typeLabel: getSkillTypeLabel(starterKey),
-    isCore: true,
+  const selectedKey = String(player?._selectedStarterLoadout || state?.progression?.selectedStarterLoadout || "mecha");
+  const starterDef = getStarterLoadoutDef(selectedKey);
+  const starterSkillKey = String(starterDef?.skillKey || "bullets");
+  const visible = getVisibleOwnedRunSkills(player, { coreKey: starterSkillKey, maxSlots: MAX_RUN_ACTIVE_SKILLS });
+  const slots = visible.map((entry) => ({
+    key: entry.key,
+    name: getSkillName(entry.key),
+    level: Math.max(0, entry.level | 0),
+    typeLabel: getSkillTypeLabel(entry.key),
+    isCore: !!entry.isCore,
     empty: false,
-  });
-  used.add(starterKey);
-
-  for (const def of RUN_SKILLS || []) {
-    const key = String(def?.key || "");
-    if (!key || used.has(key)) continue;
-    const level = (skills?.[key] | 0) || 0;
-    if (level <= 0) continue;
-    slots.push({
-      key,
-      name: String(def?.name || key),
-      level,
-      typeLabel: getSkillTypeLabel(key),
-      isCore: false,
-      empty: false,
-    });
-    used.add(key);
-    if (slots.length >= MAX_RUN_ACTIVE_SKILLS) break;
-  }
+  }));
 
   while (slots.length < MAX_RUN_ACTIVE_SKILLS) {
     slots.push({ key: '', name: 'EMPTY SLOT', level: 0, isCore: false, empty: true });

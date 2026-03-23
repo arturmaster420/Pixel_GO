@@ -293,7 +293,7 @@ function rocketParams(player) {
   const rMult = getTotalRangeMult(player);
   const dMult = getSkillDamageMult(player, 'rockets');
 
-  // Evolved rockets (obtained via fusion) are intended to feel like a big power spike.
+  // Evolved rockets are intended to feel like a big power spike as the upgraded gun route.
   // Level 1 rockets should be slightly stronger than MAX Basic Shot + MAX Bombs combined.
   const count = 1 + Math.floor((lvl - 1) / 4);
   const dmgBase = 150 + (lvl - 1) * 28;

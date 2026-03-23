@@ -29,8 +29,10 @@ function getTexture(url) {
   const img = new Image();
   entry = { img, loaded: false, error: false, url };
   img.onload = () => {
-    entry.loaded = true;
+    const isPlaceholder = Number(img.naturalWidth || img.width || 0) <= 1 && Number(img.naturalHeight || img.height || 0) <= 1;
+    entry.loaded = !isPlaceholder;
     entry.error = false;
+    entry.placeholder = isPlaceholder;
   };
   img.onerror = () => {
     entry.loaded = false;
@@ -55,8 +57,8 @@ export function getBiomeArtSignature(biomeKey) {
   const bg = assets.bg;
   const overlay = assets.overlay;
   return [
-    bg?.url || '', bg?.loaded ? '1' : (bg?.error ? 'e' : '0'),
-    overlay?.url || '', overlay?.loaded ? '1' : (overlay?.error ? 'e' : '0'),
+    bg?.url || '', bg?.loaded ? '1' : (bg?.placeholder ? 'p' : (bg?.error ? 'e' : '0')),
+    overlay?.url || '', overlay?.loaded ? '1' : (overlay?.placeholder ? 'p' : (overlay?.error ? 'e' : '0')),
   ].join('|');
 }
 
