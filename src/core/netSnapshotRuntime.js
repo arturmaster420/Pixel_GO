@@ -4,10 +4,11 @@ import { applyLimitsToPlayer } from "./progression.js";
 import { ensureHubProgression, applyHubBuildToPlayer, applyProgressionSpToPlayer } from "./hubBuild.js";
 import { offerNeedsReplace } from "./floorShop.js";
 import { getAttackRangeForPlayer } from "../weapons/skillSystem.js";
-import { getPlayersArr, pickColorForId } from "./netPlayerRuntime.js";
+import { buildProjectedProgFromMeta, getPlayersArr, pickColorForId, sanitizeHeroCombatSummary, sanitizeHeroLoadoutSummary } from "./netPlayerRuntime.js";
 import { renderBiomeUnit, biomeKeyFromKind, biomeStyleForKey, biomeRoleFromKind } from "../enemies/biomeVisuals.js";
 import { hideFloorShopOverlay } from "../ui/floorShopDom.js";
 import { isDirectResourceOrbKind } from "./progressionRuntime.js";
+import { WORLD_SCALE } from "../world/zoneController.js";
 
 const NET_RUN_SKILL_ORDER = [
   "bullets", "bombs", "rockets", "energyBomb", "fireBomb", "iceBomb",
@@ -82,6 +83,11 @@ export function serializePlayerState(state) {
       nickname: p.nickname || "",
       avatarIndex: p.avatarIndex || 0,
       auraId: p.auraId || 0,
+      hid: String(p.activeHeroId || '').slice(0, 24),
+      hn: String(p.activeHeroName || p.nickname || '').slice(0, 24),
+      hr: String(p.activeHeroRace || p._selectedStarterLoadout || '').slice(0, 12),
+      hpw: Math.max(0, (Number(p?._heroCombatSummary?.totalCardPower || p?._heroCombatProfile?.summary?.totalCardPower || 0) | 0) || 0),
+      hml: Math.max(1, (Number(p?._heroCombatSummary?.masteryLevel || p?._heroCombatProfile?.summary?.masteryLevel || 1) | 0) || 1),
       color: p.color || pickColorForId(p.id),
       aim: { x: q(p.lastAimDir?.x || 0), y: q(p.lastAimDir?.y || 0) },
       rs: encSkills(p),
@@ -189,19 +195,19 @@ export function applyPlayerStateToClient(state, pstate, callbacks = {}) {
       p.nickname = sp.nickname || `P${id}`;
       p.avatarIndex = typeof sp.avatarIndex === "number" ? (sp.avatarIndex|0) : 0;
       p.auraId = typeof sp.auraId === "number" ? (sp.auraId|0) : 0;
+      p.activeHeroId = (typeof sp.hid === 'string' && sp.hid.trim()) ? sp.hid.trim().slice(0, 24) : `hero_remote_${id}`;
+      p.activeHeroName = (typeof sp.hn === 'string' && sp.hn.trim()) ? sp.hn.trim().slice(0, 24) : (sp.nickname || `Hero ${id}`);
+      p.activeHeroRace = (typeof sp.hr === 'string' && sp.hr.trim()) ? sp.hr.trim() : 'mecha';
+      p._heroCombatSummary = sanitizeHeroCombatSummary({ totalCardPower: Number(sp.hpw || 0) || 0, sameRaceCards: 0, starBonusTotal: 0, equippedSkillCards: 0, equippedPassiveCards: 0, masteryLevel: Number(sp.hml || 1) || 1 });
       applyLimitsToPlayer(p, state.progression.limits);
       // Skill meta can be per-player (shop unlocks). If we have it from syncMeta, use it.
       const stored = state._netMetaById?.get(id) || null;
       p._metaSkillMeta = (stored && stored.skillMeta && typeof stored.skillMeta === "object") ? stored.skillMeta : (state.progression?.skillMeta || {});
       p._selectedStarterLoadout = (stored && typeof stored.selectedStarterLoadout === "string") ? stored.selectedStarterLoadout : (state.progression?.selectedStarterLoadout || "mecha");
-      const projectedProg = {
-        skillMeta: p._metaSkillMeta || {},
-        selectedStarterLoadout: p._selectedStarterLoadout || "mecha",
-        sp: Math.max(0, ((stored && stored.sp) | 0) || 0),
-        hubBuild: stored && stored.hubBuild && typeof stored.hubBuild === "object" ? stored.hubBuild : null,
-        hubGear: stored && stored.hubGear && typeof stored.hubGear === "object" ? stored.hubGear : null,
-        gearInventory: stored && stored.gearInventory && typeof stored.gearInventory === "object" ? stored.gearInventory : {},
-      };
+      const projectedProg = buildProjectedProgFromMeta(state.progression, stored, p._metaSkillMeta, p._selectedStarterLoadout);
+      projectedProg.activeHeroId = String(projectedProg.activeHeroId || stored?.activeHeroId || p.activeHeroId || `hero_remote_${id}`).trim() || `hero_remote_${id}`;
+      projectedProg.activeHeroName = String(projectedProg.activeHeroName || stored?.activeHeroName || p.activeHeroName || sp.nickname || `Hero ${id}`).trim().slice(0, 24) || `Hero ${id}`;
+      projectedProg.activeHeroRace = String(projectedProg.activeHeroRace || stored?.activeHeroRace || p.activeHeroRace || 'mecha').trim() || 'mecha';
       ensureHubProgression(projectedProg);
       applyHubBuildToPlayer(p, projectedProg);
       applyProgressionSpToPlayer(p, projectedProg);
@@ -276,6 +282,18 @@ export function applyPlayerStateToClient(state, pstate, callbacks = {}) {
     p.nickname = sp.nickname || p.nickname;
     p.avatarIndex = typeof sp.avatarIndex === "number" ? (sp.avatarIndex|0) : p.avatarIndex;
     if (typeof sp.auraId === "number") p.auraId = sp.auraId|0;
+    if (typeof sp.hid === 'string' && sp.hid.trim()) p.activeHeroId = sp.hid.trim().slice(0, 24);
+    if (typeof sp.hn === 'string' && sp.hn.trim()) p.activeHeroName = sp.hn.trim().slice(0, 24);
+    if (typeof sp.hr === 'string' && sp.hr.trim()) p.activeHeroRace = sp.hr.trim();
+    const snapHeroCombatSummary = sanitizeHeroCombatSummary({
+      totalCardPower: Number(sp.hpw || 0) || 0,
+      sameRaceCards: p._heroCombatSummary?.sameRaceCards || 0,
+      starBonusTotal: p._heroCombatSummary?.starBonusTotal || 0,
+      equippedSkillCards: p._heroCombatSummary?.equippedSkillCards || 0,
+      equippedPassiveCards: p._heroCombatSummary?.equippedPassiveCards || 0,
+      masteryLevel: Number(sp.hml || p._heroCombatSummary?.masteryLevel || 1) || 1,
+    });
+    if (snapHeroCombatSummary) p._heroCombatSummary = { ...(p._heroCombatSummary || {}), ...snapHeroCombatSummary };
     p.color = sp.color || p.color;
     if (sp.aim) {
       p.lastAimDir.x = sp.aim.x || 0;

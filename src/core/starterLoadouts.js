@@ -207,13 +207,14 @@ export function getStarterSkillKeyFromProgression(prog) {
   return getStarterLoadoutDef(prog?.selectedStarterLoadout).skillKey;
 }
 
-export function applyStarterLoadoutToPlayer(player, selectedKey) {
+export function applyStarterLoadoutToPlayer(player, selectedKey, opts = null) {
   if (!player || typeof player !== 'object') return null;
   const def = getStarterLoadoutDef(selectedKey);
   const s = player.runSkills && typeof player.runSkills === 'object' ? player.runSkills : (player.runSkills = {});
+  const grantSkill = !(opts && typeof opts === 'object' && opts.grantSkill === false);
 
   for (const starterDef of STARTER_LOADOUTS) s[starterDef.skillKey] = 0;
-  s[def.skillKey] = Math.max(1, (s[def.skillKey] | 0) || 0);
+  if (grantSkill) s[def.skillKey] = Math.max(1, (s[def.skillKey] | 0) || 0);
 
   player._starterLoadoutKey = def.key;
   player._starterSkillKey = def.skillKey;

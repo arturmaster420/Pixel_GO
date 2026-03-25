@@ -35,15 +35,50 @@ import {
   screenToWorld,
   findNpcAtWorldPos,
 } from "../world/hubNpcs.js";
-import { clearSavedRunCheckpoint } from "./checkpointRuntime.js";
-import { getPlayerById, getPlayersArr, pickColorForId, syncHostPlayersFromRoomInfo } from "./netPlayerRuntime.js";
+import { clearSavedRunCheckpoint, loadSavedRunCheckpoint, restoreRunCheckpointIntoState, saveRunCheckpointFromState } from "./checkpointRuntime.js";
+import { applyNetMetaToPlayer, getPlayerById, getPlayersArr, pickColorForId, syncHostPlayersFromRoomInfo } from "./netPlayerRuntime.js";
 import { applyPlayerStateToClient, applySnapshotToClient, maybeSendPlayerState, maybeSendSnapshot, smoothNetEntities, updateNetVisualProjectiles } from "./netSnapshotRuntime.js";
 import { buildFloorShopChoices, canPlayerUseFloorShop, ensureFloorShopForPlayer, getCurrentFloorShopBiomeKey, getCurrentFloorShopFloor, getLiveFloorShopOfferForPlayer, openFloorShopOverlay, openFloorShopReplaceOverlay, performFloorShopPurchase, performFloorShopReroll, tryOpenFloorShop } from "./floorShopRuntime.js";
 import { REVIVE_CHANNEL_SEC, REVIVE_INTERACT_R, clearTransientWorldStateForHub, getAliveOtherPlayersCount, getCurrentDeathContinueCost, handleDeathContinueAction, maybeEnterDeathContinueOverlay, processRespawnRequests, respawnPlayerToHub, returnRunToHub, returnRunToHubWithProgress, revivePlayerIntoCurrentRun, startReviveById, updateRevives } from "./lifecycleRuntime.js";
 import { renderFloatingTexts, updateFloatingTexts, updatePopups, updateXPOrbs } from "./resourceOrbUiRuntime.js";
+import { applyProgressionPayloadToLocal, getLocalProgressionAliases } from "./progressionRuntime.js";
+import { applyResurrection } from "./progression.js";
+import { hideFloorShopOverlay } from "../ui/floorShopDom.js";
 import { updateArenaHazards, updatePlayers, updateWeapons } from "./playerRuntime.js";
 import { checkPlayerDeath, updateEnemies, updateProjectiles, updateSkillFx } from "./combatRuntime.js";
 import { renderBuffAuras, renderEnemies, renderHPBarsWorld, renderPersistentHubCoreOverlay, renderPlayers, renderPopups, renderProjectiles, renderSkillFxWorld, renderSummons, renderWorldBackground, renderXPOrbs } from "./gameRenderRuntime.js";
+
+
+function reportRuntimePhaseError(state, label, err) {
+  try {
+    const msg = `${label}: ${err && err.message ? err.message : String(err)}`;
+    if (typeof console !== 'undefined' && console.error) console.error('[Pixel_GO runtime]', msg, err);
+    state._runtimeErrors ||= new Map();
+    const prev = state._runtimeErrors.get(label) || { count: 0, lastAt: 0 };
+    const now = Number(state.time || 0);
+    prev.count = (prev.count | 0) + 1;
+    prev.lastAt = now;
+    prev.message = msg;
+    state._runtimeErrors.set(label, prev);
+    state._runtimeLastError = msg;
+    if (state.popups) {
+      const shouldPopup = !prev._popupAt || (now - prev._popupAt) > 2.0;
+      if (shouldPopup) {
+        state.popups.push({ text: `Runtime: ${label}`, time: 2.5 });
+        prev._popupAt = now;
+      }
+    }
+  } catch {}
+}
+
+function runPhaseSafe(state, label, fn, fallback = undefined) {
+  try {
+    return fn();
+  } catch (err) {
+    reportRuntimePhaseError(state, label, err);
+    return fallback;
+  }
+}
 
 export function createGame(canvas, ctx, progression) {
   initInput();
@@ -175,18 +210,32 @@ export function createGame(canvas, ctx, progression) {
         }
       } catch {}
 
+      const shouldResumeSavedRun = !!(state._savedRunResumeAvailable && state._hubResumeRunActive && state.player);
+
       // Enter the run immediately (Host/Join/FastJoin -> gameplay).
       // Start Menu is only for setup / fallback Start button.
+      // Critical: rebuild a fresh runtime from CURRENT progression before play.
+      // Otherwise the preview-run player created at boot can carry stale skills into arena.
       clearLegacyRunUpgradeState(state, { clearSessions: true });
       try { hideFloorShopOverlay(); } catch {}
       state._floorShopActive = false;
       state.overlayMode = null;
-      if (state.player) {
+      if (!shouldResumeSavedRun) {
+        startNewRun(state);
+      } else if (state.player) {
         state.player._lvlUpChoosing = false;
         state.player._lvlUpInvuln = false;
       }
+
+      // Drop stale net caches before entering gameplay so a just-connected client
+      // cannot briefly reuse an old snapshot/player-state from a previous room/session.
+      if (state.net) {
+        state.net.latestSnapshot = null;
+        state.net.latestPlayerState = null;
+      }
+
       if (state.net.isHost) {
-        // Host immediately plays. Keep existing world, but ensure local player id matches server id.
+        // Host immediately plays. Runtime must already be rebuilt from current progression.
         if (state.player) {
           state.player.id = String(state.net.playerId);
           state.player.color = pickColorForId(state.player.id);
@@ -199,6 +248,7 @@ export function createGame(canvas, ctx, progression) {
         state.paused = false;
       } else {
         // Joiner plays immediately; snapshots will correct world state.
+        // We still rebuild the local runtime first so current hero skills/cards are clean until first snapshot.
         if (state.player && state.net.playerId) {
           state.player.id = String(state.net.playerId);
           state.player.color = pickColorForId(state.player.id);
@@ -432,7 +482,7 @@ export function createGame(canvas, ctx, progression) {
         }
       }
 
-      updatePopups(state, dt);
+      runPhaseSafe(state, "updatePopups", () => updatePopups(state, dt));
 
       if (state.mode === "playing") {
         sendLocalInputToHost(state);
@@ -455,7 +505,7 @@ export function createGame(canvas, ctx, progression) {
         updateNetVisualProjectiles(state, dt);
         // Keep camera following our local player smoothly
         if (state.camera && state.player) {
-          state.camera.update(state.player, dt, state);
+          runPhaseSafe(state, "camera.update", () => state.camera.update(state.player, dt, state));
         }
 
         syncPersistentRunUnlocks(state);
@@ -472,13 +522,13 @@ export function createGame(canvas, ctx, progression) {
 
     if (state.mode !== "playing") {
       // Only animate popups (e.g., death screen messages) when not in gameplay
-      updatePopups(state, dt);
+      runPhaseSafe(state, "updatePopups", () => updatePopups(state, dt));
       return;
     }
 
     if (state.paused) {
       // When paused: don't move entities or advance timers except popups
-      updatePopups(state, dt);
+      runPhaseSafe(state, "updatePopups", () => updatePopups(state, dt));
       return;
     }
 
@@ -488,10 +538,10 @@ export function createGame(canvas, ctx, progression) {
     if (state._lightningVisuals && typeof state._lightningVisuals.clear === "function") state._lightningVisuals.clear();
     state._laserVisual = null;
     state._lightningVisual = null;
-    updateBuffs(state, dt);
-    updatePlayers(state, dt, online, { syncPersistentRunUnlocks });
+    runPhaseSafe(state, "updateBuffs", () => updateBuffs(state, dt));
+    runPhaseSafe(state, "updatePlayers", () => updatePlayers(state, dt, online, { syncPersistentRunUnlocks }));
 
-    updateRevives(state, dt);
+    runPhaseSafe(state, "updateRevives", () => updateRevives(state, dt));
 
     // Permanent HP regen from meta bonuses + in-run regen (HP/s)
     const regenPerSec = (state.player.metaHpRegen || 0) + (state.player.runHpRegen || 0);
@@ -502,12 +552,12 @@ export function createGame(canvas, ctx, progression) {
       );
     }
 
-    updateArenaHazards(state, dt);
+    runPhaseSafe(state, "updateArenaHazards", () => updateArenaHazards(state, dt));
 
     // Pixel_GO: no radial zones.
 
-    updateWeapons(state, dt, online);
-    state.spawnSystem.update(dt);
+    runPhaseSafe(state, "updateWeapons", () => updateWeapons(state, dt, online));
+    runPhaseSafe(state, "spawnSystem.update", () => state.spawnSystem.update(dt));
 
     // Track HP drops to mark combat (used by out-of-combat upgrade gating).
     const _hpBefore = new Map();
@@ -516,7 +566,7 @@ export function createGame(canvas, ctx, progression) {
       _hpBefore.set(String(pp.id || "local"), pp.hp);
     }
 
-    updateEnemies(state, dt);
+    runPhaseSafe(state, "updateEnemies", () => updateEnemies(state, dt));
 
     for (const pp of getPlayersArr(state)) {
       if (!pp) continue;
@@ -527,10 +577,10 @@ export function createGame(canvas, ctx, progression) {
     }
 
     // Biome skill effects that act on enemies/world (blackholes, ice walls, heal pulses, explosions).
-    updateSkillFx(state, dt);
+    runPhaseSafe(state, "updateSkillFx", () => updateSkillFx(state, dt));
 
-    updateProjectiles(state, dt);
-    updateXPOrbs(state, dt);
+    runPhaseSafe(state, "updateProjectiles", () => updateProjectiles(state, dt));
+    runPhaseSafe(state, "updateXPOrbs", () => updateXPOrbs(state, dt));
 
     // Run level-up flow (Magic Survival style)
     if (online && state.net && state.net.isHost) {
@@ -542,8 +592,8 @@ export function createGame(canvas, ctx, progression) {
 
     updateRunUpgradeAvailability(state);
 
-    updateFloatingTexts(state, dt);
-    updatePopups(state, dt);
+    runPhaseSafe(state, "updateFloatingTexts", () => updateFloatingTexts(state, dt));
+    runPhaseSafe(state, "updatePopups", () => updatePopups(state, dt));
 
     // Pixel_GO: room transitions + collapse
     if (state.roomDirector && typeof state.roomDirector.update === "function") {
@@ -555,7 +605,7 @@ export function createGame(canvas, ctx, progression) {
       }
     }
 
-    state.camera.update(state.player, dt, state);
+    runPhaseSafe(state, "camera.update", () => state.camera.update(state.player, dt, state));
 
     syncPersistentRunUnlocks(state);
 
@@ -565,9 +615,9 @@ export function createGame(canvas, ctx, progression) {
     }
     maybeEnterDeathContinueOverlay(state);
     if (online) {
-      processRespawnRequests(state, { isOnline, startNewRun, syncPersistentRunUnlocks });
-      maybeSendPlayerState(state, dt);
-      maybeSendSnapshot(state, dt);
+      runPhaseSafe(state, "processRespawnRequests", () => processRespawnRequests(state, { isOnline, startNewRun, syncPersistentRunUnlocks }));
+      runPhaseSafe(state, "maybeSendPlayerState", () => maybeSendPlayerState(state, dt));
+      runPhaseSafe(state, "maybeSendSnapshot", () => maybeSendSnapshot(state, dt));
     }
   }
 
@@ -615,28 +665,27 @@ function render() {
     // World space (with camera): zones + world grid live in world coordinates
     state.camera.applyTransform(ctx);
 
-    renderWorldBackground(state, ctx);
-    renderHubNpcs(ctx, state);
-    renderXPOrbs(state, ctx);
-    renderSkillFxWorld(state, ctx);
-    renderEnemies(state, ctx);
-    renderSummons(state, ctx);
-    renderProjectiles(state, ctx);
-    renderPlayers(state, ctx);
-    renderPersistentHubCoreOverlay(ctx, state);
-    renderHPBarsWorld(state, ctx);
-    renderBuffAuras(state, ctx);
+    runPhaseSafe(state, "renderWorldBackground", () => renderWorldBackground(state, ctx));
+    runPhaseSafe(state, "renderHubNpcs", () => renderHubNpcs(ctx, state));
+    runPhaseSafe(state, "renderXPOrbs", () => renderXPOrbs(state, ctx));
+    runPhaseSafe(state, "renderSkillFxWorld", () => renderSkillFxWorld(state, ctx));
+    runPhaseSafe(state, "renderEnemies", () => renderEnemies(state, ctx));
+    runPhaseSafe(state, "renderSummons", () => renderSummons(state, ctx));
+    runPhaseSafe(state, "renderProjectiles", () => renderProjectiles(state, ctx));
+    runPhaseSafe(state, "renderPlayers", () => renderPlayers(state, ctx));
+    runPhaseSafe(state, "renderPersistentHubCoreOverlay", () => renderPersistentHubCoreOverlay(ctx, state));
+    runPhaseSafe(state, "renderHPBarsWorld", () => renderHPBarsWorld(state, ctx));
+    runPhaseSafe(state, "renderBuffAuras", () => renderBuffAuras(state, ctx));
 
-    state.camera.resetTransform(ctx);
+    runPhaseSafe(state, "camera.resetTransform", () => state.camera.resetTransform(ctx));
 
-    renderFloatingTexts(ctx, state);
+    runPhaseSafe(state, "renderFloatingTexts", () => renderFloatingTexts(ctx, state));
 
-    // HUD only during gameplay
     if (state.mode === "playing") {
-      renderHUD(ctx, state);
+      runPhaseSafe(state, "renderHUD", () => renderHUD(ctx, state));
     }
 
-    renderPopups(ctx, state);
+    runPhaseSafe(state, "renderPopups", () => renderPopups(ctx, state));
 
     // Online overlays (death screens) that must not stop the host simulation.
     if (state.overlayMode === "deathContinue") {

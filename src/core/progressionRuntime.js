@@ -1,9 +1,12 @@
 import { saveProgression } from './progression.js';
 import { ESSENCE_META, applyHubProgressionLoot, ensureHubProgression, getHubGearDef, getMaterialMeta } from './hubBuild.js';
+import { getCardDefById } from './cards/cardDefs.js';
 
 export function summarizeProgPayload(payload) {
   if (!payload || typeof payload !== 'object') return '';
   const lines = [];
+  const coinGain = Math.max(0, Number(payload.coins || 0) | 0);
+  if (coinGain > 0) lines.push(`+${coinGain} Gold`);
   const spGain = Math.max(0, Number(payload.sp || 0) | 0);
   if (spGain > 0) lines.push(`+${spGain} SP`);
   const essences = payload.essences && typeof payload.essences === 'object' ? payload.essences : {};
@@ -12,6 +15,13 @@ export function summarizeProgPayload(payload) {
     if (amount <= 0) continue;
     const meta = ESSENCE_META[String(key || '').toLowerCase()] || ESSENCE_META.mecha;
     lines.push(`+${amount} ${meta.short || meta.label}`);
+  }
+  const raceDust = payload.raceDust && typeof payload.raceDust === 'object' ? payload.raceDust : {};
+  for (const [key, raw] of Object.entries(raceDust)) {
+    const amount = Math.max(0, Number(raw || 0) | 0);
+    if (amount <= 0) continue;
+    const meta = ESSENCE_META[String(key || '').toLowerCase()] || ESSENCE_META.mecha;
+    lines.push(`+${amount} ${meta.short || meta.label} Dust`);
   }
   const materials = payload.materials && typeof payload.materials === 'object' ? payload.materials : {};
   for (const [key, raw] of Object.entries(materials)) {
@@ -33,6 +43,27 @@ export function summarizeProgPayload(payload) {
     if (amount <= 0) continue;
     const def = getHubGearDef(key);
     if (def) lines.push(`DROP: ${def.name}`);
+  }
+  const cardShards = payload.cardShards && typeof payload.cardShards === 'object' ? payload.cardShards : {};
+  for (const [key, raw] of Object.entries(cardShards)) {
+    const amount = Math.max(0, Number(raw || 0) | 0);
+    if (amount <= 0) continue;
+    const def = getCardDefById(key);
+    lines.push(`+${amount} ${(def?.name || key)} Shard${amount === 1 ? '' : 's'}`);
+  }
+  const cardCopies = payload.cardCopies && typeof payload.cardCopies === 'object' ? payload.cardCopies : {};
+  for (const [key, raw] of Object.entries(cardCopies)) {
+    const amount = Math.max(0, Number(raw || 0) | 0);
+    if (amount <= 0) continue;
+    const def = getCardDefById(key);
+    lines.push(`+${amount} ${(def?.name || key)} Cop${amount === 1 ? 'y' : 'ies'}`);
+  }
+  const heroBiomeXp = payload.heroBiomeXp && typeof payload.heroBiomeXp === 'object' ? payload.heroBiomeXp : {};
+  for (const [key, raw] of Object.entries(heroBiomeXp)) {
+    const amount = Math.max(0, Number(raw || 0) | 0);
+    if (amount <= 0) continue;
+    const meta = ESSENCE_META[String(key || '').toLowerCase()] || ESSENCE_META.mecha;
+    lines.push(`+${amount} ${meta.short || meta.label} Mastery XP`);
   }
   return lines.join(' • ');
 }

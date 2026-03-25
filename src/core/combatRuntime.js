@@ -8,6 +8,7 @@ import { HUB_HALF, HUB_CORNER_R, isPointInHub } from "../world/zoneController.js
 import { applyCritToDamage, applyLifeSteal } from "./progression.js";
 import { getPlayerById } from "./netPlayerRuntime.js";
 import { maybeEnterDeathContinueOverlay } from "./lifecycleRuntime.js";
+import { applyFireBurnState, applyIceControlState, explodeBurningEnemy, resolveBurnOwner } from "./heroBiomeCombat.js";
 
 export function updateSkillFx(state, dt) {
   if (!state) return;
@@ -55,6 +56,12 @@ export function updateEnemies(state, dt) {
         if (typeof e._frostLeft === 'number' && e._frostLeft > 0) {
           e._frostLeft -= dt;
           if (e._frostLeft <= 0) { e._frostLeft = 0; e._frostLv = 0; }
+        }
+        if (typeof e._freezeBuild === 'number' && e._freezeBuild > 0) {
+          e._freezeBuild = Math.max(0, e._freezeBuild - dt * 0.18);
+        }
+        if (typeof e._frozenUntil === 'number' && e._frozenUntil <= state.time) {
+          e._frozenUntil = 0;
         }
         if (typeof e._curseLeft === 'number' && e._curseLeft > 0) {
           e._curseLeft -= dt;
@@ -166,6 +173,7 @@ export function updateEnemies(state, dt) {
     } catch {}
 
     if (e.hp <= 0 || e._remove) {
+      try { explodeBurningEnemy(resolveBurnOwner(state, e), e, state); } catch {}
       // Light affinity: heal the killer on kill.
       try {
         const killerId = e && e._lastHitBy != null ? String(e._lastHitBy) : "";
@@ -237,8 +245,11 @@ export function updateProjectiles(state, dt) {
         const owner = getPlayerById(state, b.ownerId) || state.player;
         let dmg = applyCritToDamage(owner, b.damage);
         if (b.type === 'iceShard') {
-          e._frostLeft = Math.max((e._frostLeft || 0), 1.6);
-          e._frostLv = Math.max((e._frostLv || 0), 1);
+          applyIceControlState(owner, e, state, { frostDur: 1.6, slowDur: 0.85, slowMult: 0.78, freezeBuild: 0.52 });
+        }
+        if (b.type === 'spiritShot') {
+          e._curseLeft = Math.max((e._curseLeft || 0), Number(b.curseDur || 1.1));
+          e._curseLv = Math.max((e._curseLv || 0), Number(b.curseLv || 1));
         }
 
         // Biome marks (Ice/Dark) increase damage vs marked targets.
@@ -271,13 +282,11 @@ export function updateProjectiles(state, dt) {
           if (fireLv > 0) {
             const dur = 1.4 + fireLv * 0.35;
             const dps = Math.max((e._burnDps || 0), 2.2 + fireLv * 1.35);
-            e._burnLeft = Math.max((e._burnLeft || 0), dur);
-            e._burnDps = dps;
+            applyFireBurnState(owner, e, dur, dps, 0.7);
           }
 
           if (iceLv > 0) {
-            e._frostLeft = Math.max((e._frostLeft || 0), 2.0);
-            e._frostLv = Math.max((e._frostLv || 0), iceLv);
+            applyIceControlState(owner, e, state, { frostDur: 2.0, slowDur: 0.95, slowMult: 0.74, freezeBuild: 0.40 + iceLv * 0.08 });
           }
 
           if (darkLv > 0) {
@@ -396,12 +405,10 @@ export function explodeRocket(rocket, state) {
         if (fireLv > 0) {
           const dur = 1.2 + fireLv * 0.35;
           const dps = Math.max((e._burnDps || 0), 2.0 + fireLv * 1.25);
-          e._burnLeft = Math.max((e._burnLeft || 0), dur);
-          e._burnDps = dps;
+          applyFireBurnState(owner, e, dur, dps, 0.65);
         }
         if (iceLv > 0) {
-          e._frostLeft = Math.max((e._frostLeft || 0), 1.8);
-          e._frostLv = Math.max((e._frostLv || 0), iceLv);
+          applyIceControlState(owner, e, state, { frostDur: 1.8, slowDur: 0.9, slowMult: 0.76, freezeBuild: 0.36 + iceLv * 0.08 });
         }
         if (darkLv > 0) {
           e._curseLeft = Math.max((e._curseLeft || 0), 2.2);
@@ -412,14 +419,9 @@ export function explodeRocket(rocket, state) {
       if (kind === 'fireBomb') {
         const burnDur = Math.max((e._burnLeft || 0), Number(rocket.burnDur || 1.4));
         const burnDps = Math.max((e._burnDps || 0), Number(rocket.burnDps || 6));
-        e._burnLeft = burnDur;
-        e._burnDps = burnDps;
+        applyFireBurnState(owner, e, burnDur, burnDps, 1.0);
       } else if (kind === 'iceBomb') {
-        e._frostLeft = Math.max((e._frostLeft || 0), Number(rocket.frostDur || 1.6));
-        e._frostLv = Math.max((e._frostLv || 0), 1);
-        const now = Number.isFinite(state.time) ? state.time : 0;
-        e._barrierDebuffUntil = Math.max((e._barrierDebuffUntil || 0), now + Math.max(0.35, Number(rocket.slowDur || 1.0)));
-        e._barrierSlowMult = Math.min((e._barrierSlowMult || 1), Math.max(0.18, Math.min(0.92, Number(rocket.slowMult || 0.72))));
+        applyIceControlState(owner, e, state, { frostDur: Number(rocket.frostDur || 1.6), slowDur: Number(rocket.slowDur || 1.0), slowMult: Number(rocket.slowMult || 0.72), freezeBuild: 0.74 });
       }
     }
   }

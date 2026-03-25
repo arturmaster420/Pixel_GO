@@ -1,4 +1,5 @@
 import { getStarterLoadoutDef, normalizeStarterLoadoutKey } from "../starterLoadouts.js";
+import { getActiveHero, normalizeHeroRaceKey } from "../accountProfile.js";
 import {
   ACTIVE_SKILL_KEYS,
   BIOME_ESSENCE_KEYS,
@@ -123,9 +124,10 @@ export function ensureHubProgression(prog) {
   prog.gearInventory = sanitizeGearInventory(prog.gearInventory);
   prog.hubBuildMetaVersion = HUB_BUILD_META_VERSION;
 
-  const selected = normalizeStarterLoadoutKey(prog?.hubBuild?.coreKey || prog?.selectedStarterLoadout || "mecha");
+  const activeHeroRace = normalizeHeroRaceKey(getActiveHero(prog)?.race || prog?.selectedStarterLoadout || "mecha");
+  const selected = normalizeStarterLoadoutKey(activeHeroRace || prog?.hubBuild?.coreKey || prog?.selectedStarterLoadout || "mecha");
   const hb = prog.hubBuild && typeof prog.hubBuild === "object" ? prog.hubBuild : defaultHubBuild(selected);
-  const coreKey = normalizeStarterLoadoutKey(hb.coreKey || selected);
+  const coreKey = normalizeStarterLoadoutKey(activeHeroRace || hb.coreKey || selected);
   const coreSkillKey = getStarterLoadoutDef(coreKey).skillKey;
 
   hb.coreKey = coreKey;
@@ -139,7 +141,8 @@ export function ensureHubProgression(prog) {
 
 export function getHubCoreKey(prog) {
   ensureHubProgression(prog);
-  return normalizeStarterLoadoutKey(prog?.hubBuild?.coreKey || prog?.selectedStarterLoadout || "mecha");
+  const activeHeroRace = normalizeHeroRaceKey(getActiveHero(prog)?.race || prog?.selectedStarterLoadout || "mecha");
+  return normalizeStarterLoadoutKey(activeHeroRace || prog?.hubBuild?.coreKey || prog?.selectedStarterLoadout || "mecha");
 }
 
 export function getHubBuildSpentPoints(prog) {
@@ -203,13 +206,15 @@ export function setHubPassiveLevel(prog, key, nextLevel) {
 
 export function setHubCoreKey(prog, key) {
   ensureHubProgression(prog);
-  const coreKey = normalizeStarterLoadoutKey(key);
-  if (prog.hubBuild.coreKey === coreKey && prog.selectedStarterLoadout === coreKey) return false;
+  const activeHeroRace = normalizeHeroRaceKey(getActiveHero(prog)?.race || prog?.selectedStarterLoadout || "mecha");
+  const requested = normalizeStarterLoadoutKey(key);
+  const coreKey = activeHeroRace || requested;
+  const changed = !(prog.hubBuild.coreKey === coreKey && prog.selectedStarterLoadout === coreKey);
   prog.hubBuild.coreKey = coreKey;
   prog.selectedStarterLoadout = coreKey;
   const coreSkillKey = getStarterLoadoutDef(coreKey).skillKey;
   prog.hubBuild.skills = sanitizeSkills(prog.hubBuild.skills, prog, coreSkillKey);
-  return true;
+  return changed && requested === coreKey;
 }
 
 export function resetHubBuildAllocations(prog) {

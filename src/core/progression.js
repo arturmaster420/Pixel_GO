@@ -3,6 +3,7 @@ const STORAGE_KEY = "btm_progress";
 import { clampAvatarIndex } from "./avatars.js";
 import { clampAuraId } from "./auras.js";
 import { defaultEssences, defaultGearInventory, defaultGearParts, defaultHubBuild, defaultHubGear, defaultMaterials, ensureHubProgression } from "./hubBuild.js";
+import { applyActiveHeroToLegacyProgression, applySharedAccountResourcesToLegacyProgression, captureActiveHeroLegacyState, captureSharedLegacyResourcesToAccount, defaultAccountProfile, defaultCardCollection, ensureAccountProgression } from "./accountProfile.js";
 
 export const MAX_R_TIER = 15;
 
@@ -95,7 +96,10 @@ export function defaultProgression() {
     hubBuild: defaultHubBuild("mecha"),
     hubGear: defaultHubGear(),
     hubBuildMetaVersion: 4,
-    metaVersion: 9,
+    metaVersion: 10,
+    accountProfile: defaultAccountProfile(),
+    heroes: [],
+    activeHeroId: "hero_1",
     // Dev override: keep all R-Tiers unlocked by default.
     resurrectedTier: MAX_R_TIER,
     resGuardianKills: 0,
@@ -197,6 +201,7 @@ export function loadProgression() {
 
     const parsed = JSON.parse(raw) || {};
     const base = defaultProgression();
+    const hasNestedAccount = !!((parsed.accountProfile && typeof parsed.accountProfile === "object") || (Array.isArray(parsed.heroes) && parsed.heroes.length));
 
     const data = {
       nickname:
@@ -223,6 +228,9 @@ export function loadProgression() {
       hubGear: (parsed.hubGear && typeof parsed.hubGear === "object") ? parsed.hubGear : defaultHubGear(),
       hubBuildMetaVersion: (typeof parsed.hubBuildMetaVersion === "number" && Number.isFinite(parsed.hubBuildMetaVersion)) ? (parsed.hubBuildMetaVersion | 0) : (base.hubBuildMetaVersion | 0),
       metaVersion: (typeof parsed.metaVersion === "number" && Number.isFinite(parsed.metaVersion)) ? (parsed.metaVersion | 0) : (base.metaVersion | 0),
+      accountProfile: (parsed.accountProfile && typeof parsed.accountProfile === "object") ? parsed.accountProfile : defaultAccountProfile(),
+      heroes: Array.isArray(parsed.heroes) ? parsed.heroes : [],
+      activeHeroId: (typeof parsed.activeHeroId === "string" && parsed.activeHeroId.trim()) ? parsed.activeHeroId.trim() : base.activeHeroId,
       resurrectedTier:
         typeof parsed.resurrectedTier === "number"
           ? parsed.resurrectedTier
@@ -267,6 +275,17 @@ export function loadProgression() {
     data.auraId = clampAuraId(data.auraId);
 
     ensureHubProgression(data);
+    ensureAccountProgression(data);
+    if (hasNestedAccount) {
+      applySharedAccountResourcesToLegacyProgression(data);
+      applyActiveHeroToLegacyProgression(data);
+      ensureHubProgression(data);
+    }
+    captureActiveHeroLegacyState(data);
+    captureSharedLegacyResourcesToAccount(data);
+    if (!data.accountProfile.cardCollection || typeof data.accountProfile.cardCollection !== "object") {
+      data.accountProfile.cardCollection = defaultCardCollection();
+    }
     return data;
   } catch (err) {
     console.error("[Progression] Failed to load progression", err);
@@ -282,6 +301,9 @@ export function saveProgression(data) {
       data.deathPoints = pts;
     }
     ensureHubProgression(data);
+    ensureAccountProgression(data);
+    captureActiveHeroLegacyState(data);
+    captureSharedLegacyResourcesToAccount(data);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (err) {
     console.error("[Progression] Failed to save progression", err);

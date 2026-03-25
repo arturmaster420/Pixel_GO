@@ -2,13 +2,29 @@ import { saveProgression } from "./progression.js";
 import { ESSENCE_META, getHubGearDef, getMaterialMeta } from "./hubBuild.js";
 import { applyDirectResourceGrantToLocal, applyProgressionPayloadToLocal, getDirectResourcePayloadFromOrb, getLocalProgressionAliases, isDirectResourceOrbKind } from "./progressionRuntime.js";
 import { ensureShopMeta } from "../meta/shopMeta.js";
+import { getCardDefById } from "./cards/cardDefs.js";
 
 export function getProgPickupTint(orb) {
-  const payload = orb?.progPayload && typeof orb.progPayload === 'object' ? orb.progPayload : {};
+  const payload = orb?.progPayload && typeof orb.progPayload === 'object'
+    ? orb.progPayload
+    : (orb?.kind === 'essence'
+      ? { essences: { [String(orb.essenceKey || 'mecha')]: Math.max(1, Number(orb.amount || 1) | 0) } }
+      : (orb?.kind === 'material'
+        ? { materials: { [String(orb.materialKey || 'salvage')]: Math.max(1, Number(orb.amount || 1) | 0) } }
+        : (orb?.kind === 'gearPart'
+          ? { gearParts: { [String(orb.gearKey || '')]: Math.max(1, Number(orb.amount || 1) | 0) } }
+          : (orb?.kind === 'gearItem'
+            ? { gearItems: { [String(orb.gearKey || '')]: Math.max(1, Number(orb.amount || 1) | 0) } }
+            : {}))));
   const essences = payload.essences && typeof payload.essences === 'object' ? payload.essences : {};
   for (const key of Object.keys(essences)) {
     const meta = ESSENCE_META[String(key || '').toLowerCase()] || ESSENCE_META.mecha;
     return { fill: meta.accent || '#5af2ff', glow: meta.glow || meta.accent || '#5af2ff', glyph: '◆' };
+  }
+  const dust = payload.raceDust && typeof payload.raceDust === 'object' ? payload.raceDust : {};
+  for (const key of Object.keys(dust)) {
+    const meta = ESSENCE_META[String(key || '').toLowerCase()] || ESSENCE_META.mecha;
+    return { fill: meta.accent || '#ffab7a', glow: '#ffe1ca', glyph: '✧' };
   }
   const materials = payload.materials && typeof payload.materials === 'object' ? payload.materials : {};
   for (const key of Object.keys(materials)) {
@@ -27,6 +43,16 @@ export function getProgPickupTint(orb) {
   for (const key of Object.keys(items)) {
     const def = getHubGearDef(key);
     return { fill: '#ff8a6b', glow: '#ffd8cb', glyph: (def?.short || def?.name || 'I')[0] || 'I' };
+  }
+  const cardShards = payload.cardShards && typeof payload.cardShards === 'object' ? payload.cardShards : {};
+  for (const key of Object.keys(cardShards)) {
+    const def = getCardDefById(key);
+    return { fill: '#b99dff', glow: '#ecdfff', glyph: String(def?.name || 'S')[0] || 'S' };
+  }
+  const cardCopies = payload.cardCopies && typeof payload.cardCopies === 'object' ? payload.cardCopies : {};
+  for (const key of Object.keys(cardCopies)) {
+    const def = getCardDefById(key);
+    return { fill: '#7fffd3', glow: '#e0fff4', glyph: String(def?.name || 'C')[0] || 'C' };
   }
   return { fill: '#5af2ff', glow: '#c8fbff', glyph: '+' };
 }

@@ -9,6 +9,16 @@ import { ensureStarterLoadoutProgression } from './starterLoadouts.js';
 import { hideFloorShopOverlay } from '../ui/floorShopDom.js';
 import { applyRunDerivedStats } from './runUpgrades.js';
 import { restoreEvolutionSnapshot } from './skillEvolutionDefs.js';
+import {
+  applyActiveHeroToLegacyProgression,
+  clearAllHeroExpeditionStates,
+  createHeroProfile,
+  getActiveHero,
+  getActiveHeroSummary,
+  getHeroById,
+  setHeroExpeditionState,
+  syncHeroLoadoutToLegacyBridge,
+} from './accountProfile.js';
 
 export const RUN_CHECKPOINT_STORAGE_KEY = 'pixelgo_run_checkpoint_v1';
 
@@ -20,14 +30,133 @@ export function cloneJsonSafe(value, fallback = null) {
   }
 }
 
+
+function normalizeCheckpointCardArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : String(entry || '').trim()))
+    .filter(Boolean);
+}
+
+function areCardLoadoutsEqual(a, b) {
+  const left = normalizeCheckpointCardArray(a);
+  const right = normalizeCheckpointCardArray(b);
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+function getCheckpointLoadoutSnapshot(playerData = {}) {
+  const explicit = playerData?.checkpointLoadout && typeof playerData.checkpointLoadout === 'object' ? playerData.checkpointLoadout : null;
+  return {
+    heroId: String(explicit?.heroId || playerData.activeHeroId || '').trim(),
+    equippedSkillCards: normalizeCheckpointCardArray(explicit?.equippedSkillCards ?? playerData.equippedSkillCards),
+    equippedPassiveCards: normalizeCheckpointCardArray(explicit?.equippedPassiveCards ?? playerData.equippedPassiveCards),
+  };
+}
+
+function getHeroLoadoutSnapshot(hero = null) {
+  return {
+    heroId: String(hero?.heroId || '').trim(),
+    equippedSkillCards: normalizeCheckpointCardArray(hero?.equippedSkillCards),
+    equippedPassiveCards: normalizeCheckpointCardArray(hero?.equippedPassiveCards),
+  };
+}
+
+function shouldHydrateHeroLoadoutFromCheckpoint(hero, checkpointLoadout, key) {
+  if (!hero || !checkpointLoadout) return true;
+  const current = normalizeCheckpointCardArray(hero?.[key]);
+  return current.length <= 0;
+}
+
+function ensureCheckpointHeroInProgression(prog, playerData = {}) {
+  if (!prog || typeof prog !== 'object') return null;
+  const heroId = String(playerData.activeHeroId || '').trim();
+  if (!heroId) return getActiveHero(prog);
+  let hero = getHeroById(prog, heroId);
+  if (!hero) {
+    const race = String(playerData.activeHeroRace || playerData.selectedStarterLoadout || prog.selectedStarterLoadout || 'mecha');
+    hero = createHeroProfile({
+      heroId,
+      name: String(playerData.activeHeroName || playerData.nickname || 'Hero'),
+      race,
+      legacyBridge: {
+        selectedStarterLoadout: race,
+        hubBuild: cloneJsonSafe(playerData.hubBuild || null, null),
+        hubGear: cloneJsonSafe(playerData.hubGear || null, null),
+        skillMeta: {},
+        heroCombatProfile: cloneJsonSafe(playerData.heroCombatProfile || null, null),
+        equippedSkillCards: Array.isArray(playerData.equippedSkillCards) ? playerData.equippedSkillCards : [],
+        equippedPassiveCards: Array.isArray(playerData.equippedPassiveCards) ? playerData.equippedPassiveCards : [],
+      },
+    });
+    if (!Array.isArray(prog.heroes)) prog.heroes = [];
+    prog.heroes.push(hero);
+    if (!Array.isArray(prog.accountProfile?.heroOrder)) prog.accountProfile.heroOrder = [];
+    if (!prog.accountProfile.heroOrder.includes(hero.heroId)) prog.accountProfile.heroOrder.push(hero.heroId);
+  }
+  return hero;
+}
+
+function bindCheckpointToHeroProgression(prog, playerData = {}, checkpoint = null) {
+  if (!prog || typeof prog !== 'object') return null;
+  const existingHero = getHeroById(prog, playerData.activeHeroId);
+  const hero = ensureCheckpointHeroInProgression(prog, playerData);
+  if (!hero) return null;
+  const race = String(playerData.activeHeroRace || playerData.selectedStarterLoadout || hero.race || 'mecha');
+  const checkpointLoadout = getCheckpointLoadoutSnapshot(playerData);
+  hero.name = String(playerData.activeHeroName || playerData.nickname || hero.name || 'Hero').slice(0, 24) || 'Hero';
+  hero.race = race;
+  if (Array.isArray(playerData.equippedSkillCards) && shouldHydrateHeroLoadoutFromCheckpoint(existingHero, checkpointLoadout, 'equippedSkillCards')) {
+    hero.equippedSkillCards = cloneJsonSafe(playerData.equippedSkillCards, []);
+  }
+  if (Array.isArray(playerData.equippedPassiveCards) && shouldHydrateHeroLoadoutFromCheckpoint(existingHero, checkpointLoadout, 'equippedPassiveCards')) {
+    hero.equippedPassiveCards = cloneJsonSafe(playerData.equippedPassiveCards, []);
+  }
+  hero.legacyBridge = {
+    ...(hero.legacyBridge && typeof hero.legacyBridge === 'object' ? hero.legacyBridge : {}),
+    selectedStarterLoadout: race,
+    hubBuild: cloneJsonSafe(playerData.hubBuild || hero.legacyBridge?.hubBuild || null, hero.legacyBridge?.hubBuild || null),
+    hubGear: cloneJsonSafe(playerData.hubGear || hero.legacyBridge?.hubGear || null, hero.legacyBridge?.hubGear || null),
+    skillMeta: cloneJsonSafe(hero.legacyBridge?.skillMeta || {}, {}),
+    heroCombatProfile: cloneJsonSafe(playerData.heroCombatProfile || hero.legacyBridge?.heroCombatProfile || null, null),
+  };
+  if (playerData.gearInventory && typeof playerData.gearInventory === 'object') {
+    prog.gearInventory = cloneJsonSafe(playerData.gearInventory, prog.gearInventory || {});
+  }
+  if (typeof hero.heroVersion !== 'number') hero.heroVersion = 2;
+  prog.activeHeroId = hero.heroId;
+  syncHeroLoadoutToLegacyBridge(prog, hero);
+  clearAllHeroExpeditionStates(prog);
+  setHeroExpeditionState(prog, hero, {
+    hasCheckpoint: !!checkpoint,
+    resumeFloor: Math.max(0, (checkpoint?.nextFloor | 0) || 0),
+    lastBiomeKey: String(checkpoint?.lastBiomeKey || checkpoint?.savedPlan?.biomeKey || ''),
+    savedAt: Math.max(0, Number(checkpoint?.savedAt || Date.now()) || 0),
+    checkpointVersion: Math.max(0, (checkpoint?.version | 0) || 0),
+  });
+  applyActiveHeroToLegacyProgression(prog);
+  return hero;
+}
+
 export function clearSavedRunCheckpoint(state = null) {
   try {
     if (typeof localStorage !== 'undefined') localStorage.removeItem(RUN_CHECKPOINT_STORAGE_KEY);
   } catch {}
+  if (state?.progression) {
+    try {
+      clearAllHeroExpeditionStates(state.progression);
+      saveProgression(state.progression);
+    } catch {}
+  }
   if (state) {
     state._savedRunResumeAvailable = false;
     state._savedRunCheckpointLoaded = false;
     state._savedRunResumePlan = null;
+    state._hubResumeRunActive = false;
+    state._hubResumeNextFloor = 0;
   }
 }
 
@@ -52,6 +181,9 @@ export function loadSavedRunCheckpoint() {
       runScore: (parsed.runScore | 0) || 0,
       deathContinueCount: Math.max(0, (parsed.deathContinueCount | 0) || 0),
       player: {
+        activeHeroId: String(player.activeHeroId || 'hero_1'),
+        activeHeroName: String(player.activeHeroName || 'Hero 1'),
+        activeHeroRace: String(player.activeHeroRace || player.selectedStarterLoadout || 'mecha'),
         level: Math.max(1, (player.level | 0) || 1),
         xp: Math.max(0, Number(player.xp || 0) || 0),
         skillPoints: Math.max(0, (player.skillPoints | 0) || 0),
@@ -63,6 +195,20 @@ export function loadSavedRunCheckpoint() {
         hubBuild: (player.hubBuild && typeof player.hubBuild === 'object') ? player.hubBuild : null,
         hubGear: (player.hubGear && typeof player.hubGear === 'object') ? player.hubGear : null,
         gearInventory: (player.gearInventory && typeof player.gearInventory === 'object') ? player.gearInventory : null,
+        heroCombatProfile: (player.heroCombatProfile && typeof player.heroCombatProfile === 'object') ? player.heroCombatProfile : null,
+        equippedSkillCards: Array.isArray(player.equippedSkillCards) ? player.equippedSkillCards : [],
+        equippedPassiveCards: Array.isArray(player.equippedPassiveCards) ? player.equippedPassiveCards : [],
+        checkpointLoadout: player.checkpointLoadout && typeof player.checkpointLoadout === 'object'
+          ? {
+            heroId: String(player.checkpointLoadout.heroId || player.activeHeroId || 'hero_1'),
+            equippedSkillCards: Array.isArray(player.checkpointLoadout.equippedSkillCards) ? player.checkpointLoadout.equippedSkillCards : [],
+            equippedPassiveCards: Array.isArray(player.checkpointLoadout.equippedPassiveCards) ? player.checkpointLoadout.equippedPassiveCards : [],
+          }
+          : {
+            heroId: String(player.activeHeroId || 'hero_1'),
+            equippedSkillCards: Array.isArray(player.equippedSkillCards) ? player.equippedSkillCards : [],
+            equippedPassiveCards: Array.isArray(player.equippedPassiveCards) ? player.equippedPassiveCards : [],
+          },
         spTotal: Math.max(0, (player.spTotal | 0) || 0),
         runSkills: (player.runSkills && typeof player.runSkills === 'object') ? player.runSkills : {},
         runPassives: (player.runPassives && typeof player.runPassives === 'object') ? player.runPassives : {},
@@ -83,15 +229,42 @@ export function saveRunCheckpointFromState(state, { savedPlan = null, nextFloor 
     const plan = cloneJsonSafe(planSrc, null);
     if (!plan || !Array.isArray(plan.rooms) || !plan.rooms.length) return false;
     const p = state.player;
+    const savedAt = Date.now();
+    const heroSummary = getActiveHeroSummary(state.progression) || {};
+    const activeHero = getActiveHero(state.progression);
+    const checkpointNextFloor = Math.max(1, Number(nextFloor || plan.floorNumber || state._hubResumeNextFloor || 1) || 1);
     try {
       ensureHubProgression(state.progression);
       bankPlayerSpToProgression(p, state.progression);
+      bindCheckpointToHeroProgression(state.progression, {
+        activeHeroId: String(state.progression?.activeHeroId || activeHero?.heroId || 'hero_1'),
+        activeHeroName: String(heroSummary?.name || activeHero?.name || 'Hero 1'),
+        activeHeroRace: String(heroSummary?.race || activeHero?.race || state.progression?.selectedStarterLoadout || 'mecha'),
+        selectedStarterLoadout: String(p._selectedStarterLoadout || state.progression?.selectedStarterLoadout || 'mecha'),
+        hubBuild: cloneJsonSafe(state.progression?.hubBuild || activeHero?.legacyBridge?.hubBuild || null, null),
+        hubGear: cloneJsonSafe(state.progression?.hubGear || activeHero?.gearLoadout || null, null),
+        gearInventory: cloneJsonSafe(state.progression?.gearInventory || null, null),
+        heroCombatProfile: cloneJsonSafe(state.progression?.heroCombatProfile || activeHero?.legacyBridge?.heroCombatProfile || null, null),
+        equippedSkillCards: cloneJsonSafe(activeHero?.equippedSkillCards || [], []),
+        equippedPassiveCards: cloneJsonSafe(activeHero?.equippedPassiveCards || [], []),
+      }, {
+        version: 4,
+        savedAt,
+        nextFloor: checkpointNextFloor,
+        savedPlan: plan,
+        lastBiomeKey: String(state.roomDirector?._lastBiomeKey || plan.biomeKey || ''),
+      });
       saveProgression(state.progression);
     } catch {}
+    const checkpointLoadout = {
+      heroId: String(state.progression?.activeHeroId || activeHero?.heroId || 'hero_1'),
+      equippedSkillCards: cloneJsonSafe(activeHero?.equippedSkillCards || [], []),
+      equippedPassiveCards: cloneJsonSafe(activeHero?.equippedPassiveCards || [], []),
+    };
     const payload = {
-      version: 2,
-      savedAt: Date.now(),
-      nextFloor: Math.max(1, Number(nextFloor || plan.floorNumber || state._hubResumeNextFloor || 1) || 1),
+      version: 4,
+      savedAt,
+      nextFloor: checkpointNextFloor,
       lastBiomeKey: String(state.roomDirector?._lastBiomeKey || plan.biomeKey || ''),
       savedPlan: plan,
       flags: {
@@ -100,6 +273,9 @@ export function saveRunCheckpointFromState(state, { savedPlan = null, nextFloor 
       runScore: (state.runScore | 0) || 0,
       deathContinueCount: Math.max(0, (p._deathContinueCount | 0) || (state._deathContinueCount | 0) || 0),
       player: {
+        activeHeroId: String(state.progression?.activeHeroId || activeHero?.heroId || 'hero_1'),
+        activeHeroName: String(heroSummary?.name || activeHero?.name || 'Hero 1'),
+        activeHeroRace: String(heroSummary?.race || activeHero?.race || state.progression?.selectedStarterLoadout || 'mecha'),
         level: Math.max(1, (p.level | 0) || 1),
         xp: Math.max(0, Number(p.xp || 0) || 0),
         skillPoints: Math.max(0, (p.skillPoints | 0) || 0),
@@ -108,9 +284,13 @@ export function saveRunCheckpointFromState(state, { savedPlan = null, nextFloor 
         avatarIndex: (p.avatarIndex | 0) || 0,
         auraId: (p.auraId | 0) || 0,
         selectedStarterLoadout: String(p._selectedStarterLoadout || state.progression?.selectedStarterLoadout || 'mecha'),
-        hubBuild: cloneJsonSafe(state.progression?.hubBuild || null, null),
-        hubGear: cloneJsonSafe(state.progression?.hubGear || null, null),
+        hubBuild: cloneJsonSafe(state.progression?.hubBuild || activeHero?.legacyBridge?.hubBuild || null, null),
+        hubGear: cloneJsonSafe(state.progression?.hubGear || activeHero?.gearLoadout || null, null),
         gearInventory: cloneJsonSafe(state.progression?.gearInventory || null, null),
+        heroCombatProfile: cloneJsonSafe(state.progression?.heroCombatProfile || activeHero?.legacyBridge?.heroCombatProfile || null, null),
+        equippedSkillCards: cloneJsonSafe(activeHero?.equippedSkillCards || [], []),
+        equippedPassiveCards: cloneJsonSafe(activeHero?.equippedPassiveCards || [], []),
+        checkpointLoadout,
         spTotal: Math.max(0, (state.progression?.sp | 0) || 0),
         runSkills: cloneJsonSafe(p.runSkills || {}, {}),
         runPassives: cloneJsonSafe(p.runPassives || {}, {}),
@@ -122,6 +302,8 @@ export function saveRunCheckpointFromState(state, { savedPlan = null, nextFloor 
     state._savedRunResumePlan = cloneJsonSafe(plan, null);
     state._savedRunResumeAvailable = true;
     state._savedRunCheckpointLoaded = true;
+    state._hubResumeRunActive = true;
+    state._hubResumeNextFloor = checkpointNextFloor;
     return true;
   } catch {
     return false;
@@ -136,19 +318,33 @@ export function restoreRunCheckpointIntoState(state, checkpoint, { showPopup = f
 
   const cp = checkpoint;
   const playerData = cp.player || {};
+  const checkpointLoadout = getCheckpointLoadoutSnapshot(playerData);
+  const currentHeroBeforeRestore = getHeroById(state.progression, checkpointLoadout.heroId || playerData.activeHeroId) || null;
+  const currentLoadoutBeforeRestore = getHeroLoadoutSnapshot(currentHeroBeforeRestore);
+  const canRestoreFullRunSnapshot = !currentHeroBeforeRestore
+    || (checkpointLoadout.heroId === currentLoadoutBeforeRestore.heroId
+      && areCardLoadoutsEqual(checkpointLoadout.equippedSkillCards, currentLoadoutBeforeRestore.equippedSkillCards)
+      && areCardLoadoutsEqual(checkpointLoadout.equippedPassiveCards, currentLoadoutBeforeRestore.equippedPassiveCards));
 
+  try {
+    bindCheckpointToHeroProgression(state.progression, playerData, cp);
+    try { ensureHubProgression(state.progression); } catch {}
+  } catch {}
+
+  const snapshotAvailableSp = Math.max(0, (playerData.skillPoints | 0) || 0);
+  const snapshotTotalSp = Math.max(0, (playerData.spTotal | 0) || 0);
   try {
     const snapshotHasBuild = !!Object.keys(playerData.runSkills || {}).some((k) => ((playerData.runSkills?.[k] | 0) > 0))
       || !!Object.keys(playerData.runPassives || {}).some((k) => ((playerData.runPassives?.[k] | 0) > 0));
-    if (snapshotHasBuild && getHubBuildSpentPoints(state.progression) <= 0) {
+    if (canRestoreFullRunSnapshot && snapshotHasBuild && getHubBuildSpentPoints(state.progression) <= 0) {
       importPlayerSnapshotIntoHubBuild(state.progression, playerData);
     }
-    const snapshotAvailableSp = Math.max(0, (playerData.skillPoints | 0) || 0);
-    const snapshotTotalSp = Math.max(0, (playerData.spTotal | 0) || 0);
-    if (playerData.hubBuild && typeof playerData.hubBuild === 'object') state.progression.hubBuild = cloneJsonSafe(playerData.hubBuild, state.progression.hubBuild || null);
-    if (playerData.hubGear && typeof playerData.hubGear === 'object') state.progression.hubGear = cloneJsonSafe(playerData.hubGear, state.progression.hubGear || null);
+    if (canRestoreFullRunSnapshot && playerData.hubBuild && typeof playerData.hubBuild === 'object') state.progression.hubBuild = cloneJsonSafe(playerData.hubBuild, state.progression.hubBuild || null);
+    if (canRestoreFullRunSnapshot && playerData.hubGear && typeof playerData.hubGear === 'object') state.progression.hubGear = cloneJsonSafe(playerData.hubGear, state.progression.hubGear || null);
     if (playerData.gearInventory && typeof playerData.gearInventory === 'object') state.progression.gearInventory = cloneJsonSafe(playerData.gearInventory, state.progression.gearInventory || {});
-    state.progression.sp = Math.max(0, snapshotTotalSp || (getHubBuildSpentPoints(state.progression) + snapshotAvailableSp));
+    if (canRestoreFullRunSnapshot) {
+      state.progression.sp = Math.max(0, snapshotTotalSp || (getHubBuildSpentPoints(state.progression) + snapshotAvailableSp));
+    }
     saveProgression(state.progression);
   } catch {}
 
@@ -165,14 +361,23 @@ export function restoreRunCheckpointIntoState(state, checkpoint, { showPopup = f
   const meta = applyLimitsToPlayer(player, state.progression.limits);
   applyHubBuildToPlayer(player, state.progression);
   applyProgressionSpToPlayer(player, state.progression);
+  if (!canRestoreFullRunSnapshot) player.skillPoints = snapshotAvailableSp;
   player.level = Math.max(1, (playerData.level | 0) || player.level || 1);
   player.xp = Math.max(0, Number(playerData.xp || 0) || 0);
   player.nextLevelXp = player.xpToNext();
   player.hp = Math.max(1, Math.min(Number(playerData.hp || player.maxHP || 1) || 1, player.maxHP | 0));
 
-  player.runSkills = { ...(player.runSkills || {}), ...cloneJsonSafe(playerData.runSkills || {}, {}) };
-  player.runPassives = { ...(player.runPassives || {}), ...cloneJsonSafe(playerData.runPassives || {}, {}) };
-  restoreEvolutionSnapshot(player, playerData);
+  if (canRestoreFullRunSnapshot) {
+    player.runSkills = { ...(player.runSkills || {}), ...cloneJsonSafe(playerData.runSkills || {}, {}) };
+    player.runPassives = { ...(player.runPassives || {}), ...cloneJsonSafe(playerData.runPassives || {}, {}) };
+    restoreEvolutionSnapshot(player, playerData);
+  } else {
+    player.runSkills = cloneJsonSafe(player.runSkills || {}, {});
+    player.runPassives = cloneJsonSafe(player.runPassives || {}, {});
+    player.runSkillStages = {};
+    player.runEvolutions = {};
+    restoreEvolutionSnapshot(player, { runSkillStages: {}, runEvolutions: {} });
+  }
   applyRunDerivedStats(player);
   player._deathContinueCount = Math.max(0, (cp.deathContinueCount | 0) || 0);
 
@@ -189,6 +394,7 @@ export function restoreRunCheckpointIntoState(state, checkpoint, { showPopup = f
   state._savedRunResumeAvailable = true;
   state._savedRunCheckpointLoaded = true;
   state._savedRunResumePlan = cloneJsonSafe(cp.savedPlan, null);
+  state._savedRunLoadoutMismatch = !canRestoreFullRunSnapshot;
   state._deathContinueCount = Math.max(0, (cp.deathContinueCount | 0) || 0);
   state._deathHandled = false;
   state._waitingRespawnAck = false;
@@ -244,7 +450,9 @@ export function restoreRunCheckpointIntoState(state, checkpoint, { showPopup = f
   } catch {}
 
   if (showPopup && Array.isArray(state.popups)) {
-    state.popups.push({ text: `Saved run restored • Floor ${state._hubResumeNextFloor}`, time: 2.4 });
+    const heroName = String(playerData.activeHeroName || getActiveHeroSummary(state.progression)?.name || 'Hero');
+    const suffix = canRestoreFullRunSnapshot ? '' : ' • current loadout applied';
+    state.popups.push({ text: `Saved run restored • ${heroName} • Floor ${state._hubResumeNextFloor}${suffix}`, time: 2.6 });
   }
   return true;
 }

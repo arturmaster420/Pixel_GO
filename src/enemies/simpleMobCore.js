@@ -1,6 +1,9 @@
 import { pickMobTarget, applyDamageToTarget } from "./utils.js";
 import { renderBiomeUnit, biomeKeyFromKind, biomeStyleForKey } from "./biomeVisuals.js";
 import { biomeKeyToEssenceKey, getBiomePreferredGearDefs, getBiomeLootProfile } from "../core/hubBuild.js";
+import { buildCardRewardPayloadForRace } from "../core/cards/cardRewards.js";
+import { getActiveHero } from "../core/accountProfile.js";
+import { buildHeroBiomeResonancePayload } from "../core/heroBiomeProgression.js";
 
 export function resolveEnemyRoom(self, state) {
   const rd = state?.roomDirector || null;
@@ -24,6 +27,8 @@ function getDebuffedSpeed(self, state) {
   const frostLeft = Number(self?._frostLeft || 0);
   const frostLv = Number(self?._frostLv || 0);
   const frostSlow = frostLeft > 0 ? clamp(1 - frostLv * 0.09, 0.58, 1) : 1;
+  const frozen = (typeof self?._frozenUntil === 'number') && now < self._frozenUntil;
+  if (frozen) return Math.max(4, Number(self?.speed || 0) * 0.04);
   return Math.max(12, Number(self?.speed || 0) * barrierSlow * frostSlow);
 }
 
@@ -109,6 +114,20 @@ export function dropSimpleMobRewards(self, state, { coinChance = 0.22, coinMin =
   const xpAmt = Math.max(1, Math.round(Number(self.xpValue || 10) || 10));
   state._resourceGrantSerial = Math.max(0, Number(state._resourceGrantSerial || 0));
   const nextGrantId = (tag) => `${String(self?.id || self?.kind || 'mob')}:${String(tag || 'res')}:${++state._resourceGrantSerial}`;
+  const pushProgOrb = (dx, dy, payload, tag, orbRadius = Math.max(8, radius)) => {
+    if (!payload || typeof payload !== 'object') return;
+    const grantId = nextGrantId(tag);
+    state.xpOrbs.push({
+      x: self.x + dx,
+      y: self.y + dy,
+      radius: orbRadius,
+      kind: 'prog',
+      progKind: tag,
+      progPayload: { ...payload, _grantId: grantId },
+      age: 0,
+      grantId,
+    });
+  };
 
   // XP should always drop, even when coins/resources drop too.
   state.xpOrbs.push({
@@ -179,5 +198,41 @@ export function dropSimpleMobRewards(self, state, { coinChance = 0.22, coinMin =
         grantId: nextGrantId('part'),
       });
     }
+  }
+
+  const dustChance = isElite ? 0.30 : 0.10;
+  if (Math.random() < dustChance) {
+    pushProgOrb(12, 12, { raceDust: { [biomeKey]: isElite ? 2 : 1 } }, 'raceDust');
+  }
+
+  const shardChance = isElite ? 0.26 : 0.07;
+  if (Math.random() < shardChance) {
+    const shardPayload = buildCardRewardPayloadForRace(biomeKey, Math.random, {
+      shards: isElite ? 2 : 1,
+      includeStarter: !isElite,
+      includeSkill: true,
+      includePassive: true,
+    });
+    if (shardPayload) pushProgOrb(-12, 12, shardPayload, 'cardShard', Math.max(9, radius));
+  }
+
+  if (isElite && Math.random() < 0.08) {
+    const copyPayload = buildCardRewardPayloadForRace(biomeKey, Math.random, {
+      copies: 1,
+      includeStarter: false,
+      includeSkill: true,
+      includePassive: true,
+    });
+    if (copyPayload) pushProgOrb(0, -14, copyPayload, 'cardCopy', Math.max(9, radius));
+  }
+
+  const heroBiome = getActiveHero(state?.progression)?.race || state?.progression?.activeHeroRace || state?.progression?.selectedStarterLoadout || biomeKey;
+  const resonancePayload = buildHeroBiomeResonancePayload(heroBiome, Math.random, {
+    source: isElite ? 'elite' : 'room',
+    floorNumber: state?.run?.floor || state?.floorNumber || 1,
+    sourceBiome: biomeKey,
+  });
+  if (resonancePayload && (isElite || Math.random() < 0.28)) {
+    pushProgOrb(isElite ? -16 : 16, isElite ? -6 : 4, resonancePayload, 'heroResonance', Math.max(9, radius));
   }
 }

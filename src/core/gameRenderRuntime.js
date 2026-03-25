@@ -1,5 +1,5 @@
 import { renderRoomsBackground } from "../world/roomRenderer.js";
-import { getZone, ZONE_RADII, ZONE6_SQUARE_HALF, WORLD_SQUARE_HALF, HUB_HALF, HUB_CORNER_R } from "../world/zoneController.js";
+import { getZone, isPointInHub, ZONE_RADII, ZONE6_SQUARE_HALF, WORLD_SQUARE_HALF, HUB_HALF, HUB_CORNER_R } from "../world/zoneController.js";
 import { REVIVE_CHANNEL_SEC, REVIVE_INTERACT_R } from "./lifecycleRuntime.js";
 import { getProgPickupTint } from "./resourceOrbUiRuntime.js";
 
@@ -949,7 +949,7 @@ export function renderXPOrbs(state, ctx) {
   ctx.save();
   for (const orb of state.xpOrbs) {
     const kind = orb.kind || (orb.coins ? "coin" : "xp");
-    if (kind === 'prog') {
+    if (kind === 'prog' || kind === 'essence' || kind === 'material' || kind === 'gearPart' || kind === 'gearItem') {
       const tint = getProgPickupTint(orb);
       const radius = orb.radius || 9;
       const gg = ctx.createRadialGradient(orb.x, orb.y, 0, orb.x, orb.y, radius * 2.4);
@@ -1251,17 +1251,26 @@ export function renderPlayers(state, ctx) {
     }
   }
 
-  // nicknames
+  // nicknames + hero race badge
   ctx.save();
-  ctx.font = "12px sans-serif";
   ctx.textAlign = "center";
-  ctx.fillStyle = "rgba(255,255,255,0.9)";
   for (const p of players) {
     if (!p) continue;
     const name = (p.nickname || "").toString().slice(0, 16);
     if (!name) continue;
-    // Nickname below the smiley (not above)
-    ctx.fillText(name, p.x, p.y + (p.radius || 18) + 24);
+    const baseY = p.y + (p.radius || 18) + 24;
+    ctx.font = "12px sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.fillText(name, p.x, baseY);
+    const heroRace = String(p.activeHeroRace || '').trim().toUpperCase().slice(0, 10);
+    const heroName = String(p.activeHeroName || '').trim().slice(0, 16);
+    const power = Math.max(0, Number(p?._heroCombatSummary?.totalCardPower || 0) | 0);
+    const mastery = Math.max(1, Number(p?._heroCombatSummary?.masteryLevel || 1) | 0);
+    const badge = heroRace ? (power > 0 ? `${heroRace} • ${power} • M${mastery}` : `${heroRace} • M${mastery}`) : '';
+    if (!badge) continue;
+    ctx.font = "10px sans-serif";
+    ctx.fillStyle = "rgba(201,224,255,0.82)";
+    ctx.fillText(heroName && heroName !== name ? `${heroName} • ${badge}`.slice(0, 26) : badge, p.x, baseY + 12);
   }
   ctx.restore();
 

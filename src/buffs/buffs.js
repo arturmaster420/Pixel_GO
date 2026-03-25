@@ -1,3 +1,4 @@
+import { stepHeroMoveBurst } from "../core/heroBiomeCombat.js";
 import { saveProgression } from "../core/progression.js";
 
 export function updateBuffs(state, dt) {
@@ -56,7 +57,8 @@ export function updateBuffs(state, dt) {
     // Attack speed soft-cap (prevents "machine-gun" + network/visual overload)
     const rawAtk = baseAttackSpeed * (1 + attackSpeedBoost);
     player.attackSpeed = softCapLinear(rawAtk, 6.0, 0.35);
-    player.moveSpeed = (player.baseMoveSpeed || 260) * metaMoveMult * runMoveMult * (1 + moveSpeedBoost);
+    const heroMoveBurstMult = stepHeroMoveBurst(player, dt);
+    player.moveSpeed = (player.baseMoveSpeed || 260) * metaMoveMult * runMoveMult * (1 + moveSpeedBoost) * heroMoveBurstMult;
 
     // Convenience cache: total range multiplier used by skill system.
     // Soft-cap to keep range growth readable and avoid "half-zone" snipes.

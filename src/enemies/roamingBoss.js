@@ -2,6 +2,9 @@ import { getZoneScaling } from "../world/zoneController.js";
 import { pickMobTarget, applyDamageToTarget } from "./utils.js";
 import { biomeByKey } from "../world/biomes.js";
 import { biomeKeyToEssenceKey, getBiomePreferredGearDefs } from "../core/hubBuild.js";
+import { buildCardRewardPayloadForRace } from "../core/cards/cardRewards.js";
+import { getActiveHero } from "../core/accountProfile.js";
+import { buildHeroBiomeResonancePayload } from "../core/heroBiomeProgression.js";
 
 function clamp(n, a, b) {
   return n < a ? a : (n > b ? b : n);
@@ -247,7 +250,8 @@ export function createRoamingBoss(zone, pos, opts = {}) {
     const debuffed = (typeof self._barrierDebuffUntil === "number") && (state.time < self._barrierDebuffUntil);
     const slowMult = debuffed ? (self._barrierSlowMult || 1) : 1;
     const dmgOutMult = debuffed ? (self._barrierDmgMult || 1) : 1;
-    let speed = self.speed * slowMult;
+    const frozen = (typeof self._frozenUntil === "number") && (state.time < self._frozenUntil);
+    let speed = self.speed * slowMult * (frozen ? 0.08 : 1);
 
     const key = String(self._biomeKey || "");
     if (key === "electric") {
@@ -436,6 +440,20 @@ export function createRoamingBoss(zone, pos, opts = {}) {
     const xpAmt = Math.round((self.xpValue || 30) * 0.9);
     state._resourceGrantSerial = Math.max(0, Number(state._resourceGrantSerial || 0));
     const nextGrantId = (tag) => `${String(self?.id || self?.kind || 'boss')}:${String(tag || 'res')}:${++state._resourceGrantSerial}`;
+    const pushProgOrb = (dx, dy, payload, tag, orbRadius = 10) => {
+      if (!payload || typeof payload !== 'object') return;
+      const grantId = nextGrantId(tag);
+      state.xpOrbs.push({
+        x: self.x + dx,
+        y: self.y + dy,
+        radius: orbRadius,
+        kind: 'prog',
+        progKind: tag,
+        progPayload: { ...payload, _grantId: grantId },
+        age: 0,
+        grantId,
+      });
+    };
     state.xpOrbs.push({
       x: self.x,
       y: self.y,
@@ -487,6 +505,32 @@ export function createRoamingBoss(zone, pos, opts = {}) {
         grantId: nextGrantId('part'),
       });
     }
+
+    pushProgOrb(18, 8, { raceDust: { [biomeKey]: 4 + Math.max(0, Math.floor(floorIndex / 4)) } }, 'raceDust', 11);
+
+    const shardPayload = buildCardRewardPayloadForRace(biomeKey, Math.random, {
+      shards: 3 + Math.max(0, Math.min(3, Math.floor(floorIndex / 5))),
+      includeStarter: true,
+      includeSkill: true,
+      includePassive: true,
+    });
+    if (shardPayload) pushProgOrb(-20, 10, shardPayload, 'cardShard', 11);
+
+    const copyPayload = buildCardRewardPayloadForRace(biomeKey, Math.random, {
+      copies: 1,
+      includeStarter: false,
+      includeSkill: true,
+      includePassive: true,
+    });
+    if (copyPayload) pushProgOrb(0, 22, copyPayload, 'cardCopy', 11);
+
+    const heroBiome = getActiveHero(state?.progression)?.race || state?.progression?.activeHeroRace || state?.progression?.selectedStarterLoadout || biomeKey;
+    const resonancePayload = buildHeroBiomeResonancePayload(heroBiome, Math.random, {
+      source: 'boss',
+      floorNumber: floorIndex,
+      sourceBiome: biomeKey,
+    });
+    if (resonancePayload) pushProgOrb(-2, -22, resonancePayload, 'heroResonance', 11);
   };
 
   return enemy;
