@@ -60,13 +60,29 @@ function loop(now) {
   lastTime = now;
 
   // Keep lobby DOM in sync with game state (visibility, counts, etc.)
-  tickLobbyDom(game.state);
+  try {
+    tickLobbyDom(game.state);
+  } catch (err) {
+    console.error('[Pixel_GO loop] tickLobbyDom failed', err);
+  }
 
-  game.update(dt);
+  try {
+    game.update(dt);
+  } catch (err) {
+    console.error('[Pixel_GO loop] game.update failed', err);
+    try { if (game.state?.popups) game.state.popups.push({ text: 'Update runtime error', time: 2.5 }); } catch {}
+  }
 
-  // Hub NPC DOM UI depends on proximity computed during update.
-  tickHubNpcDom(game.state);
-  game.render();
+  try {
+    tickHubNpcDom(game.state);
+  } catch (err) {
+    console.error('[Pixel_GO loop] tickHubNpcDom failed', err);
+  }
+  try {
+    game.render();
+  } catch (err) {
+    console.error('[Pixel_GO loop] game.render failed', err);
+  }
 
   requestAnimationFrame(loop);
 }

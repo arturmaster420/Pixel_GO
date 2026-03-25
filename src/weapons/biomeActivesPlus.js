@@ -1,5 +1,6 @@
 import { applyCritToDamage, applyLifeSteal } from "../core/progression.js";
 import { getNearestEnemy } from "../enemies/utils.js";
+import { applyFireBurnState, applyIceControlState } from "../core/heroBiomeCombat.js";
 
 function nextFxId(state) {
   state._nextFxId = (state._nextFxId || 0) + 1;
@@ -161,8 +162,7 @@ export function castMeteorRain(player, state, params) {
     const localHit = forEachEnemyInRadius(state, mx, my, splashR, (e) => {
       const dmg = applyCritToDamage(player, params.damage || 0);
       markEnemyHit(player, e, state, dmg);
-      e._burnLeft = Math.max((e._burnLeft || 0), Number(params.burnDur || 1.2));
-      e._burnDps = Math.max((e._burnDps || 0), Number(params.burnDps || 4));
+      applyFireBurnState(player, e, Number(params.burnDur || 1.2), Number(params.burnDps || 4), 1.0);
       hits += 1;
     });
     if (localHit > 0) pushExplosion(state, mx, my, splashR, "fire", 0.30);
@@ -176,16 +176,14 @@ export function castMagmaLance(player, state, params) {
   if (!target) return false;
   const primary = applyCritToDamage(player, params.damage || 0);
   markEnemyHit(player, target, state, primary);
-  target._burnLeft = Math.max((target._burnLeft || 0), Number(params.burnDur || 1.2));
-  target._burnDps = Math.max((target._burnDps || 0), Number(params.burnDps || 4));
+  applyFireBurnState(player, target, Number(params.burnDur || 1.2), Number(params.burnDps || 4), 1.0);
   const splashR = Math.max(22, Number(params.splashRadius || 0));
   const splashMul = Math.max(0.25, Math.min(1, Number(params.splashMul || 0.45)));
   forEachEnemyInRadius(state, target.x, target.y, splashR, (e) => {
     if (e === target) return;
     const dmg = applyCritToDamage(player, (params.damage || 0) * splashMul);
     markEnemyHit(player, e, state, dmg);
-    e._burnLeft = Math.max((e._burnLeft || 0), Number(params.burnDur || 1.2) * 0.8);
-    e._burnDps = Math.max((e._burnDps || 0), Number(params.burnDps || 4) * 0.72);
+    applyFireBurnState(player, e, Number(params.burnDur || 1.2) * 0.8, Number(params.burnDps || 4) * 0.72, 0.72);
   });
   pushExplosion(state, target.x, target.y, splashR, "fire", 0.28);
   return true;
@@ -198,9 +196,7 @@ export function castFrostNova(player, state, params) {
   forEachEnemyInRadius(state, player.x, player.y, radius, (e) => {
     const dmg = applyCritToDamage(player, params.damage || 0);
     markEnemyHit(player, e, state, dmg);
-    e._slowLeft = Math.max((e._slowLeft || 0), Number(params.slowDur || 1.0));
-    e._slowMult = Math.min((e._slowMult || 1), Math.max(0.34, Number(params.slowMult || 0.7)));
-    e._frostLeft = Math.max((e._frostLeft || 0), Number(params.frostDur || 1.35));
+    applyIceControlState(player, e, state, { slowDur: Number(params.slowDur || 1.0), slowMult: Number(params.slowMult || 0.7), frostDur: Number(params.frostDur || 1.35), freezeBuild: Number(params.freezeBuild || 0.92) });
     hits += 1;
   });
   if (hits > 0) pushExplosion(state, player.x, player.y, radius, "ice", 0.34);
@@ -213,18 +209,14 @@ export function castCrystalSpear(player, state, params) {
   if (!target) return false;
   const primary = applyCritToDamage(player, params.damage || 0);
   markEnemyHit(player, target, state, primary);
-  target._frostLeft = Math.max((target._frostLeft || 0), Number(params.frostDur || 1.4));
-  target._slowLeft = Math.max((target._slowLeft || 0), Number(params.slowDur || 1.0));
-  target._slowMult = Math.min((target._slowMult || 1), Math.max(0.34, Number(params.slowMult || 0.64)));
+  applyIceControlState(player, target, state, { frostDur: Number(params.frostDur || 1.4), slowDur: Number(params.slowDur || 1.0), slowMult: Number(params.slowMult || 0.64), freezeBuild: Number(params.freezeBuild || 0.76) });
   const splashR = Math.max(22, Number(params.splashRadius || 0));
   const splashMul = Math.max(0.25, Math.min(1, Number(params.splashMul || 0.45)));
   forEachEnemyInRadius(state, target.x, target.y, splashR, (e) => {
     if (e === target) return;
     const dmg = applyCritToDamage(player, (params.damage || 0) * splashMul);
     markEnemyHit(player, e, state, dmg);
-    e._frostLeft = Math.max((e._frostLeft || 0), Number(params.frostDur || 1.4) * 0.8);
-    e._slowLeft = Math.max((e._slowLeft || 0), Number(params.slowDur || 1.0) * 0.8);
-    e._slowMult = Math.min((e._slowMult || 1), Math.max(0.38, Number(params.slowMult || 0.64) * 1.05));
+    applyIceControlState(player, e, state, { frostDur: Number(params.frostDur || 1.4) * 0.8, slowDur: Number(params.slowDur || 1.0) * 0.8, slowMult: Math.max(0.38, Number(params.slowMult || 0.64) * 1.05), freezeBuild: Number(params.freezeBuild || 0.44) });
   });
   pushExplosion(state, target.x, target.y, splashR, "ice", 0.28);
   return true;

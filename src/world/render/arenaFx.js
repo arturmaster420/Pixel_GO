@@ -1,3 +1,5 @@
+import { makeRng } from "./cosmosBackdrop.js";
+
 function clamp(n, a, b) {
   return n < a ? a : (n > b ? b : n);
 }
@@ -5,6 +7,51 @@ function clamp(n, a, b) {
 function hsla(h, s, l, a) {
   return `hsla(${h},${s}%,${l}%,${a})`;
 }
+
+function getArenaSpec(room) {
+  return room && room.arenaSpec ? room.arenaSpec : null;
+}
+
+function getArenaParts(arenaSpec) {
+  const geometry = arenaSpec?.geometry || null;
+  const platforms = Array.isArray(geometry?.platforms) ? geometry.platforms : [];
+  const bridges = Array.isArray(geometry?.bridges) ? geometry.bridges : [];
+  return [...platforms, ...bridges].filter(Boolean);
+}
+
+function rectPath(ctx, r) {
+  const x = Number(r?.x) || 0;
+  const y = Number(r?.y) || 0;
+  const w = Number(r?.w) || 0;
+  const h = Number(r?.h) || 0;
+  if (w <= 0 || h <= 0) return false;
+  ctx.rect(x, y, w, h);
+  return true;
+}
+
+function shapePath(ctx, r) {
+  if (!r) return false;
+  if (String(r?.type || '') === 'circle') {
+    const x = Number(r?.x) || 0;
+    const y = Number(r?.y) || 0;
+    const rad = Number(r?.r) || 0;
+    if (!(rad > 0)) return false;
+    ctx.moveTo(x + rad, y);
+    ctx.arc(x, y, rad, 0, Math.PI * 2);
+    return true;
+  }
+  return rectPath(ctx, r);
+}
+
+function clipToArenaParts(ctx, arenaSpec) {
+  const parts = getArenaParts(arenaSpec);
+  if (!parts.length) return false;
+  ctx.beginPath();
+  for (const part of parts) shapePath(ctx, part);
+  ctx.clip();
+  return true;
+}
+
 
 export function drawBossArenaOverlay(ctx, room, arenaSpec, time = 0) {
   const bossArena = arenaSpec?.bossArena || null;

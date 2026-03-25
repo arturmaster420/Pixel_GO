@@ -196,9 +196,9 @@ export function getStatsData(state) {
     { label: 'XP Gain', value: formatStatValue(xpGain, 1, '%') },
     { label: 'XP', value: levelXpNeed > 0 ? `${Math.max(0, Math.round(player.xp || 0))}/${levelXpNeed}` : String(Math.max(0, Math.round(player.xp || 0))) },
     { section: 'CORE & TYPE' },
-    { label: 'Starter Core', value: coreName },
-    { label: 'Core Skill', value: coreSkillName },
-    { label: 'Core Type', value: coreType.toUpperCase() },
+    { label: 'Hero Core', value: coreName },
+    { label: 'Hero Signature', value: coreSkillName },
+    { label: 'Race Type', value: coreType.toUpperCase() },
     ...typeRows,
     { section: 'AFFINITIES' },
     ...affinityRows,
@@ -228,7 +228,14 @@ function drawHudButton(ctx, active, label, x, y, width, height, uiScale, rectFie
   return { x: x * uiScale, y: y * uiScale, w: width * uiScale, h: height * uiScale };
 }
 
+function isHubHudNavState(state) {
+  const room = state?.player?.room || null;
+  const spec = room?.arenaSpec || null;
+  return !!(spec?.rules?.isHub) || String(room?.biomeKey || '').toLowerCase() === 'hub' || ((room?.index | 0) === 0);
+}
+
 function drawBuildButton(ctx, state, scaledW, topPanelH, uiScale) {
+  if (isHubHudNavState(state)) { state._buildButtonRect = null; return; }
   const width = scaledW < 900 ? 96 : 112;
   const height = scaledW < 900 ? 28 : 30;
   const x = scaledW - width - 14;
@@ -263,6 +270,7 @@ function drawBuildButton(ctx, state, scaledW, topPanelH, uiScale) {
 }
 
 function drawStatsButton(ctx, state, scaledW, topPanelH, uiScale) {
+  if (isHubHudNavState(state)) { state._statsButtonRect = null; return; }
   const width = scaledW < 900 ? 96 : 112;
   const height = scaledW < 900 ? 28 : 30;
   const x = scaledW - width - 14;

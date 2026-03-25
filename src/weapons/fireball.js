@@ -2,6 +2,7 @@
 
 import { applyCritToDamage, applyLifeSteal } from "../core/progression.js";
 import { getNearestEnemy } from "../enemies/utils.js";
+import { applyFireBurnState } from "../core/heroBiomeCombat.js";
 
 export function updateFireball(player, state, dt, params) {
   if (!player || !state || !params) return;
@@ -79,8 +80,7 @@ export function explodeFireball(fb, state) {
     const dur = Math.max(e._burnLeft || 0, fb.burnDur || 0);
     const dps = Math.max(e._burnDps || 0, fb.burnDps || 0);
     if (dur > 0 && dps > 0) {
-      e._burnLeft = dur;
-      e._burnDps = dps;
+      applyFireBurnState(owner, e, dur, dps, 1.0);
     }
   }
 

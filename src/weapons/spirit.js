@@ -69,6 +69,9 @@ export function updateSpirit(player, state, dt, params) {
       travel: 0,
       radius: 4,
       type: "spiritShot",
+      curseDur: params.curseDur,
+      curseLv: params.curseLv,
+      pullMult: params.pullMult,
     });
   }
 }

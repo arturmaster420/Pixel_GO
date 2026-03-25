@@ -1,5 +1,6 @@
 import { applyCritToDamage, applyLifeSteal } from "../core/progression.js";
 import { getNearestEnemy } from "../enemies/utils.js";
+import { applyFireBurnState } from "../core/heroBiomeCombat.js";
 
 function nextFxId(state) {
   state._nextFxId = (state._nextFxId || 0) + 1;
@@ -67,8 +68,7 @@ export function castFlameNova(player, state, params) {
   forEachEnemyInRadius(state, player.x, player.y, radius, (e) => {
     const dmg = applyCritToDamage(player, params.damage || 0);
     markEnemyHit(player, e, state, dmg);
-    e._burnLeft = Math.max((e._burnLeft || 0), Number(params.burnDur || 1.2));
-    e._burnDps = Math.max((e._burnDps || 0), Number(params.burnDps || 4));
+    applyFireBurnState(player, e, Number(params.burnDur || 1.2), Number(params.burnDps || 4), 1.0);
     hits += 1;
   });
   if (hits > 0) pushExplosion(state, player.x, player.y, radius, "fire", 0.38);
@@ -113,6 +113,7 @@ export function fireIceShards(player, state, params, aimDir = null) {
       range: params.range,
       travel: 0,
       radius: params.radius,
+      freezeBuild: params.freezeBuild,
     });
   }
   player._lastCombatAt = state.time;

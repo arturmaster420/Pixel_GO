@@ -207,16 +207,16 @@ export function createNetClient() {
     net.remoteInputs.clear();
   };
 
-  net.host = function host(roomCode, nickname, avatarIndex, auraId) {
-    send({ type: "host", roomCode, nickname, avatarIndex, auraId });
+  net.host = function host(roomCode, nickname, avatarIndex, auraId, meta = null) {
+    send({ type: "host", roomCode, nickname, avatarIndex, auraId, meta: meta || null });
   };
 
-  net.join = function join(roomCode, nickname, avatarIndex, auraId) {
-    send({ type: "join", roomCode, nickname, avatarIndex, auraId });
+  net.join = function join(roomCode, nickname, avatarIndex, auraId, meta = null) {
+    send({ type: "join", roomCode, nickname, avatarIndex, auraId, meta: meta || null });
   };
 
-  net.fastJoin = function fastJoin(nickname, avatarIndex, auraId) {
-    send({ type: "fastJoin", nickname, avatarIndex, auraId });
+  net.fastJoin = function fastJoin(nickname, avatarIndex, auraId, meta = null) {
+    send({ type: "fastJoin", nickname, avatarIndex, auraId, meta: meta || null });
   };
 
   net.sendInput = function sendInput(input) {

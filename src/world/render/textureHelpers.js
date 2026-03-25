@@ -127,14 +127,35 @@ export function hasLoadedBiomeArenaArt(room, layer = 'surface') {
 }
 
 export function drawBiomeArenaArt(ctx, room, x0, y0, w, h, opts = {}) {
-  const layer = opts.layer || 'surface';
+  // Backward-compatible parser:
+  // new: drawBiomeArenaArt(ctx, room, x0, y0, w, h, opts)
+  // old: drawBiomeArenaArt(ctx, room, arenaSpec, bounds, layer, time, opts)
+  let rx0 = x0, ry0 = y0, rw = w, rh = h;
+  let finalOpts = opts;
+  if (x0 && typeof x0 === 'object' && y0 && typeof y0 === 'object' && typeof w === 'string') {
+    const bounds = y0 || {};
+    rx0 = Number(bounds.x0) || 0;
+    ry0 = Number(bounds.y0) || 0;
+    rw = Number(bounds.w) || 0;
+    rh = Number(bounds.h) || 0;
+    finalOpts = Object.assign({}, (opts && typeof opts === 'object') ? opts : {}, { layer: w, time: h });
+  } else if (x0 && typeof x0 === 'object' && typeof y0 !== 'number') {
+    const bounds = x0 || {};
+    rx0 = Number(bounds.x0) || 0;
+    ry0 = Number(bounds.y0) || 0;
+    rw = Number(bounds.w) || 0;
+    rh = Number(bounds.h) || 0;
+    finalOpts = (y0 && typeof y0 === 'object') ? y0 : {};
+  }
+  finalOpts = (finalOpts && typeof finalOpts === 'object') ? finalOpts : {};
+  const layer = finalOpts.layer || 'surface';
   const entry = getLoadedBiomeArenaEntry(room, layer);
   if (!entry) return false;
-  const alpha = Number.isFinite(opts.alpha) ? Number(opts.alpha) : 1;
-  const ox = Number.isFinite(opts.ox) ? Number(opts.ox) : 0;
-  const oy = Number.isFinite(opts.oy) ? Number(opts.oy) : 0;
-  const scaleMul = Number.isFinite(opts.scaleMul) ? Number(opts.scaleMul) : 1;
-  const mode = String(opts.mode || 'cover');
-  if (mode === 'contain') return drawImageContainRect(ctx, entry, x0, y0, w, h, alpha, ox, oy, scaleMul, true);
-  return drawImageCoverRect(ctx, entry, x0, y0, w, h, alpha, ox, oy, scaleMul, true);
+  const alpha = Number.isFinite(finalOpts.alpha) ? Number(finalOpts.alpha) : 1;
+  const ox = Number.isFinite(finalOpts.ox) ? Number(finalOpts.ox) : 0;
+  const oy = Number.isFinite(finalOpts.oy) ? Number(finalOpts.oy) : 0;
+  const scaleMul = Number.isFinite(finalOpts.scaleMul) ? Number(finalOpts.scaleMul) : 1;
+  const mode = String(finalOpts.mode || 'cover');
+  if (mode === 'contain') return drawImageContainRect(ctx, entry, rx0, ry0, rw, rh, alpha, ox, oy, scaleMul, true);
+  return drawImageCoverRect(ctx, entry, rx0, ry0, rw, rh, alpha, ox, oy, scaleMul, true);
 }

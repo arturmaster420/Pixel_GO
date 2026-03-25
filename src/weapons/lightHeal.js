@@ -21,6 +21,12 @@ export function emitHealPulse(player, state, params) {
     const dy = p.y - player.y;
     if (dx * dx + dy * dy > r2) continue;
     p.hp = Math.min(p.maxHP || 100, p.hp + (params.heal || 0));
+    const shieldBonus = Math.max(0, Number(params.shieldBonus || 0));
+    const maxShield = Math.max(0, Number(p._energyBarrierMaxShield || 0));
+    if (shieldBonus > 0 && maxShield > 0) {
+      const curShield = Math.max(0, Number(p._energyBarrierShield || 0));
+      p._energyBarrierShield = Math.min(maxShield, curShield + shieldBonus);
+    }
   }
 
   if (!Array.isArray(state.healPulses)) state.healPulses = [];

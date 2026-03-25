@@ -6,6 +6,7 @@ import { AVATARS, getUnlockedAvatarCount, isAvatarUnlocked } from "../core/avata
 import { AURA_NAMES, clampAuraId } from "../core/auras.js";
 import { getDefaultWsUrl, setRelayUrlOverride, getRelayUrlOverride } from "../net/netClient.js";
 import { ensureShopMeta, ensureShopOffers, rerollShopOffers, replaceOfferSlot, getItemById, getMetaLevel, setMetaLevel, getPriceFor, getMaxMetaLevel } from "../meta/shopMeta.js";
+import { getActiveHeroSummary, getSavedCheckpointHeroSummary } from "../core/accountProfile.js";
 
 let _inited = false;
 let _game = null;
@@ -129,19 +130,20 @@ function connectAndDo(state, action) {
   const avatarIndex = state.progression?.avatarIndex || 0;
   const auraId = state.progression?.auraId || 0;
   const roomCode = state.progression?.roomCode || "";
+  const meta = buildNetMetaPayload(state.progression);
   const resolvedRelayUrl = getRelayUrlOverride() || getDefaultWsUrl();
 
   // Remember the latest requested action.
   // This prevents "double host/join" if the user clicks buttons while WS is still connecting.
   const seq = ++_pendingNetActionSeq;
-  _pendingNetAction = { seq, action, nickname, avatarIndex, auraId, roomCode };
+  _pendingNetAction = { seq, action, nickname, avatarIndex, auraId, roomCode, meta };
 
   const runAction = (req) => {
     if (!req) return;
     try {
-      if (req.action === "host") net.host(req.roomCode, req.nickname, req.avatarIndex, req.auraId);
-      else if (req.action === "join") net.join(req.roomCode, req.nickname, req.avatarIndex, req.auraId);
-      else net.fastJoin(req.nickname, req.avatarIndex, req.auraId);
+      if (req.action === "host") net.host(req.roomCode, req.nickname, req.avatarIndex, req.auraId, req.meta || null);
+      else if (req.action === "join") net.join(req.roomCode, req.nickname, req.avatarIndex, req.auraId, req.meta || null);
+      else net.fastJoin(req.nickname, req.avatarIndex, req.auraId, req.meta || null);
     } catch {}
   };
 
@@ -570,8 +572,12 @@ export function tickLobbyDom(state) {
     el.lobbyPlayers.textContent = `Players on map: ${count}/${max}`;
   }
 
+  const activeHero = getActiveHeroSummary(state.progression);
+  const activeHeroPower = Math.max(0, Number(activeHero?.totalCardPower || state?.progression?.heroCombatSummary?.totalCardPower || state?.progression?.heroCombatProfile?.summary?.totalCardPower || 0) | 0);
+  const activeHeroRace = String(activeHero?.race || 'mecha').trim() || 'mecha';
+  const activeHeroRaceLabel = activeHeroRace ? activeHeroRace[0].toUpperCase() + activeHeroRace.slice(1) : 'Mecha';
   if (el.roomCodeStatus) {
-    el.roomCodeStatus.textContent = room ? `Room ${room}` : "Public lobby";
+    el.roomCodeStatus.textContent = `${room ? `Room ${room}` : 'Public lobby'} • ${String(activeHero?.name || state.progression.nickname || 'Hero')} • ${activeHeroRaceLabel}${activeHeroPower > 0 ? ` • Power ${activeHeroPower}` : ''}`;
   }
 
   if (el.joinError) {
@@ -579,19 +585,21 @@ export function tickLobbyDom(state) {
   }
 
   const hasSavedRun = !!(state._savedRunResumeAvailable && state._hubResumeRunActive && state._hubResumeNextFloor > 0);
-  if (el.btnStart) el.btnStart.textContent = hasSavedRun ? `Resume Floor ${state._hubResumeNextFloor}` : 'Start';
+  const savedCheckpointHero = getSavedCheckpointHeroSummary(state.progression);
+  if (el.btnStart) el.btnStart.textContent = hasSavedRun ? `Resume Floor ${state._hubResumeNextFloor}${savedCheckpointHero?.name ? ` • ${savedCheckpointHero.name}` : ''}` : 'Start';
 
   if (el.lobbyInfo) {
+    const heroSummaryText = `${String(activeHero?.name || state.progression.nickname || 'Hero')} • ${activeHeroRaceLabel}${activeHeroPower > 0 ? ` • Power ${activeHeroPower}` : ''}`;
     if (!net || net.status === "offline") {
       el.lobbyInfo.textContent = hasSavedRun
-        ? `Saved run ready. Press Resume Floor ${state._hubResumeNextFloor} or connect via Host/Join/Fast-Join.`
-        : "Offline. Press Start or connect via Host/Join/Fast-Join.";
+        ? `Saved run ready for ${savedCheckpointHero?.name || 'the active hero'}. Active hero: ${heroSummaryText}. Press Resume Floor ${state._hubResumeNextFloor} or connect via Host/Join/Fast-Join.`
+        : `Offline. Active hero: ${heroSummaryText}. Press Start or connect via Host/Join/Fast-Join.`;
     } else if (net.status === "connecting") {
-      el.lobbyInfo.textContent = "Connecting...";
+      el.lobbyInfo.textContent = `Connecting... Active hero: ${heroSummaryText}`;
     } else if (net.status === "connected") {
-      el.lobbyInfo.textContent = net.isHost ? `Connected (Host) • ${net.url || getDefaultWsUrl()}` : `Connected (Join) • ${net.url || getDefaultWsUrl()}`;
+      el.lobbyInfo.textContent = `${net.isHost ? 'Connected (Host)' : 'Connected (Join)'} • ${net.url || getDefaultWsUrl()} • Hero ${heroSummaryText}`;
     } else {
-      el.lobbyInfo.textContent = net.status;
+      el.lobbyInfo.textContent = `${net.status} • Hero ${heroSummaryText}`;
     }
   }
 

@@ -2,6 +2,7 @@
 
 import { applyCritToDamage, applyLifeSteal } from "../core/progression.js";
 import { getNearestEnemy } from "../enemies/utils.js";
+import { applyIceControlState } from "../core/heroBiomeCombat.js";
 
 export function updateIceBall(player, state, dt, params) {
   if (!player || !state || !params) return;
@@ -42,6 +43,7 @@ export function updateIceBall(player, state, dt, params) {
     slowDur: params.slowDur,
     slowMult: params.slowMult,
     frostDur: params.frostDur,
+    freezeBuild: params.freezeBuild,
   });
 
   player._lastCombatAt = state.time;
@@ -77,13 +79,8 @@ export function explodeIceBall(ball, state) {
 
     const slowDur = Math.max(0.35, Number(ball.slowDur || 0));
     const slowMult = Math.max(0.18, Math.min(0.92, Number(ball.slowMult || 0.72)));
-    e._barrierDebuffUntil = Math.max((e._barrierDebuffUntil || 0), now + slowDur);
-    e._barrierSlowMult = Math.min((e._barrierSlowMult || 1), slowMult);
-    e._barrierDmgMult = Math.min((e._barrierDmgMult || 1), 1);
-
     const frostDur = Math.max(0.8, Number(ball.frostDur || slowDur));
-    e._frostLeft = Math.max((e._frostLeft || 0), frostDur);
-    e._frostLv = Math.max((e._frostLv || 0), 1);
+    applyIceControlState(owner, e, state, { slowDur, slowMult, frostDur, freezeBuild: Number(ball.freezeBuild || 0.72) });
   }
 
   if (!Array.isArray(state._explosions)) state._explosions = [];

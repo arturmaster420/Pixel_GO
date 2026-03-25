@@ -4,7 +4,7 @@ import { biomeByKey } from "./biomes.js";
 import { primaryEdgeForSocket } from "./roomRoute.js";
 import { renderHubSceneWorld } from "./hub/hubRenderer.js";
 import { HUB_ASSET_URLS } from "./hub/hubAssets.js";
-import { getBiomeArtSignature } from "./biomeArtAssets.js";
+import { getBiomeArtAssetSet, getBiomeArtSignature } from "./biomeArtAssets.js";
 import { drawBiomeArenaArt, drawImageContainRect, drawImageCoverRect, getRoomTexture, hasLoadedBiomeArenaArt } from "./render/textureHelpers.js";
 import { drawCosmosScreen, ensureCosmosCache } from "./render/cosmosBackdrop.js";
 import { drawBossArenaOverlay, drawArenaSpecDecor, drawArenaHazards, drawBiomeSurfaceFX, drawNeutralSpaceSurfaceFX } from "./render/arenaFx.js";
@@ -654,12 +654,11 @@ function drawArenaSolidShape(ctx, room, arenaSpec, time = 0, bounds = null) {
 
   if (useLoadedBiomeArtSurface) {
     ctx.save();
-    drawBiomeArenaArt(ctx, room, arenaSpec, bounds, 'surface', time, {
-      clipMode: 'surface_overscan',
+    drawBiomeArenaArt(ctx, room, x0, y0, w, h, {
+      layer: 'surface',
       alpha: 1,
       scaleMul: 1.00,
-      compositeOperation: 'source-over',
-      parallax: 0,
+      mode: 'cover',
     });
     ctx.restore();
     return true;
@@ -845,14 +844,12 @@ function drawArenaShapeOverlay(ctx, room, arenaSpec, time = 0) {
   }
   const roomBounds = room?.bounds || null;
   if (!useLoadedBiomeArtSurface && !isHubShape && roomBounds) {
-    drawBiomeArenaArt(ctx, room, arenaSpec, {
-      x0: Number(roomBounds.minX) || 0,
-      y0: Number(roomBounds.minY) || 0,
-      x1: Number(roomBounds.maxX) || 0,
-      y1: Number(roomBounds.maxY) || 0,
-      w: (Number(roomBounds.maxX) || 0) - (Number(roomBounds.minX) || 0),
-      h: (Number(roomBounds.maxY) || 0) - (Number(roomBounds.minY) || 0),
-    }, 'overlay', time, null);
+    drawBiomeArenaArt(ctx, room,
+      Number(roomBounds.minX) || 0,
+      Number(roomBounds.minY) || 0,
+      (Number(roomBounds.maxX) || 0) - (Number(roomBounds.minX) || 0),
+      (Number(roomBounds.maxY) || 0) - (Number(roomBounds.minY) || 0),
+      { layer: 'overlay', mode: 'cover' });
   }
   ctx.restore();
 }

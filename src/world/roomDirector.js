@@ -137,10 +137,17 @@ function resolveHubReturnPortalPoint(room) {
 function splitHubLootPayload(payload) {
   const chunks = [];
   if (!payload || typeof payload !== 'object') return chunks;
+  const coinAmt = Math.max(0, Number(payload.coins || 0) | 0);
+  if (coinAmt > 0) chunks.push({ kind: 'coin', payload: { coins: coinAmt } });
   const essences = payload.essences && typeof payload.essences === 'object' ? payload.essences : {};
   for (const [key, amtRaw] of Object.entries(essences)) {
     const amt = Math.max(0, Number(amtRaw) | 0);
     if (amt > 0) chunks.push({ kind: 'essence', payload: { essences: { [key]: amt } } });
+  }
+  const raceDust = payload.raceDust && typeof payload.raceDust === 'object' ? payload.raceDust : {};
+  for (const [key, amtRaw] of Object.entries(raceDust)) {
+    const amt = Math.max(0, Number(amtRaw) | 0);
+    if (amt > 0) chunks.push({ kind: 'prog', payload: { raceDust: { [key]: amt } } });
   }
   const materials = payload.materials && typeof payload.materials === 'object' ? payload.materials : {};
   for (const [key, amtRaw] of Object.entries(materials)) {
@@ -156,6 +163,16 @@ function splitHubLootPayload(payload) {
   for (const [key, amtRaw] of Object.entries(items)) {
     const amt = Math.max(0, Number(amtRaw) | 0);
     if (amt > 0) chunks.push({ kind: 'gearItem', payload: { gearItems: { [key]: amt } } });
+  }
+  const cardShards = payload.cardShards && typeof payload.cardShards === 'object' ? payload.cardShards : {};
+  for (const [key, amtRaw] of Object.entries(cardShards)) {
+    const amt = Math.max(0, Number(amtRaw) | 0);
+    if (amt > 0) chunks.push({ kind: 'prog', payload: { cardShards: { [key]: amt } } });
+  }
+  const cardCopies = payload.cardCopies && typeof payload.cardCopies === 'object' ? payload.cardCopies : {};
+  for (const [key, amtRaw] of Object.entries(cardCopies)) {
+    const amt = Math.max(0, Number(amtRaw) | 0);
+    if (amt > 0) chunks.push({ kind: 'prog', payload: { cardCopies: { [key]: amt } } });
   }
   return chunks;
 }
@@ -173,16 +190,20 @@ function spawnHubLootPickups(state, room, payload) {
     const ring = baseR + (i % 3) * 16;
     const chunk = chunks[i] || null;
     if (!chunk) continue;
+    const firstCoin = Math.max(0, Number(chunk.payload?.coins || 0) | 0);
     const firstEssenceKey = chunk.payload?.essences ? Object.keys(chunk.payload.essences)[0] || '' : '';
+    const firstDustKey = chunk.payload?.raceDust ? Object.keys(chunk.payload.raceDust)[0] || '' : '';
     const firstMaterialKey = chunk.payload?.materials ? Object.keys(chunk.payload.materials)[0] || '' : '';
     const firstPartKey = chunk.payload?.gearParts ? Object.keys(chunk.payload.gearParts)[0] || '' : '';
     const firstItemKey = chunk.payload?.gearItems ? Object.keys(chunk.payload.gearItems)[0] || '' : '';
-    const amount = Math.max(1, Number((chunk.payload?.essences?.[firstEssenceKey]) || (chunk.payload?.materials?.[firstMaterialKey]) || (chunk.payload?.gearParts?.[firstPartKey]) || (chunk.payload?.gearItems?.[firstItemKey]) || 1) | 0);
+    const firstCardShardKey = chunk.payload?.cardShards ? Object.keys(chunk.payload.cardShards)[0] || '' : '';
+    const firstCardCopyKey = chunk.payload?.cardCopies ? Object.keys(chunk.payload.cardCopies)[0] || '' : '';
+    const amount = Math.max(1, Number(firstCoin || (chunk.payload?.essences?.[firstEssenceKey]) || (chunk.payload?.raceDust?.[firstDustKey]) || (chunk.payload?.materials?.[firstMaterialKey]) || (chunk.payload?.gearParts?.[firstPartKey]) || (chunk.payload?.gearItems?.[firstItemKey]) || (chunk.payload?.cardShards?.[firstCardShardKey]) || (chunk.payload?.cardCopies?.[firstCardCopyKey]) || 1) | 0);
     const orb = {
       x: centerX + Math.cos(a) * ring,
       y: centerY + Math.sin(a) * ring,
       baseY: centerY + Math.sin(a) * ring,
-      radius: chunks[i].kind === 'gearItem' ? 12 : (chunks[i].kind === 'gearPart' ? 10 : 9),
+      radius: chunks[i].kind === 'coin' ? 9 : (chunks[i].kind === 'gearItem' ? 12 : (chunks[i].kind === 'gearPart' ? 10 : 9)),
       age: 0,
       spawnDelay: 0.35,
       ttl: 120,
@@ -190,9 +211,14 @@ function spawnHubLootPickups(state, room, payload) {
       amount,
       grantId: `room:${(room.floorNumber | 0)}:${(room.index | 0)}:${chunks[i].kind}:${++state._resourceGrantSerial}`,
     };
+    if (chunk.kind === 'coin') orb.coins = amount;
     if (chunk.kind === 'essence') orb.essenceKey = firstEssenceKey || 'mecha';
     else if (chunk.kind === 'material') orb.materialKey = firstMaterialKey || 'salvage';
     else if (chunk.kind === 'gearPart' || chunk.kind === 'gearItem') orb.gearKey = firstPartKey || firstItemKey || '';
+    else if (chunk.kind === 'prog') {
+      orb.progKind = chunk.payload?.cardCopies ? 'cardCopy' : (chunk.payload?.cardShards ? 'cardShard' : (chunk.payload?.raceDust ? 'raceDust' : 'resource'));
+      orb.progPayload = { ...(chunk.payload || {}), _grantId: orb.grantId };
+    }
     xpOrbs.push(orb);
   }
   return chunks.length;

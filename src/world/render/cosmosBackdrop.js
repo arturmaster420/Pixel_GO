@@ -6,7 +6,7 @@ function hsla(h, s, l, a) {
   return `hsla(${h},${s}%,${l}%,${a})`;
 }
 
-function makeRng(seed) {
+export function makeRng(seed) {
   let s = (seed >>> 0) || 1;
   return () => {
     // xorshift32

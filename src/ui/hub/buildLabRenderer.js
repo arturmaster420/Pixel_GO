@@ -1,6 +1,12 @@
 import { STARTER_LOADOUTS, getCoreIdentity, getPassiveRouteMeta, getSkillRouteMeta } from "../../core/starterLoadouts.js";
+import { ensureAccountProgression, getActiveHero, getHeroBiomeMasterySummary, getHeroCombatProfile, getHeroLoadoutSummary, normalizeHeroRaceKey } from "../../core/accountProfile.js";
+import { getHeroBiomeMeta } from "../../core/heroBiomes.js";
+import { describeHeroBiomeRewardFlow } from "../../core/heroBiomeProgression.js";
+import { fillHeroLoadoutSlots, getHeroLoadoutEntries, optimizeHeroLoadout } from "../../core/cards/cardLoadout.js";
+import { getTotalCardShardCount } from "../../core/cards/cardRewards.js";
 import { RUN_PASSIVES, RUN_SKILLS } from "../../core/runUpgrades.js";
-import { BIOME_ESSENCE_KEYS, ESSENCE_EXCHANGE_RATE, ESSENCE_META, HUB_GEAR_DEFS, HUB_MATERIAL_KEYS, HUB_MODULE_SLOTS, MATERIAL_META, canCraftHubGear, canEquipHubGear, canExchangeEssence, craftHubGear, ensureHubProgression, equipHubGear, getBiomeLootProfile, getEquippedHubGearKeys, getEquippedHubSkillCount, getGearPartCount, getGearPrimaryBiomeKey, getGearSourceBiomes, getHubBuildAvailableSp, getHubBuildSpentPoints, getHubCoreKey, getHubGearDef, getHubGearDefsBySlot, getHubGearMaterialCosts, getHubGearPartCost, getHubGearSlotUsage, getMaterialCount, getOwnedPassiveCap, getOwnedSkillCap, HUB_BUILD_EXTRA_SKILL_SLOTS, isHubGearEquipped, isHubGearOwned, setHubPassiveLevel, setHubSkillLevel, unequipHubGear } from "../../core/hubBuild.js";
+import { getCanonicalHeroRuntimeProfile } from "../../core/skillRuntimeState.js";
+import { BIOME_ESSENCE_KEYS, ESSENCE_EXCHANGE_RATE, ESSENCE_META, HUB_GEAR_DEFS, HUB_MATERIAL_KEYS, HUB_MODULE_SLOTS, MATERIAL_META, RACE_DUST_EXCHANGE_RATE, canCraftHubGear, canEquipHubGear, canExchangeEssence, canExchangeRaceDust, craftHubGear, ensureHubProgression, equipHubGear, getBiomeLootProfile, getEquippedHubGearKeys, getGearPartCount, getGearPrimaryBiomeKey, getGearSourceBiomes, getHubBuildAvailableSp, getHubBuildSpentPoints, getHubCoreKey, getHubGearDef, getHubGearDefsBySlot, getHubGearMaterialCosts, getHubGearPartCost, getHubGearSlotUsage, getMaterialCount, getOwnedPassiveCap, getOwnedSkillCap, getRaceDustCount, HUB_BUILD_EXTRA_SKILL_SLOTS, isHubGearEquipped, isHubGearOwned, unequipHubGear } from "../../core/hubBuild.js";
 import { ensureShopMeta, ensureShopOffers, rerollShopOffers, replaceOfferSlot, getItemById, getMetaLevel, setMetaLevel, getPriceFor, getMaxMetaLevel } from "../../meta/shopMeta.js";
 import { BUILD_BRANCH_META, getBuildFocus, normalizeBuildFocus, setSectionVisibility } from "./hubUiState.js";
 import { formatCorePassiveBonuses, getCorePassiveAffinity, getCoreSkillAffinity, getFrameAccent, getPassiveBiomeKey, getSkillBiomeKey, renderGearIcon, renderSkillIcon, renderWalletBar } from "./hubViewShared.js";
@@ -10,12 +16,14 @@ let make = null;
 let persistHubState = null;
 let setShopMsg = null;
 let _shopRerollLocal = 0;
+let openCharacterMenu = null;
 
 export function configureBuildLabRenderer(deps = {}) {
   if (deps.el && typeof deps.el === 'object') el = deps.el;
   if (typeof deps.make === 'function') make = deps.make;
   if (typeof deps.persistHubState === 'function') persistHubState = deps.persistHubState;
   if (typeof deps.setShopMsg === 'function') setShopMsg = deps.setShopMsg;
+  if (typeof deps.openCharacterMenu === 'function') openCharacterMenu = deps.openCharacterMenu;
 }
 
 export function resetBuildLabLocalState() {
@@ -46,6 +54,32 @@ function renderAdjustCard(title, subText, level, maxLevel, onDec, onInc, opts = 
   actions.appendChild(decBtn);
   actions.appendChild(make("div", { className: "price", text: `Allocated: ${Math.max(0, level | 0)}` }));
   actions.appendChild(incBtn);
+  card.appendChild(actions);
+  return card;
+}
+
+function renderRuntimeMirrorCard(title, subText, level, maxLevel, opts = {}) {
+  const accent = String(opts.accent || '#9fd6ff');
+  const card = make("div", { className: "shopCard", style: { padding: "12px", border: `1px solid ${accent}55`, boxShadow: `0 0 0 1px ${accent}22 inset` } });
+  const topRow = make("div", { style: { display: 'flex', gap: '10px', alignItems: 'center' } });
+  if (opts.iconNode) topRow.appendChild(opts.iconNode);
+  const titleWrap = make('div', { style: { flex: '1 1 auto' } });
+  titleWrap.appendChild(make("div", { className: "top" }, [
+    make("div", { className: "name", text: title }),
+    make("div", { className: "lvl", text: `Tier ${Math.max(0, level | 0)}/${Math.max(0, maxLevel | 0)}` }),
+  ]));
+  topRow.appendChild(titleWrap);
+  card.appendChild(topRow);
+  card.appendChild(make("div", { className: "muted", text: subText, style: { marginTop: "8px", fontSize: "12px", lineHeight: "1.35" } }));
+  const note = String(opts.note || 'Runtime mirror only. Manage cards, upgrades and replacement in Hero Menu → Cards.');
+  card.appendChild(make('div', { className: 'muted', text: note, style: { marginTop: '8px', fontSize: '11px', lineHeight: '1.35', color: 'rgba(214,232,255,0.76)' } }));
+  const actions = make("div", { className: "buyRow", style: { marginTop: "10px", alignItems: "center", gap: '8px' } });
+  actions.appendChild(make("div", { className: "price", text: level > 0 ? `Active in runtime` : 'Not equipped on this hero' }));
+  const manageBtn = make("button", { type: "button", className: "btn", text: String(opts.buttonText || 'Open Cards'), style: { minWidth: "112px" } });
+  manageBtn.addEventListener('click', () => {
+    if (typeof openCharacterMenu === 'function') openCharacterMenu(opts.state || null, 'skills');
+  });
+  actions.appendChild(manageBtn);
   card.appendChild(actions);
   return card;
 }
@@ -118,7 +152,98 @@ function renderBiomeRouteCard(biomeKey) {
   ]);
 }
 
-function gearCostText(def) {
+function formatCardEntryShort(entry) {
+  if (!entry) return '—';
+  return `${String(entry.name || entry.cardId || 'Card')} • ${String(entry.starsText || '★')} • Lv ${Math.max(1, entry.level | 0)} • Copies ${Math.max(0, entry.copiesOwned | 0)}`;
+}
+
+function renderDoctrineCard(entry, opts = {}) {
+  const accent = getFrameAccent(entry?.race || 'mecha');
+  const card = make('div', { className: 'shopCard', style: { padding: '12px', border: `1px solid ${accent}55`, boxShadow: `0 0 0 1px ${accent}22 inset` } });
+  const top = make('div', { style: { display: 'flex', gap: '10px', alignItems: 'center' } });
+  const iconNode = entry?.kind === 'passive'
+    ? make('div', { text: '⬢', style: { width: '28px', height: '28px', display: 'grid', placeItems: 'center', borderRadius: '10px', color: accent, border: `1px solid ${accent}88`, background: `${accent}1c`, fontSize: '15px', fontWeight: '700' } })
+    : renderSkillIcon(entry?.sourceKey || entry?.skillId || entry?.cardId, 28);
+  top.appendChild(iconNode);
+  const titleWrap = make('div', { style: { flex: '1 1 auto' } });
+  titleWrap.appendChild(make('div', { className: 'name', text: String(entry?.name || entry?.cardId || 'Card'), style: { color: '#f4fbff' } }));
+  titleWrap.appendChild(make('div', { className: 'muted', text: `${String((entry?.race || 'mecha')).toUpperCase()} • ${String(entry?.starsText || '★')} • Lv ${Math.max(1, entry?.level | 0)}`, style: { marginTop: '4px', fontSize: '12px', lineHeight: '1.35', opacity: '1' } }));
+  top.appendChild(titleWrap);
+  top.appendChild(make('div', { className: 'lvl', text: opts.slotText || (entry?.kind === 'passive' ? 'PASSIVE' : 'SKILL') }));
+  card.appendChild(top);
+  card.appendChild(make('div', { className: 'muted', text: String(entry?.summary || 'Card-driven hero doctrine.'), style: { marginTop: '8px', fontSize: '12px', lineHeight: '1.4', opacity: '1' } }));
+  card.appendChild(make('div', { className: 'muted', text: `Copies owned ${Math.max(0, entry?.copiesOwned | 0)} • Route ${Array.isArray(entry?.routeTags) && entry.routeTags.length ? entry.routeTags.join(' • ') : 'general'} • Manage equip/upgrade/evolve at Hero Menu → Cards.`, style: { marginTop: '6px', fontSize: '11px', lineHeight: '1.35', color: 'rgba(216,234,255,0.78)', opacity: '1' } }));
+  return card;
+}
+
+function renderBuildCardSummaryBlock(state, prog) {
+  const activeHero = getActiveHero(prog);
+  const loadout = getHeroLoadoutEntries(prog, activeHero);
+  const raceKey = normalizeHeroRaceKey(activeHero?.race || prog?.selectedStarterLoadout || 'mecha');
+  const accent = getFrameAccent(raceKey);
+  const wrap = make('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' } });
+  const combatProfile = getHeroCombatProfile(prog, activeHero);
+  const loadoutSummary = getHeroLoadoutSummary(prog, activeHero);
+  const totalDust = Object.values(prog?.accountProfile?.sharedResources?.raceDust || {}).reduce((sum, value) => sum + Math.max(0, Number(value || 0) || 0), 0);
+  const raceDust = Math.max(0, prog?.accountProfile?.sharedResources?.raceDust?.[raceKey] | 0);
+  const totalShards = getTotalCardShardCount(prog?.accountProfile?.cardCollection);
+  const skillCount = loadout?.skillCards?.length || 0;
+  const passiveCount = loadout?.passiveCards?.length || 0;
+  wrap.appendChild(renderSimpleInfoCard('Active Hero', [
+    `${String(activeHero?.name || 'Hero')} • ${raceKey.toUpperCase()}`,
+    `Card Power ${Math.max(0, Number(loadoutSummary?.totalCardPower || combatProfile?.summary?.totalCardPower || 0) | 0)} • Same-race cards ${Math.max(0, Number(loadoutSummary?.sameRaceCards || combatProfile?.summary?.sameRaceCards || 0) | 0)}`,
+    `Loadout ${skillCount}/6 skills • ${passiveCount}/6 passives`,
+  ], { accent: `${accent}55`, background: `${accent}10` }));
+  wrap.appendChild(renderSimpleInfoCard('Card Economy', [
+    `${(ESSENCE_META[raceKey] || ESSENCE_META.mecha).short} Essence ${Math.max(0, prog?.essences?.[raceKey] | 0)} • ${raceKey.toUpperCase()} Dust ${raceDust}`,
+    `Total Dust ${Math.max(0, totalDust | 0)} • Total Shards ${Math.max(0, totalShards | 0)}`,
+    'Merchant now sells same-biome card caches and resonance crates for the active hero.',
+  ], { accent: 'rgba(255,208,138,0.35)', background: 'rgba(255,208,138,0.08)' }));
+  const biomeMeta = getHeroBiomeMeta(raceKey);
+  const rewardFlow = describeHeroBiomeRewardFlow(raceKey);
+  const masterySummary = getHeroBiomeMasterySummary(prog, activeHero);
+  const resonanceCard = renderSimpleInfoCard('Fixed Hero Biome', [
+    `${biomeMeta.label} is chosen once at hero creation and stays fixed for this hero.`,
+    `Biome mastery: Lv ${Math.max(1, masterySummary?.mastery?.level | 0 || 1)} • XP ${Math.max(0, masterySummary?.mastery?.xp | 0)}`,
+    `Strengths: ${(biomeMeta.strengths || []).join(' • ') || '—'}`,
+    `Weaknesses: ${(biomeMeta.weaknesses || []).join(' • ') || '—'}`,
+    `Mastery bonuses: ${(masterySummary?.bonuses?.summaryLines || []).join(' • ') || 'No mastery bonuses yet.'}`,
+    ...rewardFlow,
+  ], { accent: `${accent}55`, background: `${accent}10` });
+  wrap.appendChild(resonanceCard);
+
+  const actionCard = renderSimpleInfoCard('Card Workflow', [
+    'Cards are now the real source of truth for the active hero. This wing is locked to mirror mode so old SP allocation widgets can no longer overwrite the hero loadout.',
+    'Open Hero Menu → Cards to equip, upgrade, evolve and dismantle. Return here to inspect how the current hero doctrine is projected into battle.',
+  ], { accent: 'rgba(159,214,255,0.35)', background: 'rgba(159,214,255,0.08)' });
+  const actionRow = make('div', { className: 'row', style: { gap: '8px', marginTop: '10px', flexWrap: 'wrap' } });
+  const optimizeBtn = make('button', { className: 'btn', type: 'button', text: 'Optimize Hero Loadout', style: { padding: '8px 10px' } });
+  optimizeBtn.addEventListener('click', () => {
+    const result = optimizeHeroLoadout(prog, activeHero, { preferRace: true });
+    if (result?.ok) persistHubState(state, result.message || 'Hero loadout optimized.');
+    else setShopMsg(result?.message || 'Optimization blocked.');
+    renderBuildLab(state, true);
+  });
+  actionRow.appendChild(optimizeBtn);
+  const fillBtn = make('button', { className: 'btn', type: 'button', text: 'Fill Empty Slots', style: { padding: '8px 10px' } });
+  fillBtn.addEventListener('click', () => {
+    const result = fillHeroLoadoutSlots(prog, activeHero, { preferRace: true });
+    if (result?.ok) persistHubState(state, result.message || 'Empty slots filled.');
+    else setShopMsg(result?.message || 'Fill blocked.');
+    renderBuildLab(state, true);
+  });
+  actionRow.appendChild(fillBtn);
+  const openBtn = make('button', { className: 'btn', type: 'button', text: 'Open Hero Menu • Cards', style: { padding: '8px 10px' } });
+  openBtn.addEventListener('click', () => {
+    if (typeof openCharacterMenu === 'function') openCharacterMenu(state, 'cards');
+  });
+  actionRow.appendChild(openBtn);
+  actionCard.appendChild(actionRow);
+  wrap.appendChild(actionCard);
+  return { activeHero, loadout, wrap };
+}
+
+export function gearCostText(def) {
   const parts = [`${Math.max(0, def?.costCoins | 0)} Gold`];
   const materialCosts = getHubGearMaterialCosts(def);
   for (const [key, rawAmt] of Object.entries(materialCosts)) {
@@ -217,12 +342,12 @@ function getBuildOverviewHtml(buildFocus, data) {
   const corePassiveText = formatCorePassiveBonuses(coreIdentity);
   if (buildFocus === "arsenal") {
     return `
-      <div><b>Current core:</b> ${String(coreDef?.name || data.coreKey)}${coreDef?.skillName ? ` • ${coreDef.skillName}` : ""}</div>
+      <div><b>Active hero core:</b> ${String(coreDef?.name || data.coreKey)}${coreDef?.skillName ? ` • ${coreDef.skillName}` : ""}</div>
       <div><b>Route:</b> ${String(coreIdentity?.routeLabel || "general expedition")}</div>
       <div><b>Identity:</b> ${String(coreIdentity?.summary || coreDef?.desc || "")}</div>
       <div><b>Innate bonuses:</b> +${Math.round((Number(coreIdentity?.attackSpeedBonus || 0) || 0) * 100)}% Attack Speed • +${Math.round((Number(coreIdentity?.damageBonus || 0) || 0) * 100)}% ${String(coreIdentity?.damageType || data.coreKey)} Damage${corePassiveText ? ` • ${corePassiveText}` : ""}</div>
-      <div><b>Extra active skills equipped:</b> ${equippedSkills}/${HUB_BUILD_EXTRA_SKILL_SLOTS}</div>
-      <div><b>What this wing controls:</b> core path, route pressure and active combat shell.</div>
+      <div><b>Extra active skills mirrored:</b> ${equippedSkills}/${HUB_BUILD_EXTRA_SKILL_SLOTS}</div>
+      <div><b>What this wing controls:</b> fixed hero biome, route pressure and a read-only mirror of the current combat shell.</div>
     `;
   }
   if (buildFocus === "essence") {
@@ -235,10 +360,10 @@ function getBuildOverviewHtml(buildFocus, data) {
   }
   if (buildFocus === "mastery") {
     return `
-      <div><b>Passives equipped:</b> ${equippedPassives}</div>
+      <div><b>Passives mirrored:</b> ${equippedPassives}</div>
       <div><b>Banked SP available:</b> ${data.available}</div>
-      <div><b>Allocated SP:</b> ${data.spent}</div>
-      <div><b>What this wing controls:</b> long-form passive doctrine, sustain, reach, crit and tempo shaping.</div>
+      <div><b>Legacy SP mirror:</b> ${data.spent}</div>
+      <div><b>What this wing controls:</b> passive doctrine readout, sustain, reach, crit and tempo shaping from the active hero cards.</div>
     `;
   }
   if (buildFocus === "forge") {
@@ -252,7 +377,7 @@ function getBuildOverviewHtml(buildFocus, data) {
   }
   return `
     <div><b>Hub progression wings:</b> Arsenal Wing • Essence Conflux • Mastery Archive • Forge Wing</div>
-    <div><b>Current core:</b> ${String(coreDef?.name || data.coreKey)}</div>
+    <div><b>Active hero core:</b> ${String(coreDef?.name || data.coreKey)}</div>
     <div><b>Total crystal essences:</b> ${totalEssence} • <b>Total forge materials:</b> ${totalMaterials}</div>
   `;
 }
@@ -279,7 +404,7 @@ function renderMetaOfferCard(state, prog, kind, offerId, index, targetContainer)
   top.appendChild(titleWrap);
   top.appendChild(make('div', { className: 'lvl', text: `Lv ${metaLvl}/${maxLvl}` }));
   card.appendChild(top);
-  card.appendChild(make('div', { className: 'muted', text: it ? (it.kind === 'passive' ? `Ownership cap for ${it.name}. Gold raises cap; Arsenal SP allocates it into the active build.` : `Ownership cap for ${it.name}. Gold raises cap; SP equips levels in the build.`) : 'No offer available.', style: { marginTop: '8px', fontSize: '12px', lineHeight: '1.4', opacity: '1' } }));
+  card.appendChild(make('div', { className: 'muted', text: it ? (it.kind === 'passive' ? `Unlocks and upgrades ${it.name}. Gold raises owned card power; equip it from Hero Menu → Cards to project it into the active hero.` : `Unlocks and upgrades ${it.name}. Gold raises owned card power; equip it from Hero Menu → Cards to project it into the active hero.`) : 'No offer available.', style: { marginTop: '8px', fontSize: '12px', lineHeight: '1.4', opacity: '1' } }));
   const actionRow = make('div', { className: 'buyRow', style: { marginTop: '10px', alignItems: 'center' } });
   actionRow.appendChild(make('div', { className: 'price', text: metaLvl >= maxLvl ? 'MAX' : `${price} Gold` }));
   const btn = make('button', { type: 'button', className: 'btn', text: metaLvl <= 0 ? 'Unlock' : 'Upgrade' });
@@ -341,24 +466,38 @@ export function renderBuildLab(state, force = false) {
   const prog = state?.progression;
   if (!prog || !el.buildGridSkills || !el.buildGridPassives) return;
   ensureHubProgression(prog);
+  ensureAccountProgression(prog);
 
   const buildFocus = normalizeBuildFocus(getBuildFocus(state)) === "all" ? "arsenal" : getBuildFocus(state);
+  const activeHero = getActiveHero(prog);
+  const activeHeroCombat = getHeroCombatProfile(prog, activeHero) || null;
+  const activeHeroRuntime = getCanonicalHeroRuntimeProfile(activeHeroCombat, getHubCoreKey(prog));
   const key = JSON.stringify({
     focus: buildFocus,
     sp: prog.sp | 0,
     spent: getHubBuildSpentPoints(prog),
     available: getHubBuildAvailableSp(prog),
     core: getHubCoreKey(prog),
-    skills: prog.hubBuild?.skills || {},
-    passives: prog.hubBuild?.passives || {},
+    runtimeSkills: activeHeroRuntime.runtimeSkillKeys,
+    runtimePassives: activeHeroRuntime.runtimePassiveKeys,
+    skillTiers: activeHeroRuntime.skillTiers,
+    passiveTiers: activeHeroRuntime.passiveTiers,
     skillMeta: prog.skillMeta || {},
     materials: prog.materials || {},
     essences: prog.essences || {},
     gearParts: prog.gearParts || {},
     hubGear: prog.hubGear || {},
     gearInventory: prog.gearInventory || {},
+    activeHeroId: prog.activeHeroId || '',
+    heroes: Array.isArray(prog.heroes) ? prog.heroes.map((hero) => {
+      const summary = getHeroLoadoutSummary(prog, hero);
+      return ({ id: hero?.heroId, name: hero?.name, race: hero?.race, skills: hero?.equippedSkillCards || [], passives: hero?.equippedPassiveCards || [], power: summary?.totalCardPower || 0 });
+    }) : [],
+    raceDust: prog.accountProfile?.sharedResources?.raceDust || {},
+    shards: prog.accountProfile?.cardCollection?.shards || {},
     exchangeFrom: el.buildExchangeFrom?.value || "",
     exchangeTo: el.buildExchangeTo?.value || "",
+    exchangeMode: el.buildExchangeMode?.value || 'essence',
   });
   if (!force && renderBuildLab._key === key) return;
   renderBuildLab._key = key;
@@ -367,8 +506,8 @@ export function renderBuildLab(state, force = false) {
   const focusMeta = BUILD_BRANCH_META[buildFocus] || BUILD_BRANCH_META.arsenal;
   const spent = getHubBuildSpentPoints(prog);
   const available = getHubBuildAvailableSp(prog);
-  const equippedSkills = getEquippedHubSkillCount(prog);
-  const equippedPassives = Object.keys(prog.hubBuild?.passives || {}).filter((k) => ((prog.hubBuild?.passives?.[k] | 0) > 0)).length;
+  const equippedSkills = Math.max(0, activeHeroRuntime.runtimeSkillKeys.filter((key) => key && key !== activeHeroRuntime.coreSkillKey).length);
+  const equippedPassives = Math.max(0, activeHeroRuntime.runtimePassiveKeys.length);
   const equippedGearKeys = getEquippedHubGearKeys(prog);
   const gearUsage = getHubGearSlotUsage(prog);
   const totalOwnedGear = HUB_GEAR_DEFS.reduce((sum, def) => sum + (isHubGearOwned(prog, def.key) ? 1 : 0), 0);
@@ -377,14 +516,14 @@ export function renderBuildLab(state, force = false) {
   const coreDef = STARTER_LOADOUTS.find((d) => d.key === coreKey) || STARTER_LOADOUTS[0] || null;
   const coreIdentity = getCoreIdentity(coreKey);
   const corePassiveText = formatCorePassiveBonuses(coreIdentity);
-  const coreButtonText = state?._hubResumeRunActive ? `Core Locked • ${coreKey.toUpperCase()}` : `Open Core Selector • ${coreKey.toUpperCase()}`;
+  const coreButtonText = `Biome Locked • ${coreKey.toUpperCase()}`;
   if (el.buildInfoWrap) {
     if (buildFocus === "arsenal") {
-      el.buildInfoWrap.innerHTML = `<div><b>Gold:</b> ${Math.max(0, prog.coins | 0)}</div><div><b>Available SP:</b> ${available}</div><div><b>Allocated:</b> ${spent}</div><div><b>Extra Skill Slots:</b> ${equippedSkills}/${HUB_BUILD_EXTRA_SKILL_SLOTS}</div>`;
+      el.buildInfoWrap.innerHTML = `<div><b>Gold:</b> ${Math.max(0, prog.coins | 0)}</div><div><b>Available SP:</b> ${available}</div><div><b>Legacy SP Mirror:</b> ${spent}</div><div><b>Mirrored Extra Skills:</b> ${equippedSkills}/${HUB_BUILD_EXTRA_SKILL_SLOTS}</div>`;
     } else if (buildFocus === "essence") {
-      el.buildInfoWrap.innerHTML = `<div><b>Gold:</b> ${Math.max(0, prog.coins | 0)}</div><div><b>Total Essences:</b> ${totalEssence}</div><div><b>Exchange:</b> ${ESSENCE_EXCHANGE_RATE} → 1</div><div><b>Biome Routes:</b> ${BIOME_ESSENCE_KEYS.length}</div>`;
+      el.buildInfoWrap.innerHTML = `<div><b>Gold:</b> ${Math.max(0, prog.coins | 0)}</div><div><b>Total Essences:</b> ${totalEssence}</div><div><b>Exchange:</b> Essence/Dust ${ESSENCE_EXCHANGE_RATE} → 1</div><div><b>Biome Routes:</b> ${BIOME_ESSENCE_KEYS.length}</div>`;
     } else if (buildFocus === "mastery") {
-      el.buildInfoWrap.innerHTML = `<div><b>Available SP:</b> ${available}</div><div><b>Allocated:</b> ${spent}</div><div><b>Passives Equipped:</b> ${equippedPassives}</div><div><b>Core Route:</b> ${String(coreIdentity?.routeLabel || coreKey)}</div>`;
+      el.buildInfoWrap.innerHTML = `<div><b>Available SP:</b> ${available}</div><div><b>Legacy SP Mirror:</b> ${spent}</div><div><b>Passives Mirrored:</b> ${equippedPassives}</div><div><b>Hero Biome:</b> ${String(coreIdentity?.routeLabel || coreKey)}</div>`;
     } else if (buildFocus === "forge") {
       el.buildInfoWrap.innerHTML = `<div><b>Gold:</b> ${Math.max(0, prog.coins | 0)}</div><div><b>Materials:</b> ${totalMaterials}</div><div><b>Owned Gear:</b> ${totalOwnedGear}</div><div><b>Hardware Slots:</b> M ${gearUsage.module}/${HUB_MODULE_SLOTS} • R ${gearUsage.relic ? 1 : 0} • C ${gearUsage.coreItem ? 1 : 0}</div>`;
     }
@@ -418,11 +557,29 @@ export function renderBuildLab(state, force = false) {
     el.buildPanel.style.boxShadow = `0 18px 44px rgba(0,0,0,0.46), 0 0 0 1px ${focusMeta.accent || "rgba(255,255,255,0.12)"}16 inset`;
     el.buildPanel.style.background = `linear-gradient(180deg, rgba(10,16,24,0.985), rgba(8,13,20,0.985)), radial-gradient(circle at top left, ${focusMeta.accent || "#89d8ff"}1f, transparent 46%)`;
   }
-  renderWalletBar(el.buildWallet, prog);
+  renderWalletBar(el.buildWallet, prog, { showCardEconomy: true });
   setSectionVisibility(el.buildSectionArsenal, buildFocus === "arsenal");
   setSectionVisibility(el.buildSectionEssence, buildFocus === "essence");
   setSectionVisibility(el.buildSectionMastery, buildFocus === "mastery");
   setSectionVisibility(el.buildSectionForge, buildFocus === "forge");
+
+  const doctrineSummary = renderBuildCardSummaryBlock(state, prog);
+  if (el.buildCardSummary) {
+    el.buildCardSummary.innerHTML = '';
+    el.buildCardSummary.appendChild(doctrineSummary.wrap);
+  }
+  if (el.buildCardGridSkills) {
+    el.buildCardGridSkills.innerHTML = '';
+    const skillEntries = doctrineSummary.loadout?.skillCards || [];
+    if (!skillEntries.length) el.buildCardGridSkills.appendChild(renderSimpleInfoCard('No skill cards equipped', ['Equip active skill cards in Hero Menu → Cards. The runtime mirror below only reflects cards that are actually equipped on this hero.'], { accent: 'rgba(159,214,255,0.28)', background: 'rgba(159,214,255,0.06)' }));
+    else for (const entry of skillEntries) el.buildCardGridSkills.appendChild(renderDoctrineCard(entry, { slotText: 'SKILL' }));
+  }
+  if (el.buildCardGridPassives) {
+    el.buildCardGridPassives.innerHTML = '';
+    const passiveEntries = doctrineSummary.loadout?.passiveCards || [];
+    if (!passiveEntries.length) el.buildCardGridPassives.appendChild(renderSimpleInfoCard('No passive cards equipped', ['Equip passive cards in Hero Menu → Cards. The runtime mirror below only reflects passive cards actually worn by this hero.'], { accent: 'rgba(200,178,255,0.28)', background: 'rgba(200,178,255,0.06)' }));
+    else for (const entry of passiveEntries) el.buildCardGridPassives.appendChild(renderDoctrineCard(entry, { slotText: 'PASSIVE' }));
+  }
 
   if (el.buildEssenceGrid) {
     el.buildEssenceGrid.innerHTML = "";
@@ -455,14 +612,23 @@ export function renderBuildLab(state, force = false) {
 
   const fromKey = String(el.buildExchangeFrom?.value || "fire");
   const toKey = String(el.buildExchangeTo?.value || "ice");
-  const canExchange = canExchangeEssence(prog, fromKey, toKey, ESSENCE_EXCHANGE_RATE);
-  if (el.buildExchangeBtn) el.buildExchangeBtn.disabled = !canExchange;
+  const exchangeMode = String(el.buildExchangeMode?.value || 'essence').trim().toLowerCase() === 'dust' ? 'dust' : 'essence';
+  const exchangeRate = exchangeMode === 'dust' ? RACE_DUST_EXCHANGE_RATE : ESSENCE_EXCHANGE_RATE;
+  const canExchange = exchangeMode === 'dust'
+    ? canExchangeRaceDust(prog, fromKey, toKey, exchangeRate)
+    : canExchangeEssence(prog, fromKey, toKey, exchangeRate);
+  if (el.buildExchangeBtn) {
+    el.buildExchangeBtn.disabled = !canExchange;
+    el.buildExchangeBtn.textContent = exchangeMode === 'dust' ? `Transmute Dust ${exchangeRate} → 1` : `Convert Essence ${exchangeRate} → 1`;
+  }
   if (el.buildExchangeInfo) {
     const fromMeta = ESSENCE_META[fromKey] || ESSENCE_META.mecha;
     const toMeta = ESSENCE_META[toKey] || ESSENCE_META.mecha;
+    const fromCount = exchangeMode === 'dust' ? getRaceDustCount(prog, fromKey) : (prog?.essences?.[fromKey] | 0);
+    const toCount = exchangeMode === 'dust' ? getRaceDustCount(prog, toKey) : (prog?.essences?.[toKey] | 0);
     el.buildExchangeInfo.textContent = fromKey === toKey
-      ? "Choose two different essence types."
-      : `Exchange ${ESSENCE_EXCHANGE_RATE} ${fromMeta.short} Essence → 1 ${toMeta.short} Essence.`;
+      ? `Choose two different biome types for ${exchangeMode}.`
+      : `${exchangeMode === 'dust' ? 'Dust transmute' : 'Essence exchange'}: ${exchangeRate} ${fromMeta.short} ${exchangeMode === 'dust' ? 'Dust' : 'Essence'} → 1 ${toMeta.short} ${exchangeMode === 'dust' ? 'Dust' : 'Essence'} • Wallet ${fromCount} → ${toCount}.`;
   }
 
   el.buildGridSkills.innerHTML = "";
@@ -478,24 +644,14 @@ export function renderBuildLab(state, force = false) {
     if (cap <= 0) continue;
     const isCoreSkill = keySkill === (STARTER_LOADOUTS.find((d) => d.key === coreKey)?.skillKey || "bullets");
     if (isCoreSkill) continue;
-    const lv = Math.max(0, (prog.hubBuild?.skills?.[keySkill] | 0) || 0);
+    const lv = Math.max(0, Number(activeHeroRuntime.skillTiers?.[keySkill] || 0) | 0);
+    const liveState = lv > 0 ? 'Equipped on the active hero and projected into runtime.' : 'Not equipped on the active hero.';
     const routeMeta = getSkillRouteMeta(keySkill);
     const affinity = getCoreSkillAffinity(coreKey, def);
     const affinityText = affinity >= 3 ? 'Favored by current core.' : (affinity >= 2 ? 'Matches current core route.' : 'Off-route utility option.');
-    const sub = `${String(routeMeta.route || 'route').toUpperCase()} • ${String(routeMeta.role || 'utility')} • ${String(routeMeta.style || 'general value')}. ${affinityText} Owned cap ${cap}. ${lv > 0 ? "Equipped in expedition build." : "Unallocated."}`;
+    const sub = `${String(routeMeta.route || 'route').toUpperCase()} • ${String(routeMeta.role || 'utility')} • ${String(routeMeta.style || 'general value')}. ${affinityText} Owned cap ${cap}. ${liveState}`;
     const skillAccent = getFrameAccent(getSkillBiomeKey(keySkill));
-    el.buildGridSkills.appendChild(renderAdjustCard(String(def?.name || keySkill), sub, lv, cap, () => {
-      if (!setHubSkillLevel(prog, keySkill, lv - 1)) return;
-      persistHubState(state, `${def?.name || keySkill} -1`);
-      renderBuildLab(state, true);
-    }, () => {
-      if (!setHubSkillLevel(prog, keySkill, lv + 1)) {
-        setShopMsg(available <= 0 ? "Need more SP from expedition." : `Extra skill slots full (${HUB_BUILD_EXTRA_SKILL_SLOTS}).`);
-        return;
-      }
-      persistHubState(state, `${def?.name || keySkill} +1`);
-      renderBuildLab(state, true);
-    }, { accent: skillAccent, iconNode: renderSkillIcon(def, 28) }));
+    el.buildGridSkills.appendChild(renderRuntimeMirrorCard(String(def?.name || keySkill), sub, lv, cap, { accent: skillAccent, iconNode: renderSkillIcon(def, 28), state }));
   }
 
   el.buildGridPassives.innerHTML = "";
@@ -509,28 +665,18 @@ export function renderBuildLab(state, force = false) {
     if (!keyPassive || def?.kind !== "passive") continue;
     const cap = getOwnedPassiveCap(prog, keyPassive);
     if (cap <= 0) continue;
-    const lv = Math.max(0, (prog.hubBuild?.passives?.[keyPassive] | 0) || 0);
+    const lv = Math.max(0, Number(activeHeroRuntime.passiveTiers?.[keyPassive] || 0) | 0);
+    const liveState = lv > 0 ? 'Equipped on the active hero and projected into runtime.' : 'Not equipped on the active hero.';
     const routeMeta = getPassiveRouteMeta(keyPassive);
     const affinity = getCorePassiveAffinity(coreKey, keyPassive);
     const affinityText = affinity >= 3 ? 'Favored by current core.' : 'Universal passive option.';
-    const sub = `${String(routeMeta.route || 'route').toUpperCase()} • ${String(routeMeta.role || 'general scaling')}. ${affinityText} Owned cap ${cap}. Reversible allocation while in hub.`;
+    const sub = `${String(routeMeta.route || 'route').toUpperCase()} • ${String(routeMeta.role || 'general scaling')}. ${affinityText} Owned cap ${cap}. ${liveState}`;
     const passiveAccent = getFrameAccent(getPassiveBiomeKey(keyPassive));
-    el.buildGridPassives.appendChild(renderAdjustCard(String(def?.name || keyPassive), sub, lv, cap, () => {
-      if (!setHubPassiveLevel(prog, keyPassive, lv - 1)) return;
-      persistHubState(state, `${def?.name || keyPassive} -1`);
-      renderBuildLab(state, true);
-    }, () => {
-      if (!setHubPassiveLevel(prog, keyPassive, lv + 1)) {
-        setShopMsg("Need more SP from expedition.");
-        return;
-      }
-      persistHubState(state, `${def?.name || keyPassive} +1`);
-      renderBuildLab(state, true);
-    }, { accent: passiveAccent, iconNode: make('div', { text: '⬢', style: { width: '28px', height: '28px', display: 'grid', placeItems: 'center', borderRadius: '10px', color: passiveAccent, border: `1px solid ${passiveAccent}88`, background: `${passiveAccent}1c`, fontSize: '15px', fontWeight: '700' } }) }));
+    el.buildGridPassives.appendChild(renderRuntimeMirrorCard(String(def?.name || keyPassive), sub, lv, cap, { accent: passiveAccent, iconNode: make('div', { text: '⬢', style: { width: '28px', height: '28px', display: 'grid', placeItems: 'center', borderRadius: '10px', color: passiveAccent, border: `1px solid ${passiveAccent}88`, background: `${passiveAccent}1c`, fontSize: '15px', fontWeight: '700' } }), state }));
   }
 
   if (el.buildResetBtn) {
-    el.buildResetBtn.disabled = !(spent > 0);
+    el.buildResetBtn.disabled = false;
   }
 
   if (el.buildGridModules) {

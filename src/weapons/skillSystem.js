@@ -18,6 +18,7 @@ import { emitHealPulse } from "./lightHeal.js";
 import { castStormStrike, castFlameNova, fireIceShards, castVoidBurst, castHolyNova } from "./elementalActives.js";
 import { castShrapnelBurst, castRailVolley, castArcSpark, castStaticPulse, castMeteorRain, castMagmaLance, castFrostNova, castCrystalSpear, castSoulDrain, castDreadRing, castPrismRay, castSanctuary } from "./biomeActivesPlus.js";
 import { getAimDirectionForPlayer, isFiringActive } from "../core/mouseController.js";
+import { getBiomeAlignedSkillDamageMult, getDarkPullMult, getDarkServantProfile, getLightHealMult, getLightServantProfile, getPlayerHeroBiomeKey, triggerElectricSurge } from "../core/heroBiomeCombat.js";
 
 // Shared preferred distance for pets/minions around the player.
 // Used to align Summon Tanks spacing with Satellites orbit radius.
@@ -90,7 +91,7 @@ function getDamageTypeMult(player, type) {
 
 function getSkillDamageMult(player, skillKey) {
   const type = SKILL_DAMAGE_TYPES[String(skillKey || '')] || 'mecha';
-  return getDamageMult(player) * getDamageTypeMult(player, type);
+  return getDamageMult(player) * getDamageTypeMult(player, type) * getBiomeAlignedSkillDamageMult(player, skillKey);
 }
 
 
@@ -372,9 +373,11 @@ function lightningParams(player) {
   // Starter balance pass: Electric Chain should open around Gun power,
   // but feel different through short-range contact chaining and instant hits.
   const baseRate = player.attackSpeed || player.baseAttackSpeed || 2.0;
-  const maxTargets = Math.min(5, 1 + Math.floor((lvl - 1) / 2));
+  const heroBiome = getPlayerHeroBiomeKey(player);
+  const chainBonus = heroBiome === 'electric' ? 1 : 0;
+  const maxTargets = Math.min(6, 1 + Math.floor((lvl - 1) / 2) + chainBonus);
   const dmgBase = 4.1 + (lvl - 1) * 1.45;
-  const chainRange = (118 + (lvl - 1) * 13) * rMult;
+  const chainRange = (118 + (lvl - 1) * 13) * rMult * (heroBiome === 'electric' ? 1.08 : 1);
   const cd = 1 / Math.max(0.01, baseRate * (1 + (lvl - 1) * 0.04));
 
   return {
@@ -393,13 +396,15 @@ function fireballParams(player) {
 
   // Starter balance pass: keep Fireball close to Gun at level 1,
   // with power budget shifted into burn + light splash instead of raw burst.
+  const heroBiome = getPlayerHeroBiomeKey(player);
+  const fireBias = heroBiome === 'fire' ? 1.22 : 1;
   const range = (250 + (lvl - 1) * 15) * rMult;
   const speed = 500 + (lvl - 1) * 20;
   const cooldown = Math.max(0.72, 1.15 - (lvl - 1) * 0.045);
   const damage = (5.2 + (lvl - 1) * 2.2) * dMult;
-  const splashRadius = 54 + (lvl - 1) * 5;
-  const burnDur = 1.2 + (lvl - 1) * 0.16;
-  const burnDps = (2.2 + (lvl - 1) * 0.95) * dMult;
+  const splashRadius = (54 + (lvl - 1) * 5) * (heroBiome === 'fire' ? 1.08 : 1);
+  const burnDur = (1.2 + (lvl - 1) * 0.16) * fireBias;
+  const burnDps = (2.2 + (lvl - 1) * 0.95) * dMult * fireBias;
   const radius = 9 + Math.floor((lvl - 1) / 2);
   return { level: lvl, range, speed, cooldown, damage, splashRadius, burnDur, burnDps, radius };
 }
@@ -412,17 +417,20 @@ function iceWallParams(player) {
 
   // Starter balance pass: Ice Ball opens near Gun power,
   // but pays for that with utility through slow + frost setup.
+  const heroBiome = getPlayerHeroBiomeKey(player);
+  const iceBias = heroBiome === 'ice' ? 1.18 : 1;
   const range = (248 + (lvl - 1) * 15) * rMult;
   const speed = 490 + (lvl - 1) * 18;
   const cooldown = Math.max(0.76, 1.08 - (lvl - 1) * 0.04);
   const damage = (6.3 + (lvl - 1) * 2.05) * dMult;
   const splashRadius = 58 + (lvl - 1) * 5;
-  const slowDur = 1.1 + (lvl - 1) * 0.12;
-  const slowMult = Math.max(0.34, 0.68 - (lvl - 1) * 0.04);
-  const frostDur = 1.35 + (lvl - 1) * 0.14;
+  const slowDur = (1.1 + (lvl - 1) * 0.12) * (heroBiome === 'ice' ? 1.12 : 1);
+  const slowMult = Math.max(0.28, Math.max(0.34, 0.68 - (lvl - 1) * 0.04) - (heroBiome === 'ice' ? 0.06 : 0));
+  const frostDur = (1.35 + (lvl - 1) * 0.14) * iceBias;
   const radius = 9 + Math.floor((lvl - 1) / 2);
-  return { level: lvl, range, speed, cooldown, damage, splashRadius, slowDur, slowMult, frostDur, radius };
+  return { level: lvl, range, speed, cooldown, damage, splashRadius, slowDur, slowMult, frostDur, freezeBuild: heroBiome === 'ice' ? 0.9 : 0.58, radius };
 }
+
 
 function blackholeParams(player) {
   const lvl = (player.runSkills?.blackhole || 0) | 0;
@@ -433,7 +441,7 @@ function blackholeParams(player) {
   const cooldown = Math.max(4.6, 8.0 - (lvl - 1) * 0.52);
   const duration = 2.6 + (lvl - 1) * 0.35;
   const radius = ((170 + (lvl - 1) * 18) * (0.95 + (rMult - 1) * 0.25)) * 0.5;
-  const pull = 260 + (lvl - 1) * 30;
+  const pull = (260 + (lvl - 1) * 30) * getDarkPullMult(player);
   const dps = (10 + (lvl - 1) * 4.2) * dMult;
   const castRange = (360 + (lvl - 1) * 18) * rMult;
   return { level: lvl, cooldown, duration, radius, pull, dps, castRange };
@@ -443,11 +451,14 @@ function lightHealParams(player) {
   const lvl = (player.runSkills?.lightHeal || 0) | 0;
   if (lvl <= 0) return null;
   const rMult = getTotalRangeMult(player);
+  const healMult = getLightHealMult(player);
+  const lightProfile = getLightServantProfile(player);
   const cooldown = Math.max(4.0, 8.0 - (lvl - 1) * 0.55);
-  const radius = (220 + (lvl - 1) * 18) * (0.95 + (rMult - 1) * 0.35);
-  const heal = 12 + (lvl - 1) * 5;
-  return { level: lvl, cooldown, radius, heal };
+  const radius = (220 + (lvl - 1) * 18) * (0.95 + (rMult - 1) * 0.35) * (lightProfile.shieldBonus > 0 ? 1.05 : 1);
+  const heal = (12 + (lvl - 1) * 5) * healMult;
+  return { level: lvl, cooldown, radius, heal, shieldBonus: lightProfile.shieldBonus };
 }
+
 
 function laserParams(player) {
   const lvl = (player.runSkills?.laser || 0) | 0;
@@ -470,10 +481,11 @@ function stormStrikeParams(player) {
   const rMult = getTotalRangeMult(player);
   const dMult = getSkillDamageMult(player, 'stormStrike');
 
+  const heroBiome = getPlayerHeroBiomeKey(player);
   const damage = (22 + (lvl - 1) * 8.0) * dMult;
   const castRange = (340 + (lvl - 1) * 14) * rMult;
   const splashRadius = 66 + (lvl - 1) * 6;
-  const splashMul = Math.min(0.82, 0.52 + (lvl - 1) * 0.04);
+  const splashMul = Math.min(0.86, 0.52 + (lvl - 1) * 0.04 + (heroBiome === 'electric' ? 0.05 : 0));
   const cooldown = Math.max(0.75, 2.8 - (lvl - 1) * 0.16);
   return { level: lvl, damage, castRange, splashRadius, splashMul, cooldown };
 }
@@ -483,10 +495,12 @@ function flameNovaParams(player) {
   if (lvl <= 0) return null;
   const dMult = getSkillDamageMult(player, 'flameNova');
 
-  const radius = 92 + (lvl - 1) * 9;
+  const heroBiome = getPlayerHeroBiomeKey(player);
+  const fireBias = heroBiome === 'fire' ? 1.2 : 1;
+  const radius = (92 + (lvl - 1) * 9) * (heroBiome === 'fire' ? 1.06 : 1);
   const damage = (18 + (lvl - 1) * 6.8) * dMult;
-  const burnDur = 1.35 + (lvl - 1) * 0.18;
-  const burnDps = (7 + (lvl - 1) * 2.6) * dMult;
+  const burnDur = (1.35 + (lvl - 1) * 0.18) * fireBias;
+  const burnDps = (7 + (lvl - 1) * 2.6) * dMult * fireBias;
   const cooldown = Math.max(1.0, 3.4 - (lvl - 1) * 0.19);
   return { level: lvl, radius, damage, burnDur, burnDps, cooldown };
 }
@@ -504,7 +518,8 @@ function iceShardsParams(player) {
   const damage = (11 + (lvl - 1) * 3.8) * dMult;
   const radius = 7 + Math.floor((lvl - 1) / 3);
   const cooldown = Math.max(0.8, 2.3 - (lvl - 1) * 0.12);
-  return { level: lvl, count, spreadDeg, speed, range, damage, radius, cooldown };
+  const freezeBuild = getPlayerHeroBiomeKey(player) === 'ice' ? 0.62 : 0.38;
+  return { level: lvl, count, spreadDeg, speed, range, damage, radius, cooldown, freezeBuild };
 }
 
 function voidBurstParams(player) {
@@ -513,10 +528,11 @@ function voidBurstParams(player) {
   const rMult = getTotalRangeMult(player);
   const dMult = getSkillDamageMult(player, 'voidBurst');
 
-  const damage = (20 + (lvl - 1) * 7.2) * dMult;
+  const darkProfile = getDarkServantProfile(player);
+  const damage = (20 + (lvl - 1) * 7.2) * dMult * darkProfile.damageMult;
   const castRange = (320 + (lvl - 1) * 14) * rMult;
-  const radius = 72 + (lvl - 1) * 6;
-  const curseDur = 2.6 + (lvl - 1) * 0.20;
+  const radius = (72 + (lvl - 1) * 6) * (darkProfile.pullMult > 1 ? 1.06 : 1);
+  const curseDur = 2.6 + (lvl - 1) * 0.20 + darkProfile.curseBonus * 0.1;
   const curseLv = 1 + Math.floor((lvl - 1) / 3);
   const cooldown = Math.max(0.9, 3.0 - (lvl - 1) * 0.16);
   return { level: lvl, damage, castRange, radius, curseDur, curseLv, cooldown };
@@ -528,10 +544,11 @@ function holyNovaParams(player) {
   const rMult = getTotalRangeMult(player);
   const dMult = getSkillDamageMult(player, 'holyNova');
 
+  const lightProfile = getLightServantProfile(player);
   const damageRadius = (110 + (lvl - 1) * 10) * (0.96 + (rMult - 1) * 0.28);
-  const healRadius = (132 + (lvl - 1) * 12) * (0.96 + (rMult - 1) * 0.32);
+  const healRadius = (132 + (lvl - 1) * 12) * (0.96 + (rMult - 1) * 0.32) * (lightProfile.shieldBonus > 0 ? 1.04 : 1);
   const damage = (14 + (lvl - 1) * 5.4) * dMult;
-  const heal = 6 + (lvl - 1) * 2.4;
+  const heal = (6 + (lvl - 1) * 2.4) * lightProfile.healMult;
   const cooldown = Math.max(2.0, 6.0 - (lvl - 1) * 0.30);
   return { level: lvl, damageRadius, healRadius, damage, heal, cooldown };
 }
@@ -564,10 +581,11 @@ function arcSparkParams(player) {
   if (lvl <= 0) return null;
   const rMult = getTotalRangeMult(player);
   const dMult = getSkillDamageMult(player, 'arcSpark');
+  const heroBiome = getPlayerHeroBiomeKey(player);
   const damage = (18 + (lvl - 1) * 6.0) * dMult;
   const castRange = (336 + (lvl - 1) * 14) * rMult;
-  const chainRange = (110 + (lvl - 1) * 9) * rMult;
-  const chainTargets = Math.min(5, 1 + Math.floor((lvl - 1) / 2));
+  const chainRange = (110 + (lvl - 1) * 9) * rMult * (heroBiome === 'electric' ? 1.08 : 1);
+  const chainTargets = Math.min(6, 1 + Math.floor((lvl - 1) / 2) + (heroBiome === 'electric' ? 1 : 0));
   const chainMul = Math.min(0.9, 0.64 + (lvl - 1) * 0.04);
   const cooldown = Math.max(0.78, 2.5 - (lvl - 1) * 0.14);
   return { level: lvl, damage, castRange, chainRange, chainTargets, chainMul, cooldown };
@@ -577,10 +595,11 @@ function staticPulseParams(player) {
   const lvl = (player.runSkills?.staticPulse || 0) | 0;
   if (lvl <= 0) return null;
   const dMult = getSkillDamageMult(player, 'staticPulse');
+  const heroBiome = getPlayerHeroBiomeKey(player);
   const radius = 96 + (lvl - 1) * 8;
   const damage = (16 + (lvl - 1) * 5.4) * dMult;
   const slowDur = 0.85 + (lvl - 1) * 0.10;
-  const slowMult = Math.max(0.42, 0.82 - (lvl - 1) * 0.045);
+  const slowMult = Math.max(0.34, Math.max(0.42, 0.82 - (lvl - 1) * 0.045) - (heroBiome === 'electric' ? 0.06 : 0));
   const cooldown = Math.max(0.92, 2.85 - (lvl - 1) * 0.16);
   return { level: lvl, radius, damage, slowDur, slowMult, cooldown };
 }
@@ -620,13 +639,14 @@ function frostNovaParams(player) {
   const lvl = (player.runSkills?.frostNova || 0) | 0;
   if (lvl <= 0) return null;
   const dMult = getSkillDamageMult(player, 'frostNova');
+  const heroBiome = getPlayerHeroBiomeKey(player);
   const radius = 94 + (lvl - 1) * 8;
   const damage = (16 + (lvl - 1) * 5.2) * dMult;
-  const slowDur = 1.0 + (lvl - 1) * 0.10;
-  const slowMult = Math.max(0.34, 0.72 - (lvl - 1) * 0.04);
-  const frostDur = 1.3 + (lvl - 1) * 0.15;
+  const slowDur = (1.0 + (lvl - 1) * 0.10) * (heroBiome === 'ice' ? 1.1 : 1);
+  const slowMult = Math.max(0.28, Math.max(0.34, 0.72 - (lvl - 1) * 0.04) - (heroBiome === 'ice' ? 0.06 : 0));
+  const frostDur = (1.3 + (lvl - 1) * 0.15) * (heroBiome === 'ice' ? 1.16 : 1);
   const cooldown = Math.max(0.96, 2.9 - (lvl - 1) * 0.16);
-  return { level: lvl, radius, damage, slowDur, slowMult, frostDur, cooldown };
+  return { level: lvl, radius, damage, slowDur, slowMult, frostDur, freezeBuild: heroBiome === 'ice' ? 1.0 : 0.64, cooldown };
 }
 
 function crystalSpearParams(player) {
@@ -634,15 +654,16 @@ function crystalSpearParams(player) {
   if (lvl <= 0) return null;
   const rMult = getTotalRangeMult(player);
   const dMult = getSkillDamageMult(player, 'crystalSpear');
+  const heroBiome = getPlayerHeroBiomeKey(player);
   const damage = (27 + (lvl - 1) * 8.0) * dMult;
   const castRange = (330 + (lvl - 1) * 12) * rMult;
   const splashRadius = 40 + (lvl - 1) * 4;
   const splashMul = Math.min(0.78, 0.42 + (lvl - 1) * 0.04);
-  const frostDur = 1.45 + (lvl - 1) * 0.15;
-  const slowDur = 0.95 + (lvl - 1) * 0.10;
-  const slowMult = Math.max(0.36, 0.68 - (lvl - 1) * 0.04);
+  const frostDur = (1.45 + (lvl - 1) * 0.15) * (heroBiome === 'ice' ? 1.14 : 1);
+  const slowDur = (0.95 + (lvl - 1) * 0.10) * (heroBiome === 'ice' ? 1.08 : 1);
+  const slowMult = Math.max(0.28, Math.max(0.36, 0.68 - (lvl - 1) * 0.04) - (heroBiome === 'ice' ? 0.05 : 0));
   const cooldown = Math.max(0.86, 2.3 - (lvl - 1) * 0.11);
-  return { level: lvl, damage, castRange, splashRadius, splashMul, frostDur, slowDur, slowMult, cooldown };
+  return { level: lvl, damage, castRange, splashRadius, splashMul, frostDur, slowDur, slowMult, freezeBuild: heroBiome === 'ice' ? 0.82 : 0.48, cooldown };
 }
 
 function soulDrainParams(player) {
@@ -650,10 +671,11 @@ function soulDrainParams(player) {
   if (lvl <= 0) return null;
   const rMult = getTotalRangeMult(player);
   const dMult = getSkillDamageMult(player, 'soulDrain');
-  const damage = (22 + (lvl - 1) * 7.0) * dMult;
+  const darkProfile = getDarkServantProfile(player);
+  const damage = (22 + (lvl - 1) * 7.0) * dMult * darkProfile.damageMult;
   const castRange = (310 + (lvl - 1) * 12) * rMult;
   const heal = 4 + (lvl - 1) * 1.8;
-  const curseDur = 2.2 + (lvl - 1) * 0.18;
+  const curseDur = 2.2 + (lvl - 1) * 0.18 + darkProfile.curseBonus * 0.08;
   const curseLv = 1 + Math.floor((lvl - 1) / 3);
   const radius = 42 + (lvl - 1) * 3;
   const cooldown = Math.max(0.92, 2.5 - (lvl - 1) * 0.12);
@@ -664,9 +686,10 @@ function dreadRingParams(player) {
   const lvl = (player.runSkills?.dreadRing || 0) | 0;
   if (lvl <= 0) return null;
   const dMult = getSkillDamageMult(player, 'dreadRing');
+  const darkProfile = getDarkServantProfile(player);
   const radius = 96 + (lvl - 1) * 8;
-  const damage = (17 + (lvl - 1) * 5.4) * dMult;
-  const curseDur = 2.4 + (lvl - 1) * 0.18;
+  const damage = (17 + (lvl - 1) * 5.4) * dMult * darkProfile.damageMult;
+  const curseDur = 2.4 + (lvl - 1) * 0.18 + darkProfile.curseBonus * 0.08;
   const curseLv = 1 + Math.floor((lvl - 1) / 3);
   const cooldown = Math.max(0.96, 3.0 - (lvl - 1) * 0.17);
   return { level: lvl, radius, damage, curseDur, curseLv, cooldown };
@@ -677,11 +700,12 @@ function prismRayParams(player) {
   if (lvl <= 0) return null;
   const rMult = getTotalRangeMult(player);
   const dMult = getSkillDamageMult(player, 'prismRay');
+  const lightProfile = getLightServantProfile(player);
   const damage = (20 + (lvl - 1) * 6.4) * dMult;
   const castRange = (336 + (lvl - 1) * 14) * rMult;
   const splashRadius = 38 + (lvl - 1) * 4;
   const splashMul = Math.min(0.76, 0.42 + (lvl - 1) * 0.04);
-  const heal = 4 + (lvl - 1) * 1.6;
+  const heal = (4 + (lvl - 1) * 1.6) * lightProfile.healMult;
   const healRadius = (118 + (lvl - 1) * 8) * (0.96 + (rMult - 1) * 0.28);
   const cooldown = Math.max(0.9, 2.65 - (lvl - 1) * 0.13);
   return { level: lvl, damage, castRange, splashRadius, splashMul, heal, healRadius, cooldown };
@@ -692,9 +716,10 @@ function sanctuaryParams(player) {
   if (lvl <= 0) return null;
   const rMult = getTotalRangeMult(player);
   const dMult = getSkillDamageMult(player, 'sanctuary');
-  const radius = (106 + (lvl - 1) * 9) * (0.96 + (rMult - 1) * 0.26);
+  const lightProfile = getLightServantProfile(player);
+  const radius = (106 + (lvl - 1) * 9) * (0.96 + (rMult - 1) * 0.26) * (lightProfile.shieldBonus > 0 ? 1.05 : 1);
   const damage = (14 + (lvl - 1) * 4.8) * dMult;
-  const heal = 5 + (lvl - 1) * 2.0;
+  const heal = (5 + (lvl - 1) * 2.0) * lightProfile.healMult;
   const healRadius = radius * 1.12;
   const cooldown = Math.max(1.7, 4.2 - (lvl - 1) * 0.20);
   return { level: lvl, radius, damage, heal, healRadius, cooldown };
@@ -767,7 +792,8 @@ function energyBarrierParams(player) {
   const tick = pulseDamage > 0 ? Math.max(0.18, 0.38 - (lvl - 1) * 0.012) : 0.35;
 
   // Shield durability grows harder now, because it is the main upgrade identity.
-  const shieldMax = 40 + (lvl - 1) * 30;
+  const lightShieldBonus = getPlayerHeroBiomeKey(player) === 'light' ? getLightServantProfile(player).shieldBonus : 0;
+  const shieldMax = 40 + (lvl - 1) * 30 + lightShieldBonus;
   const cooldown = Math.max(3.5, 10.5 - (lvl - 1) * 0.65);
 
   return { level: lvl, radius, pulseDamage, tick, slowMult, dmgMult, shieldMax, cooldown };
@@ -778,7 +804,8 @@ function spiritParams(player) {
   if (lvl <= 0) return null;
 
   const rMult = getTotalRangeMult(player);
-  const dMult = getDamageMult(player);
+  const darkProfile = getDarkServantProfile(player);
+  const dMult = getSkillDamageMult(player, 'spirit') * darkProfile.damageMult;
 
   // Extra spirits come from the shop meta-level:
   // metaLvl 1 = unlocked (base: max 3 in-run)
@@ -788,30 +815,32 @@ function spiritParams(player) {
   const extraAt4 = metaLvl >= 2 ? 1 : 0;
   const extraAt6 = metaLvl >= 3 ? 1 : 0;
 
-  let count = 2;
+  let count = 2 + Math.max(0, darkProfile.extraCount | 0);
   if (lvl >= 4) count += 1 + extraAt4;
   if (lvl >= 6) count += 1 + extraAt6;
   count = Math.min(6, Math.max(2, count));
 
   // Same growth curve as Basic Shot, but 30% weaker.
   const baseRate = player.attackSpeed || player.baseAttackSpeed || 2.0;
-  const rate = baseRate * (1 + (lvl - 1) * 0.05) * 0.70;
+  const rate = baseRate * (1 + (lvl - 1) * 0.05) * 0.70 * darkProfile.rateMult;
 
   const dmgBase = 4 + (lvl - 1) * 1.1;
   const damage = dmgBase * dMult * 0.70;
 
   const range = (440 + (lvl - 1) * 12) * rMult * 0.70;
 
-  return { level: lvl, count, range, damage, rate, projectileSpeed: 900 };
+  return { level: lvl, count, range, damage, rate, projectileSpeed: 900, curseDur: 1.1 + darkProfile.curseBonus * 0.15, curseLv: 1 + Math.floor((lvl - 1) / 3), pullMult: darkProfile.pullMult };
 }
+
 
 function electricZoneParams(player) {
   const lvl = (player.runSkills?.electricZone || 0) | 0;
   if (lvl <= 0) return null;
   const rMult = getTotalRangeMult(player);
-  const dMult = getDamageMult(player);
+  const heroBiome = getPlayerHeroBiomeKey(player);
+  const dMult = getSkillDamageMult(player, 'electricZone');
 
-  const radius = (140 + (lvl - 1) * 9) * rMult;
+  const radius = (140 + (lvl - 1) * 9) * rMult * (heroBiome === 'electric' ? 1.05 : 1);
   const tick = Math.max(0.16, 0.34 - (lvl - 1) * 0.01);
   const pulseDamage = (22 + (lvl - 1) * 7) * dMult;
   return { level: lvl, radius, tick, pulseDamage };
@@ -821,19 +850,20 @@ function summonParams(player) {
   const lvl = (player.runSkills?.summon || 0) | 0;
   if (lvl <= 0) return null;
 
+  const lightProfile = getLightServantProfile(player);
   const metaLvl = getMetaSkillLevel(player, "summon");
   const extraAt4 = metaLvl >= 2 ? 1 : 0;
   const extraAt6 = metaLvl >= 3 ? 1 : 0;
 
-  let count = 1;
+  let count = 1 + Math.max(0, lightProfile.extraCount | 0);
   if (lvl >= 4) count += 1 + extraAt4;
   if (lvl >= 6) count += 1 + extraAt6;
   count = Math.min(6, Math.max(1, count));
 
   // Tank stats scale mostly via HP/DEF and a bit of movespeed.
   // They do NOT attack. They taunt enemies in a radius.
-  const hp = 85 + (lvl - 1) * 30;
-  const def = Math.min(0.55, 0.15 + (lvl - 1) * 0.015); // damage reduction fraction
+  const hp = 85 + (lvl - 1) * 30 + lightProfile.shieldBonus * 2;
+  const def = Math.min(0.65, 0.15 + (lvl - 1) * 0.015 + (lightProfile.shieldBonus > 0 ? 0.04 : 0)); // damage reduction fraction
   // Tanks must be able to get in front of packs and NOT get dragged back to the hero.
   // Keep them meaningfully faster than early mobs; scale gently.
   const moveSpeed = 125 + (lvl - 1) * 5.0;
@@ -851,8 +881,9 @@ function summonParams(player) {
   // How long enemies keep a tank as a preferred target before re-evaluating.
   const tauntHold = 0.9;
 
-  return { level: lvl, count, hp, def, moveSpeed, tauntR, radius, followDist: PET_FOLLOW_DIST, cooldown, lureR, tauntHold };
+  return { level: lvl, count, hp, def, moveSpeed, tauntR, radius, followDist: PET_FOLLOW_DIST, cooldown, lureR, tauntHold, smiteRate: lightProfile.smiteRate, smiteDamageMult: lightProfile.smiteDamageMult, healOnSmite: lightProfile.healOnSmite, kind: 'lightWarden' };
 }
+
 
 
 export function updateSkills(player, state, dt) {
@@ -935,6 +966,7 @@ function _updateSkillsImpl(player, state, dt, { aimDir, firing } = {}) {
     player.energyBombCooldown = (player.energyBombCooldown || 0) - dt;
     if (firing && aimDir && player.energyBombCooldown <= 0) {
       fireRockets(player, state, aimDir, ebp);
+      triggerElectricSurge(player, 0.9);
       player.energyBombCooldown = ebp.cooldown;
     }
   }
@@ -967,6 +999,7 @@ function _updateSkillsImpl(player, state, dt, { aimDir, firing } = {}) {
         chainRange: lp.chainRange,
         maxTargets: lp.maxTargets,
       }, aimDir || null);
+      triggerElectricSurge(player, 1.0);
       player.lightningCooldown = lp.cooldown;
     }
   }
@@ -1037,7 +1070,7 @@ function _updateSkillsImpl(player, state, dt, { aimDir, firing } = {}) {
   if (ss && firing) {
     player.stormStrikeCooldown = (player.stormStrikeCooldown || 0) - dt;
     if (player.stormStrikeCooldown <= 0) {
-      if (castStormStrike(player, state, ss)) player.stormStrikeCooldown = ss.cooldown;
+      if (castStormStrike(player, state, ss)) { triggerElectricSurge(player, 1.1); player.stormStrikeCooldown = ss.cooldown; }
       else player.stormStrikeCooldown = Math.max(0.25, ss.cooldown * 0.45);
     }
   }
@@ -1100,7 +1133,7 @@ function _updateSkillsImpl(player, state, dt, { aimDir, firing } = {}) {
   if (as && firing) {
     player.arcSparkCooldown = (player.arcSparkCooldown || 0) - dt;
     if (player.arcSparkCooldown <= 0) {
-      if (castArcSpark(player, state, as)) player.arcSparkCooldown = as.cooldown;
+      if (castArcSpark(player, state, as)) { triggerElectricSurge(player, 1.0); player.arcSparkCooldown = as.cooldown; }
       else player.arcSparkCooldown = Math.max(0.25, as.cooldown * 0.45);
     }
   }
@@ -1109,7 +1142,7 @@ function _updateSkillsImpl(player, state, dt, { aimDir, firing } = {}) {
   if (stp && firing) {
     player.staticPulseCooldown = (player.staticPulseCooldown || 0) - dt;
     if (player.staticPulseCooldown <= 0) {
-      if (castStaticPulse(player, state, stp)) player.staticPulseCooldown = stp.cooldown;
+      if (castStaticPulse(player, state, stp)) { triggerElectricSurge(player, 0.95); player.staticPulseCooldown = stp.cooldown; }
       else player.staticPulseCooldown = Math.max(0.28, stp.cooldown * 0.48);
     }
   }

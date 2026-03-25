@@ -1,3 +1,5 @@
+import { getBiomeArtSignature } from '../biomeArtAssets.js';
+
 export function isLuxurySpaceRoom(room, arenaSpec) {
   const biomeKey = String(room?.biomeKey || '').toLowerCase();
   const visualPreset = String(arenaSpec?.visualPreset || '').toLowerCase();
@@ -33,30 +35,30 @@ export function drawOrbitalBackdropBehindRoom(ctx, room, { x0, y0, x1, y1, w, h 
   ctx.restore();
 }
 
-export function getRoomStaticArtCacheKey(room, arenaSpec, getBiomeArtSignature) {
+export function getRoomStaticArtCacheKey(room, arenaSpec) {
   const b = room?.bounds || null;
   if (!room || !arenaSpec || !b) return '';
   const artSig = getBiomeArtSignature(room?.biomeKey || 'neutral');
   return [room.index | 0, room.biomeKey || '', arenaSpec.layoutId || '', arenaSpec.visualPreset || '', artSig, b.minX | 0, b.minY | 0, b.maxX | 0, b.maxY | 0].join('|');
 }
 
-export function peekRoomStaticArtCache(state, room, arenaSpec, getBiomeArtSignature) {
+export function peekRoomStaticArtCache(state, room, arenaSpec) {
   if (!state || !room || !arenaSpec) return null;
   const map = state._roomStaticArtCache;
   if (!(map instanceof Map)) return null;
-  const key = getRoomStaticArtCacheKey(room, arenaSpec, getBiomeArtSignature);
+  const key = getRoomStaticArtCacheKey(room, arenaSpec);
   return key ? (map.get(key) || null) : null;
 }
 
 export function ensureRoomStaticArtCache(state, room, arenaSpec, hue, deps = {}) {
   if (!state || !room || !arenaSpec) return null;
-  const hasLoadedBiomeArt = /(?:^|\|)1(?:\||$)/.test(deps.getBiomeArtSignature?.(room?.biomeKey || 'neutral'));
+  const hasLoadedBiomeArt = /(?:^|\|)1(?:\||$)/.test(getBiomeArtSignature(room?.biomeKey || 'neutral'));
   if (!isLuxurySpaceRoom(room, arenaSpec) && !hasLoadedBiomeArt) return null;
   if (typeof document === 'undefined') return null;
   const map = (state._roomStaticArtCache ||= new Map());
   const b = room.bounds || null;
   if (!b) return null;
-  const key = getRoomStaticArtCacheKey(room, arenaSpec, deps.getBiomeArtSignature);
+  const key = getRoomStaticArtCacheKey(room, arenaSpec);
   if (!key) return null;
   if (map.has(key)) return map.get(key);
   const pad = 180;

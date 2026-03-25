@@ -1,3 +1,4 @@
+import { applyCritToDamage } from "../core/progression.js";
 // Summon Tanks: defensive minions that taunt enemies and soak damage.
 // - They do NOT attack.
 // - In-run (lvl 1..6): +1 tank at lvl 4, +1 at lvl 6 (max 3).
@@ -53,6 +54,11 @@ function spawnTank(player, state, params, idx, total) {
     moveSpeed: params.moveSpeed || 95,
     tauntR: params.tauntR || 260,
     age: 0,
+    kind: String(params.kind || "tank"),
+    smiteRate: Math.max(0, Number(params.smiteRate || 0)),
+    smiteDamageMult: Math.max(0.1, Number(params.smiteDamageMult || 1)),
+    healOnSmite: Math.max(0, Number(params.healOnSmite || 0)),
+    smiteCd: 0,
   };
 
   // Used by enemy contact damage (see enemies/* contact hit code)
@@ -149,6 +155,10 @@ export function updateSummonTanks(player, state, dt, params) {
     s.moveSpeed = params.moveSpeed || s.moveSpeed || 95;
     s.tauntR = params.tauntR || s.tauntR || 260;
     s.radius = params.radius || s.radius || 18;
+    s.kind = String(params.kind || s.kind || "tank");
+    s.smiteRate = Math.max(0, Number(params.smiteRate || 0));
+    s.smiteDamageMult = Math.max(0.1, Number(params.smiteDamageMult || 1));
+    s.healOnSmite = Math.max(0, Number(params.healOnSmite || 0));
 
     // Death cleanup
     if (s.hp <= 0) continue;
@@ -208,6 +218,33 @@ export function updateSummonTanks(player, state, dt, params) {
       const push = (prefer * 0.55 - pd) * 0.08;
       s.x += (px / pd) * push;
       s.y += (py / pd) * push;
+    }
+
+    // Holy servants: periodic smite + tiny heal support when the route is light-focused.
+    s.smiteCd = Math.max(0, Number(s.smiteCd || 0) - dt);
+    if (s.smiteRate > 0 && s.smiteCd <= 0) {
+      let best = null;
+      let bestD2 = Infinity;
+      const smiteR = Math.max(72, s.tauntR * 0.42);
+      for (const e of enemies) {
+        if (!e || e.hp <= 0) continue;
+        const dx2 = e.x - s.x;
+        const dy2 = e.y - s.y;
+        const d2 = dx2 * dx2 + dy2 * dy2;
+        if (d2 > smiteR * smiteR) continue;
+        if (d2 < bestD2) { best = e; bestD2 = d2; }
+      }
+      if (best) {
+        const ownerDamage = Math.max(4, Number(player.damage || player.baseDamage || 4));
+        const dealt = applyCritToDamage(player, ownerDamage * 0.42 * s.smiteDamageMult);
+        best.hp -= dealt;
+        best._lastHitAt = state.time;
+        best._lastHitBy = player.id || "local";
+        best.aggroed = true;
+        if (s.healOnSmite > 0 && player.hp > 0) player.hp = Math.min(player.maxHP || 999999, player.hp + s.healOnSmite);
+        if (Array.isArray(state._explosions)) state._explosions.push({ x: best.x, y: best.y, r: Math.max(18, s.radius * 1.8), t: 0.20, kind: "light" });
+        s.smiteCd = Math.max(0.45, 1 / Math.max(0.15, s.smiteRate));
+      }
     }
 
     // Soft separation between tanks (prevents stacking).

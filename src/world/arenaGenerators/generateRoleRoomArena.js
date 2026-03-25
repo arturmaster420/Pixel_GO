@@ -555,6 +555,10 @@ function buildNeutralIntroSceneGeometry({ templateKey = '', role = '', centerX, 
   };
 }
 
+function buildNeutralGrandGeometry() {
+  return null;
+}
+
 function buildRoleGeometry({ role, theme, centerX, centerY, side, routeStyle = '', lateralOffset = 0, entrySocket = '' } = {}) {
   if (theme?.profileId === 'neutral') {
     const grand = buildNeutralGrandGeometry({ role, centerX, centerY, side, routeStyle, lateralOffset, entrySocket });

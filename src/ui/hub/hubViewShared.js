@@ -1,6 +1,8 @@
 import { getCoreIdentity, getPassiveRouteMeta, getSkillRouteMeta } from "../../core/starterLoadouts.js";
 import { RUN_PASSIVES, RUN_SKILLS } from "../../core/runUpgrades.js";
 import { BIOME_ESSENCE_KEYS, ESSENCE_META, getBiomeAccentColor } from "../../core/hubBuild.js";
+import { getTotalCardShardCount } from "../../core/cards/cardRewards.js";
+import { getCharacterSelection, sameCharacterSelection, setCharacterSelection } from "./hubUiState.js";
 
 let make = null;
 
@@ -215,12 +217,11 @@ export function renderSkillIcon(defOrKey, size = 34) {
   }, [document.createTextNode(meta.glyph)]);
 }
 
-function selectCharacterEntry(state, selection, { rerender = true } = {}) {
+function selectCharacterEntry(state, selection) {
   if (!state) return false;
   const prev = getCharacterSelection(state);
   if (sameCharacterSelection(prev, selection)) return false;
   setCharacterSelection(state, selection);
-  if (rerender) renderCharacterMenu(state, true);
   return true;
 }
 
@@ -263,6 +264,7 @@ export function renderWalletBar(container, prog, opts = {}) {
   container.innerHTML = "";
   const compact = !!opts.compact;
   const hideCoins = !!opts.hideCoins;
+  const showCardEconomy = !!opts.showCardEconomy;
   const wrap = make("div", { className: "row", style: { gap: compact ? "6px" : "8px", flexWrap: "wrap", alignItems: "center", justifyContent: opts.align === 'right' ? 'flex-end' : 'flex-start' } });
   const coinChip = make("div", {
     style: {
@@ -315,6 +317,37 @@ export function renderWalletBar(container, prog, opts = {}) {
     chip.appendChild(crystal);
     chip.appendChild(countEl);
     wrap.appendChild(chip);
+  }
+  if (showCardEconomy) {
+    const totalDust = Object.values(prog?.accountProfile?.sharedResources?.raceDust || {}).reduce((sum, value) => sum + Math.max(0, Number(value || 0) || 0), 0);
+    const totalShards = getTotalCardShardCount(prog?.accountProfile?.cardCollection);
+    const chipStyle = {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: compact ? "6px" : "7px",
+      padding: compact ? "6px 9px" : "7px 10px",
+      borderRadius: "999px",
+      color: "#eef8ff",
+      fontSize: compact ? "11px" : "12px",
+    };
+    wrap.appendChild(make("div", {
+      title: "Race Dust",
+      style: {
+        ...chipStyle,
+        border: "1px solid rgba(255,170,122,0.45)",
+        background: "rgba(255,170,122,0.12)",
+        boxShadow: "0 0 0 1px rgba(255,170,122,0.10) inset",
+      },
+    }, [make("span", { text: "✹" }), make("span", { text: `${Math.max(0, totalDust | 0)}` })]));
+    wrap.appendChild(make("div", {
+      title: "Card Shards",
+      style: {
+        ...chipStyle,
+        border: "1px solid rgba(159,214,255,0.45)",
+        background: "rgba(159,214,255,0.12)",
+        boxShadow: "0 0 0 1px rgba(159,214,255,0.10) inset",
+      },
+    }, [make("span", { text: "◈" }), make("span", { text: `${Math.max(0, totalShards | 0)}` })]));
   }
   container.appendChild(wrap);
 }

@@ -38,7 +38,8 @@ export const BUILD_BRANCH_META = {
 
 export const CHARACTER_TABS = {
   overview: { label: 'Hero', title: 'Hero Window' },
-  skills: { label: 'Skills', title: 'Active Skills' },
+  skills: { label: 'Skills', title: 'Skills' },
+  gear: { label: 'Gear', title: 'Hero Gear' },
   inventory: { label: 'Inventory', title: 'Inventory' },
   settings: { label: 'Options', title: 'Options & Hints' },
 };
@@ -71,6 +72,8 @@ export function setSectionVisibility(node, visible) {
 
 export function normalizeCharacterTab(raw) {
   const key = String(raw || 'overview').trim().toLowerCase();
+  if (key === 'cards') return 'skills';
+  if (key === 'heroes') return 'overview';
   return CHARACTER_TABS[key] ? key : 'overview';
 }
 
