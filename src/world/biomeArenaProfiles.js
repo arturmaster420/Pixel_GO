@@ -1,0 +1,86 @@
+export const BIOME_ARENA_PROFILES = {
+  hub: {
+    biomeId: 'hub',
+    generatorId: 'hub_core',
+    layoutPool: ['hub_core_v1'],
+    hazardPreset: 'none',
+    spawnPreset: 'none',
+    gatePreset: 'none',
+    bossArenaPreset: '',
+    visualPreset: 'hub_core_station',
+    minFloor: 0,
+  },
+  neutral: {
+    biomeId: 'neutral',
+    generatorId: 'orbital_atrium',
+    layoutPool: ['orbital_atrium_v1', 'orbital_atrium_v2'],
+    hazardPreset: 'neutral_spatial_pressure',
+    spawnPreset: 'neutral_balanced_routes',
+    gatePreset: 'neutral_balconies',
+    bossArenaPreset: 'orbital_core',
+    visualPreset: 'neutral_orbital_atrium',
+    minFloor: 1,
+  },
+  electric: {
+    biomeId: 'electric',
+    generatorId: 'storm_spire',
+    layoutPool: ['storm_spire_v1', 'storm_spire_v2'],
+    hazardPreset: 'electric_storm_rhythm',
+    spawnPreset: 'electric_flank_petals',
+    gatePreset: 'electric_conductors',
+    bossArenaPreset: 'storm_eye',
+    visualPreset: 'electric_storm_spire',
+    minFloor: 4,
+  },
+  fire: {
+    biomeId: 'fire',
+    generatorId: 'ember_throne',
+    layoutPool: ['ember_throne_v1', 'ember_throne_v2'],
+    hazardPreset: 'fire_molten_pressure',
+    spawnPreset: 'fire_area_denial',
+    gatePreset: 'fire_obsidian_gates',
+    bossArenaPreset: 'throne_crater',
+    visualPreset: 'fire_ember_throne',
+    minFloor: 4,
+  },
+  ice: {
+    biomeId: 'ice',
+    generatorId: 'crystal_fjord',
+    layoutPool: ['crystal_fjord_v1', 'crystal_fjord_v2'],
+    hazardPreset: 'ice_long_lines',
+    spawnPreset: 'ice_open_arcs',
+    gatePreset: 'ice_fjord_edges',
+    bossArenaPreset: 'glacial_crown',
+    visualPreset: 'ice_crystal_fjord',
+    minFloor: 4,
+  },
+  dark: {
+    biomeId: 'dark',
+    generatorId: 'dark_void',
+    layoutPool: ['dark_void_v1', 'dark_void_v2'],
+    hazardPreset: 'dark_flank_anxiety',
+    spawnPreset: 'dark_ambush_routes',
+    gatePreset: 'dark_torn_edges',
+    bossArenaPreset: 'void_crown',
+    visualPreset: 'dark_void_fracture',
+    minFloor: 4,
+  },
+  light: {
+    biomeId: 'light',
+    generatorId: 'light_temple',
+    layoutPool: ['light_temple_v1', 'light_temple_v2'],
+    hazardPreset: 'light_radiant_control',
+    spawnPreset: 'light_node_control',
+    gatePreset: 'light_beam_edges',
+    bossArenaPreset: 'radiant_crown',
+    visualPreset: 'light_radiant_temple',
+    minFloor: 4,
+  },
+};
+
+export function getArenaProfile(roomIndex, biomeKey = '') {
+  const idx = roomIndex | 0;
+  if (idx <= 0) return BIOME_ARENA_PROFILES.hub;
+  const key = String(biomeKey || '').toLowerCase();
+  return BIOME_ARENA_PROFILES[key] || BIOME_ARENA_PROFILES.neutral;
+}
