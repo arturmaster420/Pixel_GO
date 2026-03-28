@@ -16,8 +16,8 @@ export function getCardLevelUpCost(cardLike) {
   const stars = Math.max(1, toInt(cardLike?.currentStars ?? cardLike?.baseStars, 1));
   return {
     gold: Math.max(30, 30 + (level - 1) * 15 + stars * 10),
-    essence: Math.max(1, Math.ceil(level / 5)),
-    feederCopies: 1,
+    essence: Math.max(1, Math.ceil(level / 4)),
+    feederCopies: 0,
   };
 }
 
@@ -112,17 +112,16 @@ export function getCardUpgradePreview(prog, targetCardId) {
 
   const cost = getCardLevelUpCost(target);
   const levelCap = getCardLevelCap(target);
-  const feederCandidates = listCardFeedCandidates(prog, targetId);
-  const feeder = feederCandidates[0] || null;
+  const feederCandidates = [];
+  const feeder = null;
   const availableGold = Math.max(0, toInt(prog?.coins, 0));
   const availableEssence = Math.max(0, toInt(prog?.essences?.[target.race], 0));
-  const availableFeederCopies = feederCandidates.reduce((sum, entry) => sum + Math.max(0, toInt(entry.availableCopies, 0)), 0);
+  const availableFeederCopies = 0;
   const reasons = [];
 
   if (Math.max(1, toInt(target.level, 1)) >= levelCap) reasons.push('level cap reached');
   if (availableGold < cost.gold) reasons.push('not enough Gold');
   if (availableEssence < cost.essence) reasons.push(`not enough ${String(target.race || 'mecha')} essence`);
-  if (availableFeederCopies < cost.feederCopies || !feeder) reasons.push('no free same-biome feeder copy');
 
   const ok = !reasons.length;
   return {
@@ -144,7 +143,7 @@ export function getCardUpgradePreview(prog, targetCardId) {
 
 export function levelUpCardOnce(prog, targetCardId) {
   const preview = getCardUpgradePreview(prog, targetCardId);
-  if (!preview.canUpgrade || !preview.target || !preview.feeder) {
+  if (!preview.canUpgrade || !preview.target) {
     return {
       ok: false,
       message: preview.reason ? `Level up blocked: ${preview.reason}.` : 'Level up blocked.',
@@ -154,8 +153,7 @@ export function levelUpCardOnce(prog, targetCardId) {
 
   const collection = getMutableCollection(prog);
   const target = collection?.cards?.[preview.target.cardId];
-  const feeder = collection?.cards?.[preview.feeder.cardId];
-  if (!collection || !target || !feeder) {
+  if (!collection || !target) {
     return { ok: false, message: 'Level up blocked: card state missing.', preview };
   }
 
@@ -163,11 +161,10 @@ export function levelUpCardOnce(prog, targetCardId) {
   if (!prog.essences || typeof prog.essences !== 'object') prog.essences = {};
   prog.essences[target.race] = Math.max(0, Math.max(0, toInt(prog.essences?.[target.race], 0)) - preview.cost.essence);
   target.level = Math.min(preview.levelCap, Math.max(1, toInt(target.level, 1)) + 1);
-  feeder.copiesOwned = Math.max(0, Math.max(0, toInt(feeder.copiesOwned, 0)) - preview.cost.feederCopies);
 
   return {
     ok: true,
-    message: `${String(preview.targetDef?.name || 'Card')} level ${Math.max(1, toInt(target.level, 1))}. Consumed ${String(preview.feeder?.name || 'feeder')} x${preview.cost.feederCopies}.`,
+    message: `${String(preview.targetDef?.name || 'Card')} level ${Math.max(1, toInt(target.level, 1))}.`,
     preview: getCardUpgradePreview(prog, targetCardId),
   };
 }

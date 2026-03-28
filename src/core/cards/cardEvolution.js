@@ -25,9 +25,9 @@ export function getCardStarEvolutionCost(cardLike) {
   const step = getCardEvolutionStep(cardLike);
   const level = Math.max(1, toInt(cardLike?.level, 1));
   return {
-    gold: Math.max(120, 120 + currentStars * 85 + level * 12 + (step - 1) * 70),
-    essence: Math.max(2, currentStars + step - 1),
-    duplicates: step,
+    gold: 0,
+    essence: Math.max(2, currentStars + step),
+    duplicates: 3,
   };
 }
 
@@ -63,6 +63,8 @@ export function getCardEvolutionPreview(prog, targetCardId) {
       currentStars: 0,
       nextStars: 0,
       maxStars: 0,
+      evolutionStage: 0,
+      nextEvolutionStage: 0,
       availableGold: Math.max(0, toInt(prog?.coins, 0)),
       availableEssence: 0,
       availableDuplicates: 0,
@@ -80,7 +82,6 @@ export function getCardEvolutionPreview(prog, targetCardId) {
   const reasons = [];
 
   if (currentStars >= maxStars) reasons.push('star cap reached');
-  if (availableGold < cost.gold) reasons.push('not enough Gold');
   if (availableEssence < cost.essence) reasons.push(`not enough ${String(target.race || 'mecha')} essence`);
   if (availableDuplicates < cost.duplicates) reasons.push('not enough exact duplicate copies');
 
@@ -95,6 +96,8 @@ export function getCardEvolutionPreview(prog, targetCardId) {
     currentStars,
     nextStars: Math.min(maxStars, currentStars + 1),
     maxStars,
+    evolutionStage: currentStars,
+    nextEvolutionStage: Math.min(maxStars, currentStars + 1),
     availableGold,
     availableEssence,
     availableDuplicates,
@@ -118,7 +121,6 @@ export function evolveCardStarsOnce(prog, targetCardId) {
     return { ok: false, message: 'Evolution blocked: card state missing.', preview };
   }
 
-  prog.coins = Math.max(0, Math.max(0, toInt(prog?.coins, 0)) - preview.cost.gold);
   if (!prog.essences || typeof prog.essences !== 'object') prog.essences = {};
   prog.essences[target.race] = Math.max(0, Math.max(0, toInt(prog.essences?.[target.race], 0)) - preview.cost.essence);
   target.currentStars = Math.min(preview.maxStars, Math.max(1, toInt(target.currentStars, 1)) + 1);

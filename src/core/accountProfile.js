@@ -265,6 +265,7 @@ export function defaultCardCollection() {
 export function defaultSharedResources() {
   return {
     coins: 0,
+    diamonds: 0,
     sp: 0,
     materials: defaultMaterials(),
     essences: defaultEssences(),
@@ -333,6 +334,7 @@ function sanitizeSharedResources(src) {
   const data = src && typeof src === "object" ? src : {};
   return {
     coins: Math.max(0, Math.floor(Number(data.coins || 0) || 0)),
+    diamonds: Math.max(0, Math.floor(Number(data.diamonds || 0) || 0)),
     sp: Math.max(0, Math.floor(Number(data.sp || 0) || 0)),
     materials: cloneJsonSafe(data.materials || base.materials, base.materials),
     essences: cloneJsonSafe(data.essences || base.essences, base.essences),
@@ -868,6 +870,7 @@ export function captureSharedLegacyResourcesToAccount(prog) {
   ensureAccountProgression(prog);
   prog.accountProfile.sharedResources = sanitizeSharedResources({
     coins: prog.coins,
+    diamonds: prog.diamonds,
     sp: prog.sp,
     materials: prog.materials,
     essences: prog.essences,
@@ -883,6 +886,7 @@ export function applySharedAccountResourcesToLegacyProgression(prog) {
   ensureAccountProgression(prog);
   const shared = sanitizeSharedResources(prog.accountProfile?.sharedResources);
   prog.coins = shared.coins;
+  prog.diamonds = shared.diamonds;
   prog.sp = shared.sp;
   prog.materials = cloneJsonSafe(shared.materials, defaultMaterials());
   prog.essences = cloneJsonSafe(shared.essences, defaultEssences());
