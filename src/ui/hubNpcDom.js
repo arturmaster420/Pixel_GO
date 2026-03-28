@@ -209,20 +209,17 @@ export function initHubNpcDom(game) {
     id: "hubHudWallet",
     style: {
       position: "fixed",
-      right: "12px",
-      top: "10px",
+      right: "14px",
+      top: "12px",
       zIndex: 9997,
       display: "none",
-      padding: "8px 10px",
-      borderRadius: "18px",
-      border: "1px solid rgba(255,215,122,0.18)",
-      background: "linear-gradient(180deg, rgba(18,22,34,0.94), rgba(8,11,18,0.96))",
-      boxShadow: "0 12px 30px rgba(0,0,0,0.34), 0 0 0 1px rgba(255,255,255,0.04) inset, 0 0 18px rgba(255,216,122,0.08)",
+      padding: "0",
+      borderRadius: "0",
+      border: "0",
+      background: "transparent",
+      boxShadow: "none",
       pointerEvents: "none",
-      overflowX: "auto",
-      scrollbarWidth: "none",
-      WebkitOverflowScrolling: "touch",
-      maxWidth: "min(760px, calc(100vw - 16px))",
+      overflow: "visible",
       width: "fit-content",
     },
   });
@@ -312,7 +309,7 @@ export function initHubNpcDom(game) {
   const quickRow = make("div", { className: "row", style: { gap: "8px", marginTop: "10px", flexWrap: "wrap" } });
   const btnBuildLab = make("button", { className: "btn", id: "btnHubBuildLab", type: "button", text: "Wing Navigator", style: { padding: "8px 10px", display: "none" } });
   const btnCoreLab = make("button", { className: "btn", id: "btnHubCoreLab", type: "button", text: "Hero Biome", style: { padding: "8px 10px" } });
-  const btnArsenalLab = make("button", { className: "btn", type: "button", text: "Arsenal Wing", style: { padding: "8px 10px" } });
+  const btnArsenalLab = make("button", { className: "btn", type: "button", text: "Skill Master", style: { padding: "8px 10px" } });
   const btnEssenceLab = make("button", { className: "btn", type: "button", text: "Essence Conflux", style: { padding: "8px 10px" } });
   const btnMasteryLab = make("button", { className: "btn", type: "button", text: "Mastery Archive", style: { padding: "8px 10px" } });
   const btnForgeLab = make("button", { className: "btn", type: "button", text: "Forge Wing", style: { padding: "8px 10px" } });
@@ -341,7 +338,7 @@ export function initHubNpcDom(game) {
   panel.appendChild(make("div", { className: "shopLabel", text: "2nd Rank Skill Up", style: { marginTop: "10px" } }));
   panel.appendChild(make("div", { className: "shopGrid", id: "hubShopGridNew" }));
 
-  panel.appendChild(make("div", { className: "muted", style: { marginTop: "10px", fontSize: "12px", opacity: "0.85" }, text: "Cards now define the hero; this Arsenal wing is the compatibility bridge. Gold still raises ownership caps, while Expedition SP now remaps the active hero’s equipped cards into the current live runtime." }));
+  panel.appendChild(make("div", { className: "muted", style: { marginTop: "10px", fontSize: "12px", opacity: "0.85" }, text: "Cards now define the hero. Skill Master is now the dedicated NPC for skill-card growth: level up with Gold + Essence, then evolve with Essence + 3 exact copies." }));
 
   el.shopOverlay.appendChild(panel);
   document.body.appendChild(el.shopOverlay);
@@ -421,48 +418,17 @@ export function initHubNpcDom(game) {
   buildPanel.appendChild(buildBranchTabs);
 
   el.buildSectionArsenal = make("div", { id: "hubBuildSectionArsenal", style: { marginTop: "12px" } });
-  const buildCoreRow = make("div", { className: "row", style: { gap: "8px", marginTop: "12px", flexWrap: "wrap" } });
-  const buildCoreBtn = make("button", { className: "btn", type: "button", id: "hubBuildCoreBtn", text: "Inspect Hero Biome", style: { padding: "8px 10px" } });
-  const buildResetBtn = make("button", { className: "btn", type: "button", id: "hubBuildResetBtn", text: "Sync Runtime Mirror", style: { padding: "8px 10px" } });
-  buildCoreRow.appendChild(buildCoreBtn);
-  buildCoreRow.appendChild(buildResetBtn);
-  el.buildSectionArsenal.appendChild(buildCoreRow);
-  const buildGoldWrap = make('div', { style: { marginTop: '12px' } });
-  buildGoldWrap.appendChild(make('div', { className: 'shopLabel', text: 'Gold/SP Doctrine • compatibility bridge' }));
-  const buildGoldTop = make('div', { className: 'row', style: { justifyContent: 'space-between', gap: '10px', alignItems: 'center', marginTop: '8px', flexWrap: 'wrap' } });
-  const buildGoldCoins = make('div', { id: 'hubBuildGoldCoins', style: { fontSize: '13px' } });
-  buildGoldCoins.innerHTML = '<b>Gold:</b> <span id="hubBuildGoldCoinsValue">0</span>';
-  const buildGoldRerollBtn = make('button', { className: 'btn', type: 'button', id: 'hubBuildGoldRerollBtn', style: { padding: '8px 10px', whiteSpace: 'nowrap' } });
-  buildGoldRerollBtn.innerHTML = 'Reroll (<span id="hubBuildGoldRerollCost">10</span>)';
-  buildGoldTop.appendChild(buildGoldCoins);
-  buildGoldTop.appendChild(buildGoldRerollBtn);
-  buildGoldWrap.appendChild(buildGoldTop);
-  buildGoldWrap.appendChild(make('div', { className: 'shopLabel', text: 'Skill Ownership', style: { marginTop: '10px' } }));
-  const buildGoldActive = make('div', { className: 'shopGrid', id: 'hubBuildGoldActive' });
-  buildGoldWrap.appendChild(buildGoldActive);
-  buildGoldWrap.appendChild(make('div', { className: 'shopLabel', text: 'Passive Ownership', style: { marginTop: '10px' } }));
-  const buildGoldPassive = make('div', { className: 'shopGrid', id: 'hubBuildGoldPassive' });
-  buildGoldWrap.appendChild(buildGoldPassive);
-  buildGoldWrap.appendChild(make('div', { className: 'shopLabel', text: '2nd Rank Skill Up', style: { marginTop: '10px' } }));
-  const buildGoldNew = make('div', { className: 'shopGrid', id: 'hubBuildGoldNew' });
-  buildGoldWrap.appendChild(buildGoldNew);
-  el.buildSectionArsenal.appendChild(buildGoldWrap);
+  el.buildSectionArsenal.appendChild(make('div', { className: 'muted', style: { marginTop: '4px', fontSize: '12px', lineHeight: '1.45', color: 'rgba(232,245,255,0.9)', opacity: '1' }, text: 'Skill Master now handles skill-card growth only: choose one owned active skill card, raise its level with Gold + matching Essence, then evolve it with Essence + 3 exact copies of the same current star rank.' }));
   const buildCardWrap = make('div', { id: 'hubBuildCardWrap', style: { marginTop: '12px', padding: '12px', borderRadius: '14px', background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(159,214,255,0.16)' } });
-  buildCardWrap.appendChild(make('div', { className: 'shopLabel', text: 'Hero Card Doctrine' }));
-  buildCardWrap.appendChild(make('div', { className: 'muted', style: { marginTop: '6px', fontSize: '12px', lineHeight: '1.45', color: 'rgba(232,245,255,0.9)', opacity: '1' }, text: 'The active hero now drives this wing through equipped skill cards, passive cards, stars and race synergy. Legacy ownership/SP controls below remain as the bridge into the current combat runtime.' }));
-  el.buildCardSummary = make('div', { id: 'hubBuildCardSummary', style: { marginTop: '10px' } });
+  el.buildCardSummary = make('div', { id: 'hubBuildCardSummary', style: { marginTop: '0' } });
   buildCardWrap.appendChild(el.buildCardSummary);
-  buildCardWrap.appendChild(make('div', { className: 'shopLabel', text: 'Equipped Skill Cards', style: { marginTop: '10px' } }));
-  el.buildCardGridSkills = make('div', { className: 'shopGrid', id: 'hubBuildCardGridSkills' });
-  buildCardWrap.appendChild(el.buildCardGridSkills);
-  buildCardWrap.appendChild(make('div', { className: 'shopLabel', text: 'Equipped Passive Cards', style: { marginTop: '10px' } }));
-  el.buildCardGridPassives = make('div', { className: 'shopGrid', id: 'hubBuildCardGridPassives' });
-  buildCardWrap.appendChild(el.buildCardGridPassives);
+  buildCardWrap.appendChild(make('div', { className: 'shopLabel', text: 'Owned Skill Cards', style: { marginTop: '12px' } }));
+  el.buildGridSkills = make('div', { className: 'shopGrid', id: 'hubBuildGridSkills' });
+  buildCardWrap.appendChild(el.buildGridSkills);
+  buildCardWrap.appendChild(make('div', { className: 'shopLabel', text: 'Selected Card', style: { marginTop: '12px' } }));
+  el.buildSkillMasterDetail = make('div', { id: 'hubBuildSkillMasterDetail', style: { marginTop: '8px' } });
+  buildCardWrap.appendChild(el.buildSkillMasterDetail);
   el.buildSectionArsenal.appendChild(buildCardWrap);
-  el.buildSectionArsenal.appendChild(make('div', { className: 'muted', style: { marginTop: '8px', fontSize: '12px', lineHeight: '1.45', color: 'rgba(232,245,255,0.9)', opacity: '1' }, text: 'Legacy Arsenal bridge: Gold still raises ownership caps, but the SP controls below now remap the active hero’s cards into the current live expedition build.' }));
-  el.buildSectionArsenal.appendChild(make("div", { className: "shopLabel", text: "Active Skills • SP allocation", style: { marginTop: "12px" } }));
-  el.buildGridSkills = make("div", { className: "shopGrid", id: "hubBuildGridSkills" });
-  el.buildSectionArsenal.appendChild(el.buildGridSkills);
   buildPanel.appendChild(el.buildSectionArsenal);
 
   el.buildSectionEssence = make("div", { id: "hubBuildSectionEssence", style: { marginTop: "12px" } });
@@ -575,6 +541,7 @@ export function initHubNpcDom(game) {
   el.buildMsg = buildPanel.querySelector("#hubBuildMsg");
   el.buildCoreBtn = buildPanel.querySelector("#hubBuildCoreBtn");
   el.buildResetBtn = buildPanel.querySelector("#hubBuildResetBtn");
+  el.buildSkillMasterDetail = buildPanel.querySelector('#hubBuildSkillMasterDetail');
   el.buildOverview = buildPanel.querySelector("#hubBuildOverview");
   el.buildBranchHint = buildPanel.querySelector("#hubBuildBranchHint");
   el.buildBranchButtons = buildBranchButtons;
@@ -624,11 +591,11 @@ export function initHubNpcDom(game) {
   btnMasteryLab.addEventListener("click", () => openBuildLab(game.state, "mastery"));
   btnForgeLab.addEventListener("click", () => openBuildLab(game.state, "forge"));
   btnCharacter.addEventListener("click", () => openCharacterMenu(game.state, 'overview'));
-  el.buildCoreBtn.addEventListener("click", () => {
+  if (el.buildCoreBtn) el.buildCoreBtn.addEventListener("click", () => {
     if (game.state?._hubResumeRunActive) return;
     openBasicSelector(game.state);
   });
-  el.buildResetBtn.addEventListener("click", () => {
+  if (el.buildResetBtn) el.buildResetBtn.addEventListener("click", () => {
     const state = game.state;
     const prog = state?.progression;
     if (!prog) return;
@@ -769,18 +736,11 @@ export function tickHubNpcDom(state) {
   if (el.interactWrap) el.interactWrap.style.display = showInteract ? "block" : "none";
   const showHubNav = state.mode === "playing" && inHub && (!state.overlayMode || state.overlayMode === 'character');
   if (el.hubNavBar) el.hubNavBar.style.display = showHubNav ? "flex" : "none";
-  const showHubHudWallet = state.mode === "playing" && inHub && !state.overlayMode;
+  // HUB wallet DOM overlay disabled: keep only the small currency chips rendered by the main HUD.
+  const showHubHudWallet = false;
   if (el.hubHudWallet) {
-    el.hubHudWallet.style.display = showHubHudWallet ? "block" : "none";
-    if (showHubHudWallet) {
-      renderWalletBar(el.hubHudWallet, state.progression, { compact: true, showCardEconomy: true, align: 'right', variant: 'hubHud' });
-      const row = el.hubHudWallet.firstElementChild;
-      if (row && row.style) {
-        row.style.flexWrap = 'nowrap';
-        row.style.minWidth = 'max-content';
-        row.style.justifyContent = 'flex-end';
-      }
-    }
+    el.hubHudWallet.style.display = "none";
+    el.hubHudWallet.innerHTML = "";
   }
   if (showHubNav && el.hubNavButtons) {
     const currentTab = String(state._characterMenuTab || 'overview');
@@ -798,7 +758,7 @@ export function tickHubNpcDom(state) {
       shop: "Shop (E)",
       tier: "Death Shop~Up (E)",
       basic: state._hubResumeRunActive ? "Biome Locked" : "Hero Biome (E)",
-      arsenal: "Arsenal Wing (E)",
+      arsenal: "Skill Master (E)",
       essence: "Essence Conflux (E)",
       mastery: "Mastery Archive (E)",
       reset: "Reset Expedition (E)",

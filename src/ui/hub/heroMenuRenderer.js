@@ -384,7 +384,7 @@ function renderSelectionDetailCard(state, prog, selection, statsData) {
       `Role: ${String(routeMeta.role || 'combat skill')} • Style: ${String(routeMeta.style || 'general expedition value')}`,
       ...detailRows,
       !detailRows.length ? 'Damage, cooldown and rank rows will appear here for this skill when defined in presentation data.' : '',
-      'Read-only in Hero Menu. Manage ownership caps and SP allocation at Arsenal Wing NPC.',
+      'Read-only in Hero Menu. Manage card growth at Skill Master NPC.',
     ]);
     return card;
   }

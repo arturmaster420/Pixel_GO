@@ -779,7 +779,9 @@ export function renderHUD(ctx, state) {
   const topPanelH = barsY + hpH + barGap + xpH + 4;
 
   const coins = progression && typeof progression.coins === "number" ? Math.floor(progression.coins) : 0;
+  const diamonds = progression && typeof progression.diamonds === "number" ? Math.floor(progression.diamonds) : 0;
   const coinText = `${coins}`;
+  const diamondText = `${diamonds}`;
   const iconR = 6;
 
   let roomState = "SOLO";
@@ -822,19 +824,25 @@ export function renderHUD(ctx, state) {
   const showBiomeChip = stripW >= 540 && roomIdx > 0;
 
   const goldChipText = coinText;
+  const diamondChipText = diamondText;
   const goldChipW = Math.max(chipH + 24, measureTopHudChip(ctx, goldChipText, { font: 'bold 11px sans-serif', padX: 14 }));
+  const diamondChipW = Math.max(chipH + 34, measureTopHudChip(ctx, `💎 ${diamondChipText}`, { font: 'bold 11px sans-serif', padX: 14 }));
   const roomStateW = showLobbyChip ? measureTopHudChip(ctx, roomState, { font: 'bold 11px sans-serif', padX: 12, accent: true }) : 0;
-  const walletW = drawCompactEssenceWalletInline(ctx, progression, 0, 0, { compact: true, draw: false });
 
   let rightCursor = stripInnerRight;
 
-  if (walletW > 0) {
-    const walletChipW = Math.max(walletW + 14, chipH + 24);
-    const walletX = rightCursor - walletChipW;
-    fillRoundedRect(ctx, walletX, chipY, walletChipW, chipH, Math.min(11, chipH * 0.5), 'rgba(126,194,255,0.10)', 'rgba(126,194,255,0.22)', 1);
-    drawCompactEssenceWalletInline(ctx, progression, walletX + 7, chipY + Math.max(0, Math.floor((chipH - 16) * 0.5)), { compact: true, draw: true });
-    rightCursor = walletX - 10;
-  }
+  const diamondChipX = rightCursor - diamondChipW;
+  fillRoundedRect(ctx, diamondChipX, chipY, diamondChipW, chipH, Math.min(11, chipH * 0.5), 'rgba(120,214,255,0.12)', 'rgba(120,214,255,0.28)', 1);
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,0.98)';
+  ctx.font = 'bold 12px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('💎', diamondChipX + 10, chipY + chipH * 0.5 + 0.5);
+  ctx.font = 'bold 11px sans-serif';
+  ctx.fillText(diamondChipText, diamondChipX + 24, chipY + chipH * 0.5 + 0.5);
+  ctx.restore();
+  rightCursor = diamondChipX - 8;
 
   const goldChipX = rightCursor - goldChipW;
   fillRoundedRect(ctx, goldChipX, chipY, goldChipW, chipH, Math.min(11, chipH * 0.5), 'rgba(255,215,90,0.12)', 'rgba(255,215,90,0.26)', 1);

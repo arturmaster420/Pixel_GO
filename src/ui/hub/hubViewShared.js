@@ -265,14 +265,15 @@ export function renderWalletBar(container, prog, opts = {}) {
   const compact = !!opts.compact;
   const hideCoins = !!opts.hideCoins;
   const showCardEconomy = !!opts.showCardEconomy;
+  const showEssences = opts.showEssences !== false;
   const variant = String(opts.variant || '').trim();
   const isHubHud = variant === 'hubHud';
   const wrap = make("div", { className: "row", style: { gap: isHubHud ? "7px" : (compact ? "6px" : "8px"), flexWrap: "wrap", alignItems: "center", justifyContent: opts.align === 'right' ? 'flex-end' : 'flex-start' } });
   const chipBase = isHubHud
     ? {
-        borderRadius: '12px',
-        boxShadow: '0 0 0 1px rgba(255,255,255,0.05) inset, 0 6px 12px rgba(0,0,0,0.16)',
-        fontWeight: '700',
+        borderRadius: '0px',
+        boxShadow: 'none',
+        fontWeight: '800',
       }
     : {
         borderRadius: '999px',
@@ -281,23 +282,54 @@ export function renderWalletBar(container, prog, opts = {}) {
     style: {
       display: "inline-flex",
       alignItems: "center",
-      gap: compact ? "6px" : "8px",
-      padding: isHubHud ? "7px 11px" : (compact ? "6px 10px" : "8px 12px"),
+      gap: isHubHud ? "5px" : (compact ? "6px" : "8px"),
+      padding: isHubHud ? "0" : (compact ? "6px 10px" : "8px 12px"),
       borderRadius: chipBase.borderRadius,
-      border: "1px solid rgba(255,215,90,0.34)",
-      background: isHubHud ? "linear-gradient(180deg, rgba(120,88,18,0.96), rgba(68,48,10,0.96))" : "rgba(255,215,90,0.10)",
+      border: isHubHud ? "0" : "1px solid rgba(255,215,90,0.34)",
+      background: isHubHud ? "transparent" : "rgba(255,215,90,0.10)",
       color: "#fff4c7",
-      fontSize: isHubHud ? "12px" : (compact ? "12px" : "13px"),
+      fontSize: isHubHud ? "14px" : (compact ? "12px" : "13px"),
+      textShadow: isHubHud ? "0 1px 10px rgba(0,0,0,0.35)" : "none",
       boxShadow: isHubHud ? chipBase.boxShadow : "0 0 0 1px rgba(255,215,90,0.08) inset",
       fontWeight: chipBase.fontWeight || '400',
-      letterSpacing: isHubHud ? '0.02em' : '0',
+      letterSpacing: isHubHud ? '0.01em' : '0',
     },
   }, [
-    make("span", { text: "🪙" }),
+    make("span", { text: "🪙", style: isHubHud ? { fontSize: '16px', lineHeight: '1' } : null }),
     make("span", { text: `${Math.max(0, prog?.coins | 0)}` }),
   ]);
+  const diamonds = Math.max(0, prog?.diamonds | 0);
+  const diamondChip = make("div", {
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: isHubHud ? "5px" : (compact ? "6px" : "8px"),
+      padding: isHubHud ? "0" : (compact ? "6px 10px" : "8px 12px"),
+      borderRadius: chipBase.borderRadius,
+      border: isHubHud ? "0" : "1px solid rgba(120,214,255,0.34)",
+      background: isHubHud ? "transparent" : "rgba(120,214,255,0.10)",
+      color: "#e8f7ff",
+      fontSize: isHubHud ? "14px" : (compact ? "12px" : "13px"),
+      textShadow: isHubHud ? "0 1px 10px rgba(0,0,0,0.35)" : "none",
+      boxShadow: isHubHud ? chipBase.boxShadow : "0 0 0 1px rgba(120,214,255,0.08) inset",
+      fontWeight: chipBase.fontWeight || '400',
+      letterSpacing: isHubHud ? '0.01em' : '0',
+    },
+  }, [
+    make("span", { text: "💎", style: isHubHud ? { fontSize: '16px', lineHeight: '1' } : null }),
+    make("span", { text: `${diamonds}` }),
+  ]);
+
   if (!hideCoins) wrap.appendChild(coinChip);
-  for (const key of BIOME_ESSENCE_KEYS) {
+  if (isHubHud) {
+    wrap.style.gap = '16px';
+    wrap.style.alignItems = 'center';
+    wrap.appendChild(diamondChip);
+    container.appendChild(wrap);
+    return;
+  }
+
+  if (showEssences) for (const key of BIOME_ESSENCE_KEYS) {
     const meta = ESSENCE_META[key] || ESSENCE_META.mecha;
     const count = Math.max(0, prog?.essences?.[key] | 0);
     const chip = make("div", {

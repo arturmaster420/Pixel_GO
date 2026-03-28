@@ -42,7 +42,7 @@ export const HUB_NPCS = (() => {
     {
       id: "arsenal",
       kind: "arsenal",
-      name: "Arsenal Wing",
+      name: "Skill Master",
       emoji: "🗡️",
       x: -Math.round(HUB_HALF * 0.72),
       y: -Math.round(HUB_HALF * 0.12),
@@ -101,7 +101,7 @@ function getActiveHubNpcs(state = null) {
     shop: { id: "shop", kind: "shop", name: "Merchant", emoji: "🛒", scale: 0.54, r: 96 },
     tier: { id: "tier", kind: "tier", name: "Death Shop~Up", emoji: "🧙", scale: 0.54, r: 96 },
     basic: { id: "basic", kind: "basic", name: "Basic Core", emoji: "⚙️", scale: 0.96, r: 138 },
-    arsenal: { id: "arsenal", kind: "arsenal", name: "Arsenal Wing", emoji: "🗡️", scale: 0.66, r: 112 },
+    arsenal: { id: "arsenal", kind: "arsenal", name: "Skill Master", emoji: "🗡️", scale: 0.66, r: 112 },
     forge: { id: "forge", kind: "forge", name: "Forge Wing", emoji: "⚒️", scale: 0.66, r: 112 },
     essence: { id: "essence", kind: "essence", name: "Essence Conflux", emoji: "✨", scale: 0.68, r: 116 },
     mastery: { id: "mastery", kind: "mastery", name: "Mastery Archive", emoji: "📘", scale: 0.68, r: 116 },
